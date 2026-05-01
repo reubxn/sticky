@@ -1,45 +1,10 @@
-Update: April 27, 2026.
+# Instinct
 
-Hi there! I'm Farza, the guy that made Clicky.
+An AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-The existing codebase remains open source. Tinker with it, make it yours, start a company out of it, do whatever you want I don't mind. But, for all the new stuff I'm hacking on, gonna keep it private. To get the latest Clicky, you can go [here](https://www.heyclicky.com/).
-
-I also tweeted about this [here](https://x.com/FarzaTV/status/2043402737828962489).
-
-Go crazy with this repo!! It's an MIT license.
-
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
-
-Download it [here](https://www.clicky.so/) for free.
-
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
-
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
-
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
-
-## Get started with Claude Code
-
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-
-Once you get Claude running, paste this:
-
-```
-Hi Claude.
-
-Clone https://github.com/farzaa/clicky.git into my current directory.
-
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
-
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
-
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
+![demo](clicky-demo.gif)
 
 ## Manual setup
-
-If you want to do it yourself, here's the deal.
 
 ### Prerequisites
 
@@ -99,17 +64,12 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing.
 
 ### 3. Update the proxy URLs in the app
 
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+The app has the Worker URL hardcoded in a few places. Search for the existing Worker hostname and replace it with your Worker URL. You'll find it in:
 
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
-
-You'll find it in:
 - `CompanionManager.swift` — Claude chat + ElevenLabs TTS
 - `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
@@ -120,7 +80,7 @@ open leanring-buddy.xcodeproj
 ```
 
 In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
+1. Select the `leanring-buddy` scheme
 2. Set your signing team under Signing & Capabilities
 3. Hit **Cmd + R** to build and run
 
@@ -135,14 +95,14 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 ## Architecture
 
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
+If you want the full technical breakdown, read `AGENTS.md`. Short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+Menu bar app (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
 
 ## Project structure
 
 ```
-leanring-buddy/          # Swift source (yes, the typo stays)
+leanring-buddy/          # Swift source
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
   ClaudeAPI.swift           # Claude streaming client
@@ -152,11 +112,5 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
   src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+AGENTS.md                # Full architecture doc
 ```
-
-## Contributing
-
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
