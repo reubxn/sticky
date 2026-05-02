@@ -16,6 +16,16 @@ import SwiftUI
 struct ChatView: View {
     @ObservedObject var chatViewModel: ChatViewModel
 
+    /// Avatar to render next to assistant replies that didn't capture a
+    /// persona snapshot (e.g. older messages, or replies sent before
+    /// CompanionManager was wired in). Falls back to the `.me` pseudo-
+    /// persona avatar so the chat still shows a face. Computed once per
+    /// view body to avoid the synchronous PersonaStore lookup churning
+    /// while the user types.
+    private var defaultAssistantAvatar: PersonaAvatar {
+        return PersonaStore.mePseudoPersona.avatar
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             // Paper background — extends edge-to-edge so the window has the
@@ -43,20 +53,17 @@ struct ChatView: View {
 
     // MARK: - Header
 
-    /// Editorial-style header: wordmark on the left, a single ghost
-    /// "new chat" icon-button on the right. No background fill — the
+    /// Editorial-style header: a "Chat" eyebrow on the left and a single
+    /// ghost "new chat" icon-button on the right. No background fill — the
     /// header sits directly on the paper and is separated from content
     /// only by a hairline rule.
     private var chatHeader: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: ElevenLabsBrand.Spacing.sm) {
-                ElevenLabsWordmark(size: 16)
-
                 Text("Chat")
                     .font(ElevenLabsBrand.Typography.eyebrow)
                     .tracking(0.2)
                     .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
-                    .padding(.leading, ElevenLabsBrand.Spacing.xs)
 
                 Spacer()
 
@@ -107,7 +114,10 @@ struct ChatView: View {
                             .padding(.top, ElevenLabsBrand.Spacing.lg)
                     } else {
                         ForEach(chatViewModel.messages) { message in
-                            ChatMessageCard(message: message)
+                            ChatMessageCard(
+                                message: message,
+                                fallbackAssistantAvatar: defaultAssistantAvatar
+                            )
                                 .id(message.id)
                         }
                     }
@@ -295,21 +305,26 @@ struct ChatView: View {
 // MARK: - Message Card
 
 /// One message in the transcript. User messages are right-aligned ink
-/// cards (black fill, white text). Assistant messages are left-aligned
-/// paper cards prefixed with the "II" wordmark mark, so the brand
-/// identity is implicit in every reply without a "Sticky" role label
-/// taking up vertical space.
+/// cards (black fill, white text), with the screenshot Sticky saw at
+/// send-time rendered underneath the bubble so the user can see exactly
+/// what the model was looking at. Assistant messages are left-aligned
+/// paper cards prefixed by the active persona's circular avatar — no
+/// generic ElevenLabs wordmark — so it always reads as "the persona is
+/// the one talking", matching the voice surface.
 private struct ChatMessageCard: View {
     let message: ChatMessage
+    /// Avatar to fall back on when the assistant message has no persona
+    /// snapshot (older messages from before persona-aware chat landed).
+    let fallbackAssistantAvatar: PersonaAvatar
 
     var body: some View {
         HStack(alignment: .top, spacing: ElevenLabsBrand.Spacing.sm) {
             switch message.role {
             case .user:
                 Spacer(minLength: 60)
-                userCard
+                userCardWithScreenshot
             case .assistant:
-                assistantMark
+                assistantPersonaAvatar
                 assistantCard
                 Spacer(minLength: 40)
             }
@@ -317,6 +332,22 @@ private struct ChatMessageCard: View {
     }
 
     // MARK: User
+
+    /// User bubble plus the captured screenshot rendered as a thumbnail
+    /// directly underneath. The two are stacked so they appear visually
+    /// linked (this message → these are the pixels Sticky saw). The
+    /// screenshot is omitted when no capture is attached — older
+    /// messages or sends where the capture failed shouldn't show a
+    /// broken empty frame.
+    private var userCardWithScreenshot: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            userCard
+            if let screenshotJPEG = message.attachedScreenshotJPEG,
+               let nsImage = NSImage(data: screenshotJPEG) {
+                attachedScreenshotThumbnail(nsImage: nsImage)
+            }
+        }
+    }
 
     private var userCard: some View {
         Text(message.text)
@@ -334,22 +365,43 @@ private struct ChatMessageCard: View {
             )
     }
 
+    /// Compact thumbnail of the screenshot Sticky saw when this message
+    /// was sent. Capped to 460pt wide (matching the bubble) and
+    /// `scaledToFit` so portrait/landscape monitors both render
+    /// reasonably without distortion.
+    private func attachedScreenshotThumbnail(nsImage: NSImage) -> some View {
+        Image(nsImage: nsImage)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: 460, maxHeight: 220, alignment: .trailing)
+            .clipShape(RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+            )
+    }
+
     // MARK: Assistant
 
-    /// Two short vertical bars matching the "II" of the wordmark. Sits to
-    /// the left of every assistant card as the brand identity for the
-    /// reply — no explicit "Sticky" label needed.
-    private var assistantMark: some View {
-        HStack(spacing: 2) {
-            Capsule()
-                .fill(ElevenLabsBrand.Colors.inkPure)
-                .frame(width: 3, height: 14)
-            Capsule()
-                .fill(ElevenLabsBrand.Colors.inkPure)
-                .frame(width: 3, height: 14)
+    /// Circular avatar of the persona who produced this reply. Resolves
+    /// from `personaSelectionAtCreation` when set so the avatar is
+    /// stable per-message even after the user switches persona; falls
+    /// back to whatever avatar the chat view passed in when the
+    /// snapshot is missing.
+    private var assistantPersonaAvatar: some View {
+        PersonaAvatarView(
+            avatar: resolvedAssistantAvatar,
+            diameter: 28
+        )
+        .padding(.top, 4)
+    }
+
+    private var resolvedAssistantAvatar: PersonaAvatar {
+        if let personaSelection = message.personaSelectionAtCreation,
+           let wheelPersona = PersonaStore.wheelPersonaForSelection(personaSelection) {
+            return wheelPersona.avatar
         }
-        .padding(.top, 14)
-        .padding(.leading, 2)
+        return fallbackAssistantAvatar
     }
 
     @ViewBuilder

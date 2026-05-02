@@ -98,7 +98,7 @@ final class MenuBarPanelManager: NSObject {
     /// otherwise the new window can appear behind the still-visible
     /// menu bar panel and the click looks like it did nothing.
     func openChatWindow() {
-        ChatWindowController.shared.toggleChatWindow()
+        ChatWindowController.shared.toggleChatWindow(companionManager: companionManager)
         hidePanel()
     }
 
@@ -122,11 +122,16 @@ final class MenuBarPanelManager: NSObject {
     /// persona rows). Hides the mini panel after for the same reason
     /// as `openTasteLibraryWindow` and `openChatWindow` — otherwise
     /// the new window appears behind the still-visible panel.
-    func openDashboardWindow(focusedPersonaId: String?) {
+    func openDashboardWindow(focusedPersonaId: String?, initialSection: DashboardSection? = nil) {
+        // Inject the shared CompanionManager so the in-dashboard live
+        // chat and memory tabs can share state with the menu bar and
+        // floating chat window.
+        DashboardWindowController.shared.setCompanionManager(companionManager)
+
         if let focusedPersonaId {
             DashboardWindowController.shared.openShowingPersona(personaId: focusedPersonaId)
         } else {
-            DashboardWindowController.shared.toggleDashboardWindow(initialSection: nil)
+            DashboardWindowController.shared.toggleDashboardWindow(initialSection: initialSection)
         }
         hidePanel()
     }

@@ -29,15 +29,28 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     /// One persistent ChatViewModel for the lifetime of the app so the
     /// transcript survives the user closing and re-opening the window.
     /// Hitting "New chat" inside the window is the explicit way to
-    /// clear it.
-    private let chatViewModel = ChatViewModel()
+    /// clear it. Public so the Dashboard can embed the same live chat
+    /// surface inline (in its sidebar tab) and share state with the
+    /// floating chat window — sending from one shows up in the other.
+    let chatViewModel = ChatViewModel()
 
     private let initialWindowSize = NSSize(width: 540, height: 640)
 
     /// Toggles the chat window: opens it if hidden, brings it to front
     /// if already open but obscured, hides it if it's already key.
     /// Wired to the menu bar panel's "Open chat" button.
-    func toggleChatWindow() {
+    ///
+    /// `companionManager` is injected so the chat view model can mirror
+    /// the voice flow's persona behavior (system prompt with
+    /// soul + taste, persona avatar on assistant replies). Optional so
+    /// the chat keeps working even when the menu bar panel hasn't been
+    /// constructed yet — falls back to a generic Sticky prompt with no
+    /// persona injection in that case.
+    func toggleChatWindow(companionManager: CompanionManager? = nil) {
+        if let companionManager {
+            chatViewModel.setCompanionManager(companionManager)
+        }
+
         if let chatWindow, chatWindow.isVisible {
             // Already on screen — bring to front if not key, hide if it is.
             if chatWindow.isKeyWindow {

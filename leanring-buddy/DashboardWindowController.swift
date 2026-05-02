@@ -28,7 +28,22 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
 
     private var dashboardWindow: NSWindow?
 
+    /// Weak reference to the shared CompanionManager. Threaded in by
+    /// `MenuBarPanelManager` the first time the dashboard is opened so
+    /// the in-dashboard live chat and memory tabs can share the same
+    /// companion state (persona, taste profile, model selection) the
+    /// menu bar and floating chat use. Weak because CompanionManager
+    /// owns the app lifecycle — the dashboard is a leaf and must never
+    /// extend it.
+    private weak var companionManager: CompanionManager?
+
     private let initialWindowSize = NSSize(width: 920, height: 640)
+
+    /// Inject the shared CompanionManager. Safe to call multiple times —
+    /// last write wins.
+    func setCompanionManager(_ companionManager: CompanionManager) {
+        self.companionManager = companionManager
+    }
 
     /// Toggles visibility: show if hidden, bring to front if behind,
     /// hide if it's already key. Wired to the mini-panel's "Open
@@ -69,11 +84,11 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     /// the user clicks a persona row to view it.
     func openShowingPersona(personaId: String) {
         DashboardNavigationState.shared.focusedPersonaId = personaId
-        toggleDashboardWindow(initialSection: .personas)
+        toggleDashboardWindow(initialSection: .tastes)
     }
 
     private func createDashboardWindow() -> NSWindow {
-        let dashboardRootView = DashboardView()
+        let dashboardRootView = DashboardView(companionManager: companionManager)
         let hostingController = NSHostingController(rootView: dashboardRootView)
 
         let window = NSWindow(

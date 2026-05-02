@@ -274,6 +274,17 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
+    /// Set to `.requestFinalTranscript` or `.cancel` when the user releases the
+    /// push-to-talk key (or invokes `cancelCurrentDictation`) before the
+    /// transcription session finishes opening. `startRecognitionSession`
+    /// honors it as soon as the session is adopted, so a fast tap-and-release
+    /// still goes through the normal finalize path instead of leaving the
+    /// session orphaned with no audio.
+    private enum PendingSessionAction {
+        case requestFinalTranscript
+        case cancel
+    }
+    private var pendingSessionActionWhileOpening: PendingSessionAction?
     /// Holds audio frames captured between the audio engine starting and
     /// the transcription session being adopted. See `startRecognitionSession`
     /// for why this exists. Recreated per session.

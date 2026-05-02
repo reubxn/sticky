@@ -76,7 +76,7 @@ struct DashboardSidebar: View {
                     .frame(width: 20)
                     .foregroundColor(
                         isSelected
-                            ? ElevenLabsBrand.Colors.inkPure
+                            ? ElevenLabsBrand.Colors.tasteAccent
                             : ElevenLabsBrand.Colors.inkSecondary
                     )
 

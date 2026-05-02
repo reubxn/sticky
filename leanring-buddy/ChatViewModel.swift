@@ -34,19 +34,34 @@ struct ChatMessage: Identifiable, Equatable {
     /// The view uses this to render a subtle "typing" affordance.
     var isStreaming: Bool
     let createdAt: Date
+    /// JPEG screenshot captured at the moment this user message was sent,
+    /// rendered inline beneath the bubble so the user can see what Sticky
+    /// was looking at when answering. Nil for assistant messages and for
+    /// older user messages that pre-date this feature. Populated during
+    /// `runChatSend` once `CompanionScreenCaptureUtility` returns.
+    var attachedScreenshotJPEG: Data?
+    /// Snapshot of which persona was active when the assistant produced
+    /// this reply, so the avatar shown next to the bubble doesn't change
+    /// retroactively if the user switches persona afterwards. Populated
+    /// for assistant messages only.
+    var personaSelectionAtCreation: PersonaSelection?
 
     init(
         id: UUID = UUID(),
         role: Role,
         text: String,
         isStreaming: Bool = false,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        attachedScreenshotJPEG: Data? = nil,
+        personaSelectionAtCreation: PersonaSelection? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.isStreaming = isStreaming
         self.createdAt = createdAt
+        self.attachedScreenshotJPEG = attachedScreenshotJPEG
+        self.personaSelectionAtCreation = personaSelectionAtCreation
     }
 }
 
@@ -58,20 +73,30 @@ final class ChatViewModel: ObservableObject {
     /// before/independently of the voice manager.
     private static let workerChatProxyURL = "https://clicky-proxy.reubanramsden.workers.dev/chat"
 
-    /// System prompt for the chat surface. Deliberately generic — the
+    /// Base text rules for the chat surface. Deliberately generic — the
     /// chat is for asking questions about whatever is on screen, with
     /// less of the "spoken-word, point-at-things" framing the voice
     /// system prompt has. No `[POINT:...]` tag instructions because the
-    /// chat doesn't drive the cursor overlay.
-    private static let chatSystemPrompt = """
-    You are Sticky, a helpful AI assistant in a chat window on the user's Mac. \
+    /// chat doesn't drive the cursor overlay. The active persona's
+    /// identity (soul + taste, or roleplay framing for a teammate) is
+    /// composed in front of this in `composeSystemPromptForActivePersona`.
+    private static let baseChatRules = """
     Each user message is accompanied by a fresh screenshot of every connected \
     display so you can see exactly what they're looking at right now. Use the \
     screenshot to answer concretely about what's on screen — refer to specific \
     UI elements, text, errors, or content visible in the image. If the user's \
     question is not about what's on screen, just answer the question normally. \
     Keep replies clear and conversational. Use markdown when it helps \
-    (code blocks for code, lists for steps), but don't over-format short replies.
+    (code blocks for code, lists for steps), but don't over-format short replies. \
+    Do not output `[POINT:...]` tags or any cursor-pointing instructions — this \
+    is a text chat, not a voice/cursor surface.
+    """
+
+    /// Default identity paragraph used when no teammate persona is
+    /// active. Mirrors the "you're sticky" line from the voice prompt
+    /// so the chat agent has a recognisable identity to fall back on.
+    private static let stickyIdentityParagraph = """
+    You are Sticky, a helpful AI assistant in a chat window on the user's Mac.
     """
 
     @Published private(set) var messages: [ChatMessage] = []
@@ -105,6 +130,22 @@ final class ChatViewModel: ObservableObject {
     /// chat — not a new entry per message. Reset on `startNewChat`
     /// so the next conversation starts a separate archive file.
     private var activeChatHistorySessionId: String = UUID().uuidString
+
+    /// Weak reference to the shared CompanionManager so the chat surface
+    /// can read the active persona, taste profile, and team scope at
+    /// send-time. Weak because CompanionManager owns the app lifecycle —
+    /// the chat view model is a leaf and must never extend it. Nil when
+    /// the chat is created before CompanionManager exists (e.g. in
+    /// SwiftUI previews); in that case we fall back to a generic Sticky
+    /// system prompt with no persona injection.
+    private weak var companionManagerForPersona: CompanionManager?
+
+    /// Inject the shared CompanionManager so the chat can mirror voice's
+    /// persona behavior. Called once by `ChatWindowController` after both
+    /// objects exist. Safe to call multiple times — last write wins.
+    func setCompanionManager(_ companionManager: CompanionManager) {
+        companionManagerForPersona = companionManager
+    }
 
     /// Picks up the latest model selection from UserDefaults. Called by
     /// the chat window whenever it's shown so swapping Sonnet ↔ Opus in
@@ -140,10 +181,20 @@ final class ChatViewModel: ObservableObject {
         guard !isResponding else { return }
 
         let userMessage = ChatMessage(role: .user, text: trimmedDraft)
-        let assistantPlaceholder = ChatMessage(role: .assistant, text: "", isStreaming: true)
+        // Snapshot the persona at send-time so the assistant avatar
+        // shown next to the reply doesn't shift if the user switches
+        // persona mid-stream.
+        let personaSelectionAtSendTime = companionManagerForPersona?.personaSelection
+        let assistantPlaceholder = ChatMessage(
+            role: .assistant,
+            text: "",
+            isStreaming: true,
+            personaSelectionAtCreation: personaSelectionAtSendTime
+        )
 
         messages.append(userMessage)
         messages.append(assistantPlaceholder)
+        let userMessageID = userMessage.id
         let assistantPlaceholderID = assistantPlaceholder.id
 
         draftMessage = ""
@@ -156,12 +207,20 @@ final class ChatViewModel: ObservableObject {
         let priorMessages = messages.dropLast(2)
         let conversationHistory = Self.buildConversationHistory(from: Array(priorMessages))
 
+        // Build the persona-aware system prompt now (on the main actor)
+        // so the Claude call site doesn't have to hop back to the main
+        // actor to read CompanionManager state. Captured once per send;
+        // mid-stream persona changes don't affect the in-flight reply.
+        let composedSystemPrompt = composeSystemPromptForActivePersona()
+
         currentSendTask?.cancel()
         currentSendTask = Task { [weak self] in
             await self?.runChatSend(
                 userText: trimmedDraft,
+                userMessageID: userMessageID,
                 assistantPlaceholderID: assistantPlaceholderID,
-                conversationHistory: conversationHistory
+                conversationHistory: conversationHistory,
+                composedSystemPrompt: composedSystemPrompt
             )
         }
     }
@@ -172,8 +231,10 @@ final class ChatViewModel: ObservableObject {
     /// placeholder).
     private func runChatSend(
         userText: String,
+        userMessageID: UUID,
         assistantPlaceholderID: UUID,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)]
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        composedSystemPrompt: String
     ) async {
         defer {
             isResponding = false
@@ -181,6 +242,22 @@ final class ChatViewModel: ObservableObject {
 
         do {
             let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+
+            // Pick the screenshot to render inline beneath the user's
+            // message. Prefer the screen the cursor is on so what the
+            // user sees attached matches what they were looking at when
+            // they hit send. Falls back to the first screen if the
+            // cursor screen flag isn't set on any capture.
+            let screenshotForInlineDisplay: Data? = {
+                if let cursorCapture = screenCaptures.first(where: { $0.isCursorScreen }) {
+                    return cursorCapture.imageData
+                }
+                return screenCaptures.first?.imageData
+            }()
+            attachScreenshotToUserMessage(
+                userMessageID: userMessageID,
+                screenshotJPEG: screenshotForInlineDisplay
+            )
 
             // Same labeling pattern as the voice flow so Claude has the
             // pixel dimensions of each screenshot — useful if it ever
@@ -194,7 +271,7 @@ final class ChatViewModel: ObservableObject {
 
             let (_, _) = try await claudeAPI.analyzeImageStreaming(
                 images: labeledImagesForClaude,
-                systemPrompt: Self.chatSystemPrompt,
+                systemPrompt: composedSystemPrompt,
                 conversationHistory: conversationHistory,
                 userPrompt: userText,
                 onTextChunk: { @MainActor [weak self] accumulatedStreamedText in
@@ -228,6 +305,13 @@ final class ChatViewModel: ObservableObject {
     private func finalizeAssistantMessage(id: UUID) {
         guard let messageIndex = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[messageIndex].isStreaming = false
+        // Strip the trailing `[USED:...]` tag injected by the taste-aware
+        // system prompt — chat doesn't render the applied-principles
+        // chip, so the tag would just look like noise to the user.
+        let (cleanedText, _) = TastePromptBuilder.parseUsedTag(
+            from: messages[messageIndex].text
+        )
+        messages[messageIndex].text = cleanedText
         // Archive (or update) the session on disk so the Dashboard's
         // Chats tab + the mini panel's recent-activity feed can show
         // it. Overwrites the same file each time the chat grows.
@@ -256,6 +340,119 @@ final class ChatViewModel: ObservableObject {
 
     private func removeAssistantMessage(id: UUID) {
         messages.removeAll { $0.id == id }
+    }
+
+    /// Stores the captured cursor-screen JPEG on the user message so the
+    /// view can render it inline as a thumbnail under the bubble. Called
+    /// from `runChatSend` once the screen-capture utility returns.
+    private func attachScreenshotToUserMessage(userMessageID: UUID, screenshotJPEG: Data?) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == userMessageID }) else { return }
+        messages[messageIndex].attachedScreenshotJPEG = screenshotJPEG
+    }
+
+    // MARK: - Persona-aware system prompt
+
+    /// Composes the system prompt for the chat send. Mirrors voice's
+    /// behavior:
+    /// - When a teammate persona is active, prepend the roleplay framing
+    ///   header + the teammate's `soul` + their bundled taste principles.
+    ///   The default Sticky identity paragraph is dropped so the model
+    ///   doesn't fight the persona.
+    /// - When `.me` / `.team` is active, use the Sticky identity paragraph
+    ///   plus the user's saved taste profile (and team profile when scope
+    ///   is `.team`) as judgment context.
+    /// - When `companionManagerForPersona` is nil (e.g. previews), fall
+    ///   back to the bare Sticky identity + base rules.
+    ///
+    /// All variants append `baseChatRules` so the chat-specific format
+    /// guidance (markdown, no `[POINT:...]` tags, screenshot framing) is
+    /// always present regardless of persona.
+    private func composeSystemPromptForActivePersona() -> String {
+        guard let companionManager = companionManagerForPersona else {
+            return Self.stickyIdentityParagraph + "\n\n" + Self.baseChatRules
+        }
+
+        if let teammateBundle = companionManager.activeTeammateBundle {
+            return composeSystemPromptForTeammatePersona(teammateBundle: teammateBundle)
+        }
+
+        return composeSystemPromptForOwnerPersona(companionManager: companionManager)
+    }
+
+    /// Builds the chat system prompt when the user is wearing a teammate's
+    /// persona. Mirrors `CompanionManager.composeSystemPromptForTeammatePersona`
+    /// — same roleplay framing, same soul + taste injection — adapted for
+    /// the chat surface (no pointing tags, markdown encouraged).
+    private func composeSystemPromptForTeammatePersona(teammateBundle: PersonaBundle) -> String {
+        let teammateTasteContextBlock = TastePromptBuilder.tasteContextBlock(
+            personalProfile: teammateBundle.taste,
+            teamProfile: nil,
+            scope: .personal
+        )
+
+        let roleplayFramingHeader = """
+        you are roleplaying as \(teammateBundle.displayName) — \(teammateBundle.role ?? "teammate"). this is not a character you reference, it's the identity you fully inhabit for this entire conversation.
+
+        embody them completely: their tone, cadence, vocabulary, opinions, areas of expertise, blind spots, and quirks. speak as them in the first person. when the user asks who you are, who they're talking to, what your name is, or what you do, answer in-character — give your name (\(teammateBundle.displayName)), your role (\(teammateBundle.role ?? "teammate")), and a sentence or two of context that fits the personality below. do not say you are sticky, do not say you are an ai, do not break character. if asked something \(teammateBundle.displayName) wouldn't know about, react the way they would — curious, dismissive, deflecting to their own expertise — rather than refusing.
+
+        the personality, voice, and values you should emulate are described next.
+        """
+
+        var promptSections: [String] = [roleplayFramingHeader]
+
+        if !teammateBundle.soul.isEmpty {
+            promptSections.append(teammateBundle.soul)
+        }
+
+        if !teammateTasteContextBlock.isEmpty {
+            promptSections.append(teammateTasteContextBlock)
+        }
+
+        promptSections.append("stay fully in character as \(teammateBundle.displayName) for every reply. the rules below are about response format (length, register, markdown) — apply them through \(teammateBundle.displayName)'s voice, not by reverting to a generic assistant.")
+
+        promptSections.append(Self.baseChatRules)
+
+        return promptSections.joined(separator: "\n\n")
+    }
+
+    /// Builds the chat system prompt when persona is `.me` or `.team`.
+    /// Uses the user's own taste profile from disk (preferring TASTE.md,
+    /// falling back to the legacy JSON store) and unions in the team
+    /// profile when scope is `.team`. Stays as Sticky — no roleplay
+    /// framing — but grounds replies in the saved principles.
+    private func composeSystemPromptForOwnerPersona(companionManager: CompanionManager) -> String {
+        let identitySection = Self.stickyIdentityParagraph
+
+        // Prefer the owner's TASTE.md so freshly-taught principles show
+        // up in chat without an app restart, mirroring the voice flow.
+        let loadedPersonalProfile: TasteProfile? = {
+            if let ownerBundle = PersonaStore.myCurrentBundle() {
+                return ownerBundle.taste
+            }
+            return try? TasteProfileStore.loadProfile()
+        }()
+
+        guard let personalProfile = loadedPersonalProfile else {
+            return identitySection + "\n\n" + Self.baseChatRules
+        }
+
+        let activeScope = companionManager.tasteScope
+        let loadedTeamProfile: TeamTasteProfile? = (activeScope == .team)
+            ? TeamTasteProfileStore.loadTeamProfile()
+            : nil
+
+        let tasteContextBlock = TastePromptBuilder.buildTasteContextBlock(
+            personalProfile: personalProfile,
+            teamProfile: loadedTeamProfile,
+            scope: activeScope
+        )
+
+        if tasteContextBlock.promptText.isEmpty {
+            return identitySection + "\n\n" + Self.baseChatRules
+        }
+
+        return [identitySection, tasteContextBlock.promptText, Self.baseChatRules]
+            .joined(separator: "\n\n")
     }
 
     /// Translates an arbitrary thrown error into a short, user-readable
