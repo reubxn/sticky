@@ -772,6 +772,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
+| `MacDropdownComponents.swift` | ~265 | Reusable Apple-native dropdown primitives styled like macOS Control Center (Wi-Fi/Focus/Sound). Exports `DropdownVisualEffectView` (NSVisualEffectView wrapper), `MacDropdownContainer` (translucent `.menu` material + rounded corners + hairline border + soft shadow), `DropdownSection`, `DropdownRow` (circular icon well, hover highlight, trailing slot), and a `.macDropdown(isPresented:content:)` view modifier wrapping SwiftUI's `.popover`. Uses native semantic colors so it adapts to light/dark mode. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
