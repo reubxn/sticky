@@ -181,10 +181,40 @@ struct BlueCursorView: View {
         "found it!"
     ]
 
+    // MARK: - Orb & edge glow visibility
+
+    /// True when the orb itself should be on-screen. The orb no longer
+    /// follows the cursor: it appears only when Clicky is "showing the
+    /// user something" — i.e. flying to or pointing at a detected element.
+    /// Idle, listening, and processing all show nothing on this screen
+    /// except (during listening) the audio-reactive edge glow.
+    private var orbShouldBeVisible: Bool {
+        guard buddyIsVisibleOnThisScreen else { return false }
+        return buddyNavigationMode == .navigatingToTarget
+            || buddyNavigationMode == .pointingAtTarget
+    }
+
+    /// True when the screen-edge glow should be on this screen. Only
+    /// shown while the user is holding push-to-talk; replaces the old
+    /// cursor-anchored mic indicator.
+    private var edgeGlowShouldBeVisible: Bool {
+        buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening
+    }
+
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            // Screen-edge glow — visible while the user is holding
+            // push-to-talk. This is the only ambient indicator now;
+            // it replaces the old cursor-anchored waveform/orb mic
+            // indicator. Sits at the back of the ZStack so all other
+            // UI (bubbles, orb) renders cleanly on top.
+            EdgeGlowView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+                .opacity(edgeGlowShouldBeVisible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.4), value: companionManager.voiceState)
+                .animation(.linear(duration: 0.08), value: companionManager.currentAudioPowerLevel)
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
@@ -294,47 +324,20 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Blue triangle cursor — shown when idle or while TTS is playing (responding).
-            // All three states (triangle, waveform, spinner) stay in the view tree
-            // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
-            // them (which caused a visible cursor "pop").
-            //
-            // During cursor following: fast spring animation for snappy tracking.
-            // During navigation: NO implicit animation — the frame-by-frame bezier
-            // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            // Mystical orb — only visible when Clicky is "showing the user
+            // something" (flying to a target or pointing at one). It does
+            // NOT follow the cursor. During the bezier flight, position is
+            // driven frame-by-frame by the navigation timer; we suppress
+            // the implicit animation so the arc stays smooth.
+            // The orb is symmetric so triangleRotationDegrees no longer
+            // drives a visible rotation; the directional cue during flight
+            // comes from buddyFlightScale (grows mid-arc, shrinks on landing).
+            MysticalOrbView()
+                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(orbShouldBeVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
-                .animation(
-                    buddyNavigationMode == .followingCursor
-                        ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
-                        : nil,
-                    value: cursorPosition
-                )
-                .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
-                .animation(
-                    buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
-                    value: triangleRotationDegrees
-                )
-
-            // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
-
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+                .animation(.easeInOut(duration: 0.4), value: orbShouldBeVisible)
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -770,6 +773,241 @@ private struct BlueCursorSpinnerView: View {
                     isSpinning = true
                 }
             }
+    }
+}
+
+// MARK: - Edge Glow
+
+/// A blue glow anchored to the bottom edge of the screen while the user
+/// is holding push-to-talk. Built as four stacked bottom-up gradient
+/// layers — modeled on a Figma-style stack of inset shadows — that
+/// together form a soft, dimensional luminescence: a broad deep-blue
+/// halo, a lighter mid bloom, a bright plus-lighter highlight at the
+/// screen edge, and a subtle base accent. The center stays fully
+/// transparent so the user's work is never occluded. Overall opacity is
+/// driven by the live mic audio power level, and a slow orb-like
+/// breathing + drift animation keeps the glow alive even in silence.
+private struct EdgeGlowView: View {
+    let audioPowerLevel: CGFloat
+
+    // Color stops mirror the four inset shadows from the reference icon
+    // design (deep blue → light blue → white highlight → subtle base).
+    private let deepBlue = Color(hex: "#144CCD")
+    private let midBlue = Color(hex: "#6694FF")
+    private let baseBlue = Color(hex: "#2365FF")
+
+    var body: some View {
+        // TimelineView drives a continuous slow animation independent of
+        // the audio reactivity, so the orb keeps "living" between words.
+        TimelineView(.animation) { timeline in
+            let elapsedSeconds = timeline.date.timeIntervalSinceReferenceDate
+
+            // Slow breathing oscillator (~10s period) — gently scales the
+            // glow's vertical reach so it inhales and exhales like an orb.
+            let slowBreath = (sin(elapsedSeconds * 0.62) + 1) / 2  // 0...1
+            // Even slower lateral drift (~16s period) — shifts the layered
+            // glows horizontally by small offsets in opposite directions
+            // to give the sense of internal swirling light.
+            let slowDrift = sin(elapsedSeconds * 0.39)             // -1...1
+
+            let breathScale = 1.0 + slowBreath * 0.08              // 1.00...1.08
+            let lateralDriftPoints = CGFloat(slowDrift) * 24       // ±24pt
+
+            ZStack(alignment: .bottom) {
+                // Layer 1 — broad deep-blue halo. Reaches highest up the
+                // screen, very soft, low opacity. The atmospheric bed.
+                BottomGradientGlowLayer(
+                    color: deepBlue,
+                    topOpacity: 0.0,
+                    bottomOpacity: 0.85,
+                    height: 520,
+                    blurRadius: 90
+                )
+                .scaleEffect(x: 1.0, y: breathScale, anchor: .bottom)
+                .offset(x: lateralDriftPoints * 0.6)
+
+                // Layer 2 — mid lighter-blue bloom. Adds saturation and
+                // body to the middle of the glow.
+                BottomGradientGlowLayer(
+                    color: midBlue,
+                    topOpacity: 0.0,
+                    bottomOpacity: 0.55,
+                    height: 280,
+                    blurRadius: 55
+                )
+                .scaleEffect(x: 1.0, y: 1.0 + slowBreath * 0.12, anchor: .bottom)
+                .offset(x: -lateralDriftPoints * 0.5)
+
+                // Layer 3 — bright crisp white highlight right at the
+                // screen edge. Plus-lighter blend gives the luminous,
+                // almost specular feel of a glowing orb's hot core.
+                BottomGradientGlowLayer(
+                    color: .white,
+                    topOpacity: 0.0,
+                    bottomOpacity: 0.45,
+                    height: 110,
+                    blurRadius: 26
+                )
+                .blendMode(.plusLighter)
+                .scaleEffect(x: 1.0, y: 1.0 + slowBreath * 0.18, anchor: .bottom)
+                .offset(x: lateralDriftPoints * 0.35)
+
+                // Layer 4 — subtle base accent. A thin extra wash of blue
+                // along the very bottom edge so the highlight doesn't
+                // read as pure white.
+                BottomGradientGlowLayer(
+                    color: baseBlue,
+                    topOpacity: 0.0,
+                    bottomOpacity: 0.35,
+                    height: 40,
+                    blurRadius: 8
+                )
+            }
+            .opacity(audioReactiveIntensity)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Same easing curve the old waveform indicator used. Keeps a soft
+    /// baseline glow even in silence (so the user knows the mic is hot)
+    /// and ramps up to full intensity when they speak.
+    private var audioReactiveIntensity: Double {
+        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
+        let easedAudioPowerLevel = pow(min(Double(normalizedAudioPowerLevel) * 2.85, 1), 0.76)
+        let baselineIntensity: Double = 0.55
+        let audioReactiveBoost: Double = 0.45
+        return baselineIntensity + easedAudioPowerLevel * audioReactiveBoost
+    }
+}
+
+/// A single bottom-anchored vertical-gradient slab used as one of the
+/// stacked layers inside `EdgeGlowView`. The gradient fades from fully
+/// transparent at the top to `bottomOpacity` of `color` at the bottom,
+/// then a blur softens the transition so each layer reads as a glow
+/// rather than a hard band.
+private struct BottomGradientGlowLayer: View {
+    let color: Color
+    let topOpacity: Double
+    let bottomOpacity: Double
+    let height: CGFloat
+    let blurRadius: CGFloat
+
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: color.opacity(topOpacity), location: 0),
+                .init(color: color.opacity(bottomOpacity), location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: height)
+        .blur(radius: blurRadius)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+}
+
+// MARK: - Mystical Orb
+
+/// A glowing multi-color orb that replaces the arrow cursor when idle or
+/// while TTS is playing. Built from stacked layers:
+/// - a broad soft halo that pulses
+/// - a mid glow that gives the body its color depth
+/// - a swirling angular-gradient body (pink → purple → blue) that rotates slowly
+/// - a bright inner core for a "magic point of light" feel
+private struct MysticalOrbView: View {
+    @State private var swirlRotationDegrees: Double = 0
+    @State private var pulseScale: CGFloat = 1.0
+
+    // Mystical blue palette — deep blue body with cyan/light-blue/violet accents.
+    private let auraBlueDeep = Color(hex: "#3380FF")
+    private let auraCyan = Color(hex: "#5EEAD4")
+    private let auraBlueLight = Color(hex: "#B3D9FF")
+    private let auraViolet = Color(hex: "#7C5DFA")
+
+    var body: some View {
+        ZStack {
+            // Outer halo — broad soft glow that pulses slowly
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            auraBlueDeep.opacity(0.4),
+                            auraViolet.opacity(0.22),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 4,
+                        endRadius: 44
+                    )
+                )
+                .frame(width: 88, height: 88)
+                .scaleEffect(pulseScale)
+
+            // Mid glow — gives the orb a colored "atmosphere"
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            auraBlueLight.opacity(0.9),
+                            auraBlueDeep.opacity(0.65),
+                            auraViolet.opacity(0.3),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 2,
+                        endRadius: 28
+                    )
+                )
+                .frame(width: 56, height: 56)
+
+            // Swirling body — angular gradient slowly rotates so the colors
+            // appear to drift around the inside of the orb. A small blur
+            // softens the gradient seams so it reads as energy rather than
+            // a hard-edged pinwheel.
+            Circle()
+                .fill(
+                    AngularGradient(
+                        colors: [
+                            auraBlueDeep,
+                            auraViolet,
+                            auraCyan,
+                            auraBlueLight,
+                            auraBlueDeep
+                        ],
+                        center: .center,
+                        angle: .degrees(swirlRotationDegrees)
+                    )
+                )
+                .frame(width: 28, height: 28)
+                .blur(radius: 2.5)
+
+            // Bright inner core — keeps the orb feeling alive and pinpointable
+            // so it still functions as a cursor target.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color.white.opacity(0.95),
+                            Color(hex: "#D6ECFF").opacity(0.75),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 9
+                    )
+                )
+                .frame(width: 18, height: 18)
+        }
+        .frame(width: 88, height: 88)
+        .onAppear {
+            withAnimation(.linear(duration: 6.0).repeatForever(autoreverses: false)) {
+                swirlRotationDegrees = 360
+            }
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                pulseScale = 1.15
+            }
+        }
     }
 }
 

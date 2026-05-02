@@ -3,8 +3,12 @@
 //  leanring-buddy
 //
 //  Streams text-to-speech audio from ElevenLabs and plays it back
-//  through the system audio output. Uses the streaming endpoint so
-//  playback begins before the full audio has been generated.
+//  through the system audio output.
+//
+//  Calls ElevenLabs directly instead of via the Cloudflare Worker because
+//  ElevenLabs' free tier blocks requests from datacenter / proxy IPs.
+//  The API key + voice ID are read at runtime from a local secrets.plist
+//  in Application Support, so they never ship in the repo or in the binary.
 //
 
 import AVFoundation
@@ -12,16 +16,13 @@ import Foundation
 
 @MainActor
 final class ElevenLabsTTSClient {
-    private let proxyURL: URL
     private let session: URLSession
 
     /// The audio player for the current TTS playback. Kept alive so the
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
 
-    init(proxyURL: String) {
-        self.proxyURL = URL(string: proxyURL)!
-
+    init() {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
@@ -31,8 +32,24 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
-        var request = URLRequest(url: proxyURL)
+        guard let apiKey = AppBundleConfiguration.stringValue(forKey: "ELEVENLABS_API_KEY") else {
+            throw NSError(domain: "ElevenLabsTTS", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Missing ELEVENLABS_API_KEY in secrets.plist"])
+        }
+
+        guard let voiceId = AppBundleConfiguration.stringValue(forKey: "ELEVENLABS_VOICE_ID") else {
+            throw NSError(domain: "ElevenLabsTTS", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Missing ELEVENLABS_VOICE_ID in secrets.plist"])
+        }
+
+        guard let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)") else {
+            throw NSError(domain: "ElevenLabsTTS", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Invalid ElevenLabs URL"])
+        }
+
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
 

@@ -35,6 +35,45 @@ ReverseClicky/
 - `ReverseClicky/` is added to Xcode as a **folder reference** (blue folder), not a group. New `.swift` files inside it are picked up automatically and do **not** require `project.pbxproj` edits.
 - Branches: `feature/capture` (Reuban), `feature/analysis` (Leonardo). Never cross-merge between feature branches — both rebase on `main`. Reuban merges first, Leonardo rebases and merges second.
 
+### Architecture: hold-to-teach (the actual approach — supersedes session-based capture)
+
+We pivoted away from "start a session, capture screenshots every 4s, analyze 12 frames at the end." Instead, **Reverse Clicky reuses Clicky's existing push-to-talk gesture verbatim** and switches behavior based on a `tasteMode` selector in the menu bar panel.
+
+**The unchanged Clicky flow:** hold ctrl+option → speak → on release, [BuddyDictationManager](leanring-buddy/BuddyDictationManager.swift) finalizes the transcript, [CompanionScreenCaptureUtility](leanring-buddy/CompanionScreenCaptureUtility.swift) captures the current screen, [ClaudeAPI](leanring-buddy/ClaudeAPI.swift) sends transcript + screenshot to Claude, response streams back through [CompanionManager](leanring-buddy/CompanionManager.swift) and gets spoken via [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift).
+
+**The Reverse Clicky addition:** a `@Published var tasteMode: TasteMode = .ask` on `CompanionManager`. Three cases:
+
+| Mode | User says (held while speaking) | What changes vs. existing Clicky | Output |
+|---|---|---|---|
+| **`.ask`** (default) | "What's this button do?" | Nothing — current Clicky behavior unchanged. | Streamed reply + TTS + optional `[POINT:...]` cursor. |
+| **`.teach`** | "I made the logo bigger because brand presence matters" | Different `systemPrompt` passed to `ClaudeAPI.analyzeImageStreaming` — asks Claude to return a single `TastePrinciple` as JSON. TTS is suppressed. | A review card with one principle: `[Remember]` / `[Skip]`. |
+| **`.apply`** | "Does this match my taste?" | Same `systemPrompt` the user already gets, **plus** a taste-context block prepended via `TastePromptBuilder`. | Streamed reply + TTS as usual — but grounded in the user's saved principles. |
+
+**Why this is the right architecture for 10 hours:**
+
+- The hardest piece (multi-frame timeline analysis) disappears. Claude only ever sees one screenshot per teach press.
+- The user *speaks their reasoning out loud*, which is exactly what we want to capture — taste is the decision-making process, and verbalizing it makes the principle high-quality. No more guessing what the user "meant" by a layout change.
+- The privacy story is automatic: the existing waveform indicator only appears while the user is holding the key. There is no "session is recording in the background" — there is no session.
+- Voice and taste are not in conflict. The user can switch modes between presses; nothing parallel is happening.
+- Reuban's `Capture/` folder collapses to ~0 lines. Most of the work moves into Leonardo's `Analysis/` (the teach-mode prompt and review card) and `Apply/` (the taste-context injection).
+
+**What this kills from earlier drafts:**
+
+- ❌ 4-second screenshot `Timer` — gone
+- ❌ `TasteSessionState` machine, `tasteSessionState` published var — gone
+- ❌ Recording-indicator pill in `BlueCursorView` — gone (waveform suffices)
+- ❌ `FrameSelector` pure function — gone (only ever 1 frame per press)
+- ❌ Session JSON, per-session screenshot directory — gone (we just keep the latest screenshot in memory long enough to send to Claude)
+- ❌ Session start/stop button in the panel — replaced by a 3-way mode picker
+
+**What gets added instead:**
+
+- A 3-way segmented control in [CompanionPanelView](leanring-buddy/CompanionPanelView.swift): **Ask / Teach / Apply**.
+- A `TasteMode` enum (`.ask`, `.teach`, `.apply`) on `CompanionManager`.
+- One branch in `CompanionManager`'s existing Claude call site: pick the system prompt + the post-processing path based on `tasteMode`.
+- A `PrincipleReviewCard` SwiftUI view that appears in the panel (or as a small floating card) when teach-mode returns a parsed principle.
+- `TasteProfileStore` and `TastePromptBuilder` (unchanged from earlier drafts).
+
 ### Reuse map — call existing Clicky APIs, do NOT rebuild
 
 This is the most important section for agents. Every taste-session capability has an existing Clicky surface to call. **If you are about to write a new screenshot system, Claude client, hotkey listener, or design token, stop and use the listed API instead.**
@@ -60,58 +99,56 @@ This is the most important section for agents. Every taste-session capability ha
 
 ### What's in scope (with explicit reuse pointers)
 
-- **Session start/stop** — button in the menu bar panel (Reuban edits `CompanionPanelView`). Hotkey is a stretch goal, not MVP.
-- **Periodic screenshot capture** — 4-second `Timer` calling `CompanionScreenCaptureUtility.captureAllScreensAsJPEG()`; save the cursor-screen JPEG to `sessions/<id>/frame-<timestamp>.jpg`.
-- **Frame selection** — pure function over `[SessionFrame]`. First + last + evenly spaced 8.
-- **Claude analysis** — single call to `ClaudeAPI.analyzeImageStreaming(...)` with all selected frames + a custom taste-extraction system prompt that asks for JSON `TasteDecision[]`.
-- **Rapid-fire UI** — SwiftUI cards inside the menu bar panel (or a dedicated overlay window). Remember / Skip only. Use `DS.*` tokens and `.dsPrimaryButtonStyle()` / `.dsSecondaryButtonStyle()`.
-- **Personal taste profile** — `taste-profile.json` written via `TasteProfileStore` (Codable + FileManager).
-- **Apply mode** — `TastePromptBuilder.systemPrompt(profile:)` returns a string injected into the existing voice query path through `ClaudeAPI`. Reuban wires it into `CompanionManager`'s existing Claude call site so every voice question gets taste context "for free."
-- **Visible recording indicator** — pill rendered in `BlueCursorView` (Reuban) gated on `tasteSessionState != .inactive`.
+- **Mode picker** — 3-way segmented control in `CompanionPanelView` (Ask / Teach / Apply). Persists across launches via `UserDefaults`. Reuban edits `CompanionPanelView` only.
+- **Per-press screenshot** — already happens in `CompanionManager`'s existing voice flow. Nothing to add. The captured `Data` is passed straight into `ClaudeAPI.analyzeImageStreaming(...)`.
+- **Teach-mode system prompt** — `TasteExtractionPrompt.systemPrompt(transcript:)` returns a prompt instructing Claude to produce a *single* `TastePrinciple` as JSON, given the user's spoken reasoning + the screenshot.
+- **Teach-mode response parsing** — `SessionAnalyzer.parsePrinciple(from:)` extracts the JSON from Claude's reply (Claude may wrap it in prose). Returns `TastePrinciple?`.
+- **Principle review card** — `PrincipleReviewCard` SwiftUI view shown in the panel (or as a small floating card near the cursor). Two buttons: Remember (`.dsPrimaryButtonStyle()`) and Skip (`.dsTertiaryButtonStyle()`).
+- **Personal taste profile** — `taste-profile.json` written via `TasteProfileStore` (Codable + FileManager) at `~/Library/Application Support/com.learning-buddy.clicky/`.
+- **Apply mode** — `TastePromptBuilder.tasteSystemPrompt(profile:mode:)` returns a string. Reuban prepends it to whatever `systemPrompt` the existing Claude call site sends — so every voice question in `.apply` mode gets taste context for free.
+- **Team taste** — Magdalena hand-writes `team-profile.json`. `TeamTasteProfileStore` reads it; pooling = `personal.principles + team.principles` deduped by `id`.
 
 ### What's explicitly cut (do NOT build)
 
-- Always-on / background capture
-- Edit button on rapid-fire cards (Remember/Skip only)
-- Frame visual diffing
-- Discard-session button (quitting the app discards)
-- Real team backend — Magdalena hand-writes `team-profile.json`
-- Confidence scores in the UI (store in JSON, don't render)
-- New hotkey infrastructure — use the panel button for MVP
-- New HTTP client, new screenshot system, new design tokens — call existing APIs above
-- Figma plugin, Cursor extension, fine-tuning, vector DB
-- Autonomous typing / editing into other apps
+- ❌ Always-on / background capture
+- ❌ Periodic screenshot timer (no sessions)
+- ❌ Multi-frame analysis (one frame per teach press)
+- ❌ Edit button on the review card (Remember / Skip only)
+- ❌ Frame visual diffing
+- ❌ Real team backend — `team-profile.json` is hand-written
+- ❌ Confidence scores rendered in UI (store in JSON, don't show)
+- ❌ New hotkey infrastructure — reuse existing ctrl+option push-to-talk
+- ❌ New HTTP client, new screenshot system, new design tokens — call existing APIs
+- ❌ Recording indicator pill — the existing waveform is the indicator
+- ❌ Figma plugin, Cursor extension, fine-tuning, vector DB
+- ❌ Autonomous typing / editing into other apps
 
 ### Core data shapes (lives in `Shared/TasteTypes.swift`)
 
-All `Codable`. `screenshotPath` is an absolute file URL string under `Application Support/.../sessions/<sessionID>/`.
+All `Codable`.
 
 ```swift
-struct SessionFrame: Codable, Identifiable {
-  let id: UUID
-  let sessionId: UUID
-  let timestamp: Date
-  let screenshotPath: String
-  let activeApp: String?
-  let windowTitle: String?
+enum TasteMode: String, Codable {
+  case ask     // current Clicky behavior
+  case teach   // extract a TastePrinciple from voice + screenshot
+  case apply   // answer using stored taste profile as context
 }
 
-struct TasteDecision: Codable, Identifiable {
-  let id: UUID
-  let observedChange: String
-  let whyItMayMatter: String
-  let question: String
-  let candidatePrinciple: String
-  let domain: TasteDomain          // .design | .writing | .code | .general
-  let confidence: Double
+enum TasteDomain: String, Codable {
+  case design, writing, code, general
+}
+
+enum TasteScope: String, Codable {
+  case personal
+  case team
 }
 
 struct TastePrinciple: Codable, Identifiable {
   let id: UUID
   var domain: TasteDomain
-  var statement: String
-  var confidence: Double
-  var evidence: [String]
+  var statement: String        // e.g. "Prefers strong brand presence and clear visual hierarchy."
+  var confidence: Double       // stored, not rendered
+  var evidence: [String]       // includes the user's spoken reasoning that produced it
   var tags: [String]
   var approved: Bool
   var authorId: String
@@ -125,39 +162,53 @@ struct TasteProfile: Codable {
   var updatedAt: Date
 }
 
-enum TasteSessionState: Equatable {
-  case inactive
-  case capturing(frameCount: Int)
-  case analyzing
-  case questioning(remaining: Int)
+struct TeamTasteProfile: Codable {
+  var teamId: String
+  var name: String
+  var principles: [TastePrinciple]
+  var updatedAt: Date
 }
 ```
 
+`TasteDecision` and `SessionFrame` from earlier drafts are **gone** — there are no sessions and no decision-vs-principle split. Each teach press produces a candidate `TastePrinciple` directly.
+
 ### Boundary contracts between owners
 
-These are the **only** function signatures Reuban and Leonardo's code share. Once frozen at hour 0, do not change them — write adapters instead.
+These are the **only** function signatures Reuban and Leonardo's code share. Frozen at hour 0.
 
 ```swift
-// Leonardo provides — Reuban calls after a session ends
-func analyze(frames: [SessionFrame]) async throws -> [TasteDecision]
+// Leonardo provides — Reuban calls in CompanionManager's response handler when tasteMode == .teach
+//   `transcript` is the user's finalized speech transcript (already produced by BuddyDictationManager).
+//   `screenshotData` is the JPEG `Data` already captured by the existing voice flow.
+//   Internally calls ClaudeAPI.analyzeImageStreaming with the teach-mode system prompt
+//   and parses the streamed reply into a TastePrinciple.
+func analyzeTeachMoment(transcript: String, screenshotData: Data) async throws -> TastePrinciple
 
-// Leonardo provides — Reuban injects into existing ClaudeAPI calls
-func tasteSystemPrompt(profile: TasteProfile, mode: TasteMode) -> String
-// where TasteMode = .personal | .team
+// Leonardo provides — Reuban prepends to the existing systemPrompt when tasteMode == .apply
+//   `scope` is .personal or .team based on a separate panel toggle.
+func tasteSystemPrompt(profile: TasteProfile, scope: TasteScope) -> String
 
-// Leonardo provides — Reuban calls when user taps Remember
+// Leonardo provides — Reuban calls when the user taps Remember on the review card
 func appendApprovedPrinciple(_ principle: TastePrinciple) throws
 ```
 
-Leonardo's `SessionAnalyzer.analyze(...)` internally calls `ClaudeAPI.analyzeImageStreaming(...)` (the existing Clicky client). It does **not** make raw HTTP calls.
+Both `analyzeTeachMoment` and any apply-mode work go through `ClaudeAPI.analyzeImageStreaming(...)`. **Leonardo writes no raw HTTP.**
 
 ### State
 
-`CompanionManager` gets a new `@Published var tasteSessionState: TasteSessionState = .inactive`, **parallel** to the existing `voiceState`. Transition:
+`CompanionManager` gets two new `@Published` properties — both parallel to the existing `voiceState`, neither replaces it:
 
-`inactive → capturing(n) → analyzing → questioning(n) → inactive`
+```swift
+@Published var tasteMode: TasteMode = .ask
+@Published var tasteScope: TasteScope = .personal       // for apply mode
+@Published var pendingPrinciple: TastePrinciple? = nil  // shown in the review card
+```
 
-Voice state is untouched — users can still push-to-talk during or after a taste session.
+The voice state machine (idle → listening → processing → responding → idle) is unchanged. The branch happens *inside* the existing "responding" handler:
+
+- `tasteMode == .ask` → existing behavior (TTS + cursor pointing).
+- `tasteMode == .teach` → suppress TTS, parse JSON, set `pendingPrinciple`. The review card shows automatically.
+- `tasteMode == .apply` → existing behavior, but the systemPrompt was prepended with taste context before the call.
 
 ### File paths (the new convention)
 
@@ -165,17 +216,13 @@ Voice state is untouched — users can still push-to-talk during or after a tast
 ~/Library/Application Support/com.learning-buddy.clicky/
   taste-profile.json
   team-profile.json
-  sessions/
-    <sessionID>/
-      frame-<ISO8601>.jpg
-      decisions.json   (cached AI output for the demo's instant-replay button)
 ```
 
-`TasteProfileStore` (Leonardo) creates and owns this directory. Use `FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)`.
+No `sessions/` directory — there are no sessions. `TasteProfileStore` creates the parent directory on first write.
 
 ### Privacy requirements (non-negotiable for demo)
 
-Manual start/stop, visible recording indicator at all times during capture, local-only screenshot storage, explicit user approval before any principle is saved. No hidden / always-on capture.
+Capture only happens while the user is actively holding ctrl+option (the existing waveform indicator is visible the entire time). No background capture, no hidden recording, local storage only, explicit Remember tap before any principle persists.
 
 ---
 
@@ -520,54 +567,63 @@ Current taste context:
 - Avoids decorative effects unless they add meaning.
 ```
 
-### Module responsibilities (each line names the existing Clicky API to call)
+### Module responsibilities (hold-to-teach architecture)
 
 (Lives under `ReverseClicky/Capture/`, `ReverseClicky/Analysis/`, `ReverseClicky/Apply/`, `ReverseClicky/Shared/` — see ownership rules above.)
 
-- **TasteSessionController** *(Capture / Reuban)* — drives `CompanionManager.tasteSessionState` transitions; owns the `Timer` that fires every 4s. **No new screenshot code.**
-- **ScreenshotTimerService** *(Capture / Reuban)* — thin wrapper that calls `CompanionScreenCaptureUtility.captureAllScreensAsJPEG()` on each tick, picks the cursor screen, writes JPEG to `sessions/<id>/frame-<ts>.jpg`, and appends a `SessionFrame` to memory. ~50 lines.
-- **FrameSelector** *(Capture / Reuban)* — pure function `selectKeyFrames(_ frames: [SessionFrame]) -> [SessionFrame]`. First + last + evenly spaced 8.
-- **RecordingIndicatorView** *(Capture / Reuban — but rendered via Reuban's edits to `OverlayWindow`/`BlueCursorView`)* — capsule pill + optional screen-edge border, gated on `tasteSessionState != .inactive`. Uses `DS.Colors.warning` and `DS.CornerRadius.pill`.
-- **SessionAnalyzer** *(Analysis / Leonardo)* — calls `ClaudeAPI.analyzeImageStreaming(images:systemPrompt:userPrompt:onTextChunk:)` with the selected frames and the taste-extraction prompt. Parses streamed JSON into `[TasteDecision]`. **No raw HTTP.**
-- **RapidFireQuestionView** *(Analysis / Leonardo)* — SwiftUI cards in a list. Two buttons: Remember (`.dsPrimaryButtonStyle()`) and Skip (`.dsTertiaryButtonStyle()`). On Remember, calls `TasteProfileStore.appendApprovedPrinciple(...)`.
-- **TasteProfileStore** *(Analysis / Leonardo)* — `Codable` load/save of `taste-profile.json` in Application Support. ~80 lines. First write creates the directory.
-- **TeamTasteProfileStore** *(Apply / Leonardo)* — same pattern as `TasteProfileStore` but for `team-profile.json`. For MVP, just reads Magdalena's hand-written file; pooling is `personal.principles + team.principles` deduped by `id`.
-- **TastePromptBuilder** *(Apply / Leonardo)* — `tasteSystemPrompt(profile:mode:) -> String`. Returns a system prompt block listing principles. Reuban appends this to whatever system prompt the existing voice query path sends through `ClaudeAPI`.
+**Reuban** edits the existing Clicky integration points (these are the *only* edits to existing files):
+
+- **`CompanionManager.swift`** — add `@Published var tasteMode: TasteMode = .ask`, `@Published var tasteScope: TasteScope = .personal`, `@Published var pendingPrinciple: TastePrinciple? = nil`. Persist `tasteMode` + `tasteScope` to `UserDefaults`. In the existing Claude response handler, branch on `tasteMode`: in `.teach` call `Analysis.analyzeTeachMoment(transcript:screenshotData:)` and assign the result to `pendingPrinciple` (no TTS); in `.apply` call `Apply.tasteSystemPrompt(profile:scope:)` and prepend it to the existing systemPrompt before calling `ClaudeAPI`.
+- **`CompanionPanelView.swift`** — add a 3-way segmented Picker (`Ask` / `Teach` / `Apply`) bound to `tasteMode`. When `tasteMode == .apply`, also show a Personal/Team toggle bound to `tasteScope`. When `pendingPrinciple != nil`, render the `PrincipleReviewCard` from the Analysis folder.
+- **`leanring_buddyApp.swift`** — likely no edits needed.
+
+`ReverseClicky/Capture/` ends up empty for MVP. (Folder still exists so future work can land there without breaking ownership rules.)
+
+**Leonardo / `Analysis/`:**
+
+- **`TasteExtractionPrompt.swift`** — `static func systemPrompt(transcript: String) -> String`. Returns a prompt that tells Claude: "the user has just spoken `<transcript>` while looking at the attached screenshot. Extract a single TastePrinciple as JSON with the schema shown. If the input is too vague, return `{}`." Pin the JSON schema verbatim.
+- **`SessionAnalyzer.swift`** — exposes `analyzeTeachMoment(transcript:screenshotData:) async throws -> TastePrinciple`. Internally calls `ClaudeAPI.analyzeImageStreaming(images: [(screenshotData, "current screen")], systemPrompt: TasteExtractionPrompt.systemPrompt(transcript:), userPrompt: transcript, onTextChunk: { _ in })` and parses the streamed reply (Claude may wrap JSON in prose — extract the first JSON object). **No raw HTTP, no looped multi-frame logic.**
+- **`PrincipleReviewCard.swift`** — SwiftUI view bound to a `TastePrinciple`. Displays domain badge + statement + evidence. Two buttons: Remember (`.dsPrimaryButtonStyle()`) calls `TasteProfileStore.appendApprovedPrinciple(...)` and clears `pendingPrinciple`; Skip (`.dsTertiaryButtonStyle()`) just clears it.
+- **`TasteProfileStore.swift`** — `Codable` load/save of `taste-profile.json` in Application Support. ~80 lines. First write creates the directory. Public methods: `loadProfile() -> TasteProfile`, `appendApprovedPrinciple(_ principle: TastePrinciple) throws`.
+
+**Leonardo / `Apply/`:**
+
+- **`TastePromptBuilder.swift`** — `static func tasteSystemPrompt(profile: TasteProfile, scope: TasteScope) -> String`. Returns a system prompt block listing approved principles, framed as judgment context (not rigid rules). When `scope == .team`, also reads `team-profile.json` via `TeamTasteProfileStore` and unions principles deduped by `id`.
+- **`TeamTasteProfileStore.swift`** — same pattern as `TasteProfileStore` but for `team-profile.json`. For MVP, only `loadTeamProfile() -> TeamTasteProfile?` is needed (Magdalena hand-writes the file).
 
 **What no one writes (because it already exists in Clicky):**
 
 - HTTP client / Claude wire format → use `ClaudeAPI`
-- Screenshot mechanics / multi-monitor handling → use `CompanionScreenCaptureUtility`
+- Screenshot mechanics / multi-monitor handling → already happens in the existing voice flow; the screenshot `Data` is in scope when `CompanionManager` calls Claude
+- Voice capture / transcription → use `BuddyDictationManager` (already wired)
 - Worker proxy / API keys → use existing `/chat` route
 - Colors, button styles, radii, animations → use `DS.*`
 - Menu bar panel chrome / lifecycle → edit `CompanionPanelView` content only
-- Overlay window / non-activating panel / multi-screen positioning → edit `BlueCursorView` content only
-- Hotkey CGEvent tap → use the panel button for MVP; reuse `GlobalPushToTalkShortcutMonitor` infrastructure only if there's time at the end
+- Overlay window / cursor / waveform → unchanged; the waveform IS the recording indicator
+- Hotkey CGEvent tap → unchanged; ctrl+option already does what we need
+- TTS playback → already exists; just suppress it in `.teach` mode
 
-### Suggested project structure (replaces the old single-folder layout)
+### Suggested project structure (hold-to-teach)
 
 ```
 ReverseClicky/
   Shared/
-    TasteTypes.swift              ← frozen at hour 0
-  Capture/                        ← Reuban
-    TasteSessionController.swift  ← drives state transitions
-    ScreenshotTimerService.swift  ← wraps CompanionScreenCaptureUtility
-    FrameSelector.swift           ← pure function
+    TasteTypes.swift              ← frozen at hour 0 (TasteMode, TasteScope, TasteDomain, TastePrinciple, TasteProfile, TeamTasteProfile)
+  Capture/                        ← Reuban — empty for MVP; integration is in existing Clicky files
   Analysis/                       ← Leonardo
-    SessionAnalyzer.swift         ← calls ClaudeAPI.analyzeImageStreaming
-    RapidFireQuestionView.swift   ← SwiftUI cards using DS.*
+    TasteExtractionPrompt.swift   ← teach-mode system prompt + JSON schema
+    SessionAnalyzer.swift         ← analyzeTeachMoment(transcript:screenshotData:) → TastePrinciple
+    PrincipleReviewCard.swift     ← Remember/Skip card
     TasteProfileStore.swift       ← Codable + FileManager
-    TasteExtractionPrompt.swift   ← the system prompt string + JSON schema
   Apply/                          ← Leonardo
-    TastePromptBuilder.swift      ← injects principles into Claude calls
-    TeamTasteProfileStore.swift   ← reads team-profile.json, dedupes
+    TastePromptBuilder.swift      ← injects principles into apply-mode system prompt
+    TeamTasteProfileStore.swift   ← reads team-profile.json
   demo/                           ← Magdalena
     taste-profile.json            ← seed: 6–8 opinionated principles
     team-profile.json             ← seed: a fictional second member
-    test-screenshots/             ← before/after pairs for prompt tuning
+    test-cases.md                 ← (transcript, screenshot) pairs for prompt tuning
     demo-script.md                ← timed 3-part walkthrough
-    ui-copy.md                    ← exact strings for indicator, cards, toasts
+    ui-copy.md                    ← exact strings for the mode picker, review card, toasts
 ```
 
 ### Privacy requirements (hard requirements for demo)
