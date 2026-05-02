@@ -82,8 +82,20 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    private lazy var tasteEngineAPIClient: TasteEngineAPIClient? = {
+        let baseURLString = AppBundleConfiguration.stringValue(forKey: "TasteEngineBaseURL")
+            ?? "http://localhost:3000"
+        return try? TasteEngineAPIClient(baseURLString: baseURLString)
+    }()
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient()
+    }()
+
+    private lazy var tasteEngineAPIClient: TasteEngineAPIClient? = {
+        let baseURLString = AppBundleConfiguration.stringValue(forKey: "TasteEngineBaseURL")
+            ?? "http://localhost:3000"
+        return try? TasteEngineAPIClient(baseURLString: baseURLString)
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -241,6 +253,25 @@ final class CompanionManager: ObservableObject {
         tasteScope = newTasteScope
         UserDefaults.standard.set(newTasteScope.rawValue, forKey: "tasteScope")
     }
+
+    /// Who is teaching the current taste signal. This only stamps Teach-mode
+    /// payload provenance; Apply continues to use the existing scope/wheel
+    /// selection instead of this attribution control.
+    @Published var selectedTeachingPersona: TasteTeachingPersona = {
+        if let rawTeachingPersona = UserDefaults.standard.string(forKey: "selectedTeachingPersona"),
+           let storedTeachingPersona = TasteTeachingPersona(rawValue: rawTeachingPersona) {
+            return storedTeachingPersona
+        }
+        return .reuban
+    }()
+
+    func setSelectedTeachingPersona(_ newTeachingPersona: TasteTeachingPersona) {
+        selectedTeachingPersona = newTeachingPersona
+        UserDefaults.standard.set(newTeachingPersona.rawValue, forKey: "selectedTeachingPersona")
+    }
+
+    @Published private(set) var lastTeachEngineStatusSummary: String?
+    @Published private(set) var lastApplyEngineStatusSummary: String?
 
     /// Current state of the in-progress teach session, if any. Independent
     /// of voiceState — the teach session has its own dictation pipeline.
@@ -483,6 +514,7 @@ final class CompanionManager: ObservableObject {
         // leftover review queue so the panel only shows the current session
         // once we're done analyzing.
         lastTeachSessionSavedPrincipleCount = 0
+        lastTeachEngineStatusSummary = nil
         pendingAmbiguousMoments.removeAll()
         pendingReviewFrames.removeAll()
 
@@ -627,6 +659,12 @@ final class CompanionManager: ObservableObject {
                 let savedCount = self?.persistConfidentPrinciplesFromTeachSession(analysis.result) ?? 0
                 self?.lastTeachSessionSavedPrincipleCount = savedCount
 
+                await self?.ingestTeachSessionIntoTasteEngine(
+                    transcript: trimmedTranscript,
+                    selectedFrames: analysis.selectedFrames,
+                    analysisResult: analysis.result
+                )
+
                 // Ambiguous moments queue up as review cards. We hold onto
                 // the analyzer's selected frames so each card can render a
                 // thumbnail of the moment in question. Both queues are
@@ -657,12 +695,75 @@ final class CompanionManager: ObservableObject {
         }
 
         do {
-            let savedCount = try TasteProfileStore.appendApprovedPrinciples(result.confident)
+            let stampedPrinciples = result.confident.map { principle in
+                principle.stampedByTeachingPersona(selectedTeachingPersona)
+            }
+            let savedCount = try TasteProfileStore.appendApprovedPrinciples(stampedPrinciples)
             print("🧠 Teach session: saved \(savedCount) principle(s) to \(TasteProfileStore.profileFileLocation())")
             return savedCount
         } catch {
             print("⚠️ Teach session: failed to save principles: \(error)")
             return 0
+        }
+    }
+
+    private func ingestTeachSessionIntoTasteEngine(
+        transcript: String,
+        selectedFrames: [(data: Data, timestamp: TimeInterval)],
+        analysisResult: TeachSessionResult
+    ) async {
+        guard let tasteEngineAPIClient else {
+            lastTeachEngineStatusSummary = "Taste Engine unavailable"
+            return
+        }
+        guard let representativeFrame = selectedFrames.last ?? selectedFrames.first else {
+            lastTeachEngineStatusSummary = "No screenshot evidence to send"
+            return
+        }
+
+        let keywords = TasteEngineObservationContext.extractedKeywords(from: transcript)
+        let context = TasteEngineObservationContext(
+            transcript: transcript,
+            intent: "teach session from \(selectedTeachingPersona.displayName)",
+            keywords: keywords
+        )
+        let screenshotEvidence = Self.tasteEngineScreenshotEvidence(
+            imageData: representativeFrame.data,
+            label: "teach frame at \(String(format: "%.1f", representativeFrame.timestamp))s",
+            isCursorScreen: true,
+            displayWidthInPoints: 0,
+            displayHeightInPoints: 0,
+            screenshotWidthInPixels: 0,
+            screenshotHeightInPixels: 0,
+            screenCount: 1
+        )
+        let request = TasteEngineCaptureIngestRequest(
+            transcript: transcript,
+            context: context,
+            conversationTranscript: transcript,
+            screenshotEvidence: screenshotEvidence,
+            mode: "teach",
+            creatorProfileId: selectedTeachingPersona.id,
+            collaboratorProfileIds: nil
+        )
+
+        do {
+            let response: TasteEngineAPIResponse
+            do {
+                response = try await tasteEngineAPIClient.ingestCaptureOrchestrated(request: request)
+            } catch {
+                print("⚠️ Orchestrated teach ingest failed, falling back to plain ingest: \(error)")
+                response = try await tasteEngineAPIClient.ingestCapture(request: request)
+            }
+
+            let localPrincipleCount = analysisResult.confident.count + analysisResult.ambiguous.count
+            let packageText = response.clickyTeach?.packageId ?? response.sphere?.id ?? "package"
+            lastTeachEngineStatusSummary =
+                "\(selectedTeachingPersona.displayName) taught \(localPrincipleCount) signal(s); Taste Engine saved \(packageText)"
+            print("🧠 Teach payload stamped with creator_profile_id=\(selectedTeachingPersona.id)")
+        } catch {
+            lastTeachEngineStatusSummary = "Taste Engine teach ingest failed"
+            print("⚠️ Teach session: Taste Engine ingest failed: \(error)")
         }
     }
 
@@ -681,6 +782,7 @@ final class CompanionManager: ObservableObject {
         // and freshen the timestamps so the on-disk profile shows when it
         // landed (not when Claude generated it).
         chosenPrinciple.approved = true
+        chosenPrinciple.authorId = selectedTeachingPersona.id
         let approvalDate = Date()
         chosenPrinciple.createdAt = approvalDate
         chosenPrinciple.updatedAt = approvalDate
@@ -1119,6 +1221,175 @@ final class CompanionManager: ObservableObject {
         return tasteContextBlock + "\n\n" + basePrompt
     }
 
+    private func currentApplyTasteProfileSelection() -> TasteEngineTasteProfileSelection {
+        if let wheelPersonaId = UserDefaults.standard.string(forKey: "selectedTasteWheelPersonaId")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !wheelPersonaId.isEmpty {
+            let displayName = UserDefaults.standard.string(forKey: "selectedTasteWheelPersonaDisplayName")
+            return TasteEngineTasteProfileSelection(selectedProfiles: [
+                TasteEngineTasteProfileRef(
+                    profileId: wheelPersonaId,
+                    displayName: displayName,
+                    weight: 1,
+                    role: "primary"
+                )
+            ])
+        }
+
+        switch tasteScope {
+        case .personal:
+            return TasteEngineTasteProfileSelection(selectedProfiles: [
+                TasteEngineTasteProfileRef(
+                    profileId: "local-user",
+                    displayName: "Personal",
+                    weight: 1,
+                    role: "primary"
+                )
+            ])
+        case .team:
+            return TasteEngineTasteProfileSelection(selectedProfiles: [
+                TasteEngineTasteProfileRef(
+                    profileId: "company",
+                    displayName: "Team",
+                    weight: 1,
+                    role: "company"
+                )
+            ])
+        }
+    }
+
+    private func currentApplyRecommendationLens() -> TasteEngineRecommendationLens {
+        if let wheelLensId = UserDefaults.standard.string(forKey: "selectedTasteWheelLensId")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !wheelLensId.isEmpty {
+            return TasteEngineRecommendationLens(
+                id: wheelLensId,
+                label: UserDefaults.standard.string(forKey: "selectedTasteWheelLensLabel"),
+                instruction: UserDefaults.standard.string(forKey: "selectedTasteWheelLensInstruction"),
+                priorityTags: Self.commaSeparatedUserDefaultsValues(forKey: "selectedTasteWheelPriorityTags"),
+                deprioritizeTags: Self.commaSeparatedUserDefaultsValues(forKey: "selectedTasteWheelDeprioritizeTags")
+            )
+        }
+
+        switch tasteScope {
+        case .personal:
+            return TasteEngineRecommendationLens(
+                id: "personal",
+                label: "Personal lens",
+                instruction: "Guide using the user's selected personal taste context.",
+                priorityTags: ["clarity", "taste", "preference"],
+                deprioritizeTags: ["generic"]
+            )
+        case .team:
+            return TasteEngineRecommendationLens(
+                id: "company",
+                label: "Team lens",
+                instruction: "Guide using the selected team or company taste context.",
+                priorityTags: ["company", "team", "consistency"],
+                deprioritizeTags: ["generic"]
+            )
+        }
+    }
+
+    private func respondUsingTasteEngineApply(
+        transcript: String,
+        screenCaptures: [CompanionScreenCapture]
+    ) async throws {
+        guard let tasteEngineAPIClient else {
+            throw TasteEngineAPIClient.TasteEngineAPIClientError.invalidBaseURL("TasteEngineBaseURL")
+        }
+        guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures.first else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No screenshot available for Apply mode."]
+            )
+        }
+
+        let screenshotEvidence = Self.tasteEngineScreenshotEvidence(from: cursorScreenCapture)
+        let recommendationLens = currentApplyRecommendationLens()
+        let request = TasteEngineRecommendationRequest(
+            transcript: transcript,
+            conversationTranscript: conversationHistory
+                .map { "User: \($0.userTranscript)\nAssistant: \($0.assistantResponse)" }
+                .joined(separator: "\n\n"),
+            prompt: transcript,
+            screenshotDataURL: screenshotEvidence.dataURL,
+            screenshot: screenshotEvidence.dataURL,
+            screenshotEvidence: screenshotEvidence,
+            mode: "apply",
+            tasteProfileSelection: currentApplyTasteProfileSelection(),
+            fusionMode: tasteScope == .team ? .weightedBlend : .singleProfile,
+            deploymentIntent: "Guide this screen through the existing selected taste lens.",
+            recommendationLens: recommendationLens
+        )
+
+        let response = try await tasteEngineAPIClient.recommend(request: request)
+        let spokenText = response.spokenSummary
+        lastApplyEngineStatusSummary =
+            response.clickyGuidance?.trustSummary ??
+            "Applied \(recommendationLens.label ?? recommendationLens.id)"
+
+        conversationHistory.append((
+            userTranscript: transcript,
+            assistantResponse: spokenText
+        ))
+        if conversationHistory.count > 10 {
+            conversationHistory.removeFirst(conversationHistory.count - 10)
+        }
+
+        ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+        if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try await elevenLabsTTSClient.speakText(spokenText, overrideVoiceID: selectedVoiceID)
+            voiceState = .responding
+        }
+        print("🧠 Apply payload used lens=\(recommendationLens.id)")
+    }
+
+    private static func tasteEngineScreenshotEvidence(from capture: CompanionScreenCapture) -> TasteEngineScreenshotEvidence {
+        return tasteEngineScreenshotEvidence(
+            imageData: capture.imageData,
+            label: capture.label,
+            isCursorScreen: capture.isCursorScreen,
+            displayWidthInPoints: capture.displayWidthInPoints,
+            displayHeightInPoints: capture.displayHeightInPoints,
+            screenshotWidthInPixels: capture.screenshotWidthInPixels,
+            screenshotHeightInPixels: capture.screenshotHeightInPixels,
+            screenCount: 1
+        )
+    }
+
+    private static func tasteEngineScreenshotEvidence(
+        imageData: Data,
+        label: String,
+        isCursorScreen: Bool,
+        displayWidthInPoints: Int,
+        displayHeightInPoints: Int,
+        screenshotWidthInPixels: Int,
+        screenshotHeightInPixels: Int,
+        screenCount: Int
+    ) -> TasteEngineScreenshotEvidence {
+        return TasteEngineScreenshotEvidence(
+            dataURL: "data:image/jpeg;base64,\(imageData.base64EncodedString())",
+            label: label,
+            isCursorScreen: isCursorScreen,
+            displayWidthInPoints: displayWidthInPoints,
+            displayHeightInPoints: displayHeightInPoints,
+            screenshotWidthInPixels: screenshotWidthInPixels,
+            screenshotHeightInPixels: screenshotHeightInPixels,
+            screenCount: screenCount
+        )
+    }
+
+    private static func commaSeparatedUserDefaultsValues(forKey key: String) -> [String]? {
+        let values = UserDefaults.standard.string(forKey: key)?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let values, !values.isEmpty else { return nil }
+        return values
+    }
+
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
@@ -1140,6 +1411,14 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
+                if tasteMode == .apply {
+                    try await respondUsingTasteEngineApply(
+                        transcript: transcript,
+                        screenCaptures: screenCaptures
+                    )
+                    return
+                }
+
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
@@ -1153,11 +1432,9 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                // Pull the user's saved taste from disk and prepend it to
-                // the system prompt so every voice answer is grounded in
-                // what the user has taught Sticky. On first launch (empty
-                // profile) this is a no-op and the base prompt is used.
-                let composedSystemPrompt = composeVoiceSystemPromptWithTaste()
+                // Ask mode stays on the existing Claude assistant path.
+                // Taste-guided answers branch earlier through Apply mode.
+                let composedSystemPrompt = Self.companionVoiceResponseSystemPrompt
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
@@ -1572,5 +1849,13 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Onboarding demo error: \(error)")
             }
         }
+    }
+}
+
+private extension TastePrinciple {
+    func stampedByTeachingPersona(_ teachingPersona: TasteTeachingPersona) -> TastePrinciple {
+        var stampedPrinciple = self
+        stampedPrinciple.authorId = teachingPersona.id
+        return stampedPrinciple
     }
 }

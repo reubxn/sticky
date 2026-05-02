@@ -55,6 +55,18 @@ final class TasteEngineAPIClient {
         return try await postJSON(path: "/api/spheres/observe", body: request)
     }
 
+    func ingestCapture(request: TasteEngineCaptureIngestRequest) async throws -> TasteEngineAPIResponse {
+        return try await postJSON(path: "/api/captures/ingest", body: request)
+    }
+
+    func ingestCaptureOrchestrated(request: TasteEngineCaptureIngestRequest) async throws -> TasteEngineAPIResponse {
+        return try await postJSON(path: "/api/captures/ingest/orchestrated", body: request)
+    }
+
+    func ingestCaptureOrchestrated(request: TasteEngineCaptureIngestRequest) async throws -> TasteEngineAPIResponse {
+        return try await postJSON(path: "/api/captures/ingest/orchestrated", body: request)
+    }
+
     func checkStatus() async -> Bool {
         let candidatePaths = ["/api/health", "/"]
 

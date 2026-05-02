@@ -44,6 +44,9 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
 
                 if companionManager.tasteMode == .teach {
+                    teachingPersonaPickerRow
+                        .padding(.horizontal, 16)
+
                     teachSessionControlRow
                         .padding(.horizontal, 16)
                         .padding(.top, 4)
@@ -56,6 +59,13 @@ struct CompanionPanelView: View {
                 } else if companionManager.lastTeachSessionSavedPrincipleCount > 0
                     && companionManager.teachSessionState == .idle {
                     teachSessionSavedSummary
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+
+                if companionManager.tasteMode == .apply,
+                   let applyStatusSummary = companionManager.lastApplyEngineStatusSummary {
+                    tasteEngineStatusSummary(text: applyStatusSummary)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                 }
@@ -858,6 +868,54 @@ struct CompanionPanelView: View {
         .opacity(isDisabled ? 0.4 : 1.0)
     }
 
+    private var teachingPersonaPickerRow: some View {
+        HStack {
+            Text("Teacher")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(Color.secondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                ForEach(TasteTeachingPersona.allCases, id: \.self) { teachingPersona in
+                    teachingPersonaOptionButton(teachingPersona: teachingPersona)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func teachingPersonaOptionButton(teachingPersona: TasteTeachingPersona) -> some View {
+        let isSelected = companionManager.selectedTeachingPersona == teachingPersona
+        let isDisabled = companionManager.teachSessionState != .idle
+
+        return Button(action: {
+            companionManager.setSelectedTeachingPersona(teachingPersona)
+        }) {
+            Text(teachingPersona.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? Color.primary : Color(NSColor.tertiaryLabelColor))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.4 : 1.0)
+    }
+
     // MARK: - Reverse Clicky: Teach Session Controls
 
     @ViewBuilder
@@ -971,16 +1029,25 @@ struct CompanionPanelView: View {
         let savedCount = companionManager.lastTeachSessionSavedPrincipleCount
         let principleNoun = savedCount == 1 ? "principle" : "principles"
 
-        return HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(Color(NSColor.systemGreen))
 
-            Text("Saved \(savedCount) new \(principleNoun) to your taste")
+                Text("Saved \(savedCount) new \(principleNoun) to \(companionManager.selectedTeachingPersona.displayName)'s taste")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(Color.secondary)
 
             Spacer()
+            }
+
+            if let teachStatusSummary = companionManager.lastTeachEngineStatusSummary {
+                Text(teachStatusSummary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .lineLimit(2)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -992,6 +1059,28 @@ struct CompanionPanelView: View {
         .overlay(
             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
                 .stroke(Color(NSColor.systemGreen).opacity(0.3), lineWidth: 0.5)
+        )
+    }
+
+    private func tasteEngineStatusSummary(text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color(NSColor.systemGreen))
+
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Color.secondary)
+                .lineLimit(2)
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
         )
     }
 

@@ -2,7 +2,7 @@
 
 An AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
 
-![demo](clicky-demo.gif)
+demo
 
 ## Manual setup
 
@@ -55,7 +55,7 @@ cd worker
 npx wrangler dev
 ```
 
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
+This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. Copy `worker/.dev.vars.example` to `worker/.dev.vars` and fill in your keys:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -64,14 +64,16 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing.
+The checked-in app config points `WorkerBaseURL` at `http://localhost:8787` for local development. For a deployed Worker, update `WorkerBaseURL` in `leanring-buddy/Info.plist` to your `workers.dev` URL.
 
 ### 3. Update the proxy URLs in the app
 
-The app has the Worker URL hardcoded in a few places. Search for the existing Worker hostname and replace it with your Worker URL. You'll find it in:
+The app reads assistant API URLs from `leanring-buddy/Info.plist`:
 
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
+- `WorkerBaseURL` is used for Claude chat (`/chat`) and AssemblyAI token requests (`/transcribe-token`)
+- `ElevenLabsWorkerBaseURL` is used for ElevenLabs TTS (`/tts`)
+
+If `ElevenLabsWorkerBaseURL` is missing, it automatically falls back to `WorkerBaseURL`.
 
 ### 4. Open in Xcode and run
 
@@ -80,6 +82,7 @@ open leanring-buddy.xcodeproj
 ```
 
 In Xcode:
+
 1. Select the `leanring-buddy` scheme
 2. Set your signing team under Signing & Capabilities
 3. Hit **Cmd + R** to build and run
