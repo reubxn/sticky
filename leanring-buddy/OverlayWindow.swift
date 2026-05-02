@@ -52,28 +52,6 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// Right-tilted parallelogram shape — Clicky's logo. Used as the cursor
-// pointer body in the overlay, and the same geometry is rendered via
-// NSBezierPath in MenuBarPanelManager so the menu bar icon matches.
-// "Tilted right" = top edge shifted right of the bottom edge, so the
-// parallel diagonal sides lean like the italic slash `∕`.
-struct Parallelogram: Shape {
-    /// Horizontal skew of the top edge relative to the bottom, expressed
-    /// as a fraction of the rect's width. 0 = rectangle, 0.35 = clear lean.
-    var skewFraction: CGFloat = 0.35
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let skew = rect.width * skewFraction
-        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))            // bottom-left
-        path.addLine(to: CGPoint(x: rect.minX + skew, y: rect.minY))  // top-left (shifted right)
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))         // top-right
-        path.addLine(to: CGPoint(x: rect.maxX - skew, y: rect.maxY))  // bottom-right
-        path.closeSubpath()
-        return path
-    }
-}
-
 // PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
@@ -183,7 +161,7 @@ struct BlueCursorView: View {
     private let onboardingVideoPlayerWidth: CGFloat = 330
     private let onboardingVideoPlayerHeight: CGFloat = 186
 
-    private let fullWelcomeMessage = "hey! i'm clicky"
+    private let fullWelcomeMessage = "hey! i'm sticky"
 
     private let navigationPointerPhrases = [
         "right here!",
@@ -197,7 +175,7 @@ struct BlueCursorView: View {
     // MARK: - Orb & edge glow visibility
 
     /// True when the orb itself should be on-screen. The orb no longer
-    /// follows the cursor: it appears only when Clicky is "showing the
+    /// follows the cursor: it appears only when Sticky is "showing the
     /// user something" — i.e. flying to or pointing at a detected element.
     /// Idle, listening, and processing all show nothing on this screen
     /// except (during listening) the audio-reactive edge glow.
@@ -207,11 +185,43 @@ struct BlueCursorView: View {
             || buddyNavigationMode == .pointingAtTarget
     }
 
+    // MARK: - Persona Wheel Render
+
+    /// Draws the radial persona picker centered on whatever point the
+    /// user's cursor was at when they pressed the wheel hotkey. Only
+    /// rendered on the screen containing the anchor — overlays on other
+    /// screens return EmptyView so the wheel doesn't ghost across all
+    /// displays. The wheel scales/fades in via SwiftUI transition when
+    /// `isPersonaWheelVisible` flips true.
+    @ViewBuilder
+    private var personaWheelOverlay: some View {
+        if companionManager.isPersonaWheelVisible,
+           let wheelCenterScreenLocation = companionManager.personaWheelCenterScreenLocation,
+           screenFrame.contains(wheelCenterScreenLocation) {
+
+            let wheelCenterInSwiftUI = convertScreenPointToSwiftUICoordinates(wheelCenterScreenLocation)
+
+            PersonaWheelView(
+                personas: companionManager.allWheelPersonas,
+                hoveredPersonaId: companionManager.hoveredWheelPersonaId,
+                activePersonaId: companionManager.activeWheelPersonaId
+            )
+                .position(wheelCenterInSwiftUI)
+                .transition(
+                    .scale(scale: 0.7, anchor: .center)
+                        .combined(with: .opacity)
+                )
+                .animation(.spring(response: 0.28, dampingFraction: 0.78),
+                           value: companionManager.isPersonaWheelVisible)
+                .allowsHitTesting(false)
+        }
+    }
+
     /// True when the screen-edge glow should be on this screen. Visible
     /// across the entire active arc of an interaction — listening (user
     /// speaking), processing (waiting for the AI), and responding (AI
     /// speaking back) — so the user always has a luminous indication
-    /// that Clicky is engaged. Also visible while a Reverse Clicky teach
+    /// that Sticky is engaged. Also visible while a Reverse Clicky teach
     /// session is recording, so the user knows the mic is open even
     /// when the panel is dismissed. Hidden only when idle and no teach
     /// session is running.
@@ -226,15 +236,16 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Maps the current voice state to the visual mode the EdgeGlowView
-    /// should render in. Each mode has its own palette + motion
-    /// parameters so the user, the loading wait, and the AI's reply are
-    /// distinguishable at a glance. Teach-session recording reuses the
-    /// listening palette for now — the dedicated amber/full-edge halo
-    /// per the plan is a follow-up.
+    /// Maps the current voice / teach-session state to the visual mode
+    /// the EdgeGlowView should render in. Each mode picks its own anchor
+    /// (which edges glow) and the caller supplies the matching color +
+    /// audio source. Teach-session recording takes priority over voice
+    /// state because the user might still be holding push-to-talk while
+    /// a session is recording — the four-edge halo is the more
+    /// important indicator to show in that overlap.
     private var edgeGlowMode: EdgeGlowMode {
         if companionManager.teachSessionState == .recording {
-            return .listeningToUser
+            return .teachRecording
         }
         switch companionManager.voiceState {
         case .listening: return .listeningToUser
@@ -244,13 +255,11 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Picks which audio source drives the aurora's reactivity for the
-    /// current voice state. During `.listening` we use the live mic
-    /// level; during `.responding` we use the TTS playback level;
-    /// during `.processing` we feed 0 because the EdgeGlowView
-    /// synthesizes its own pulsing rhythm in that mode. Teach-session
-    /// recording uses the same mic level as listening — the user is
-    /// narrating, so the glow should react to their voice.
+    /// Picks which audio source drives the glow's intensity for the
+    /// current mode. Listening / teach-recording use the live mic level
+    /// (the user is talking); responding uses the TTS playback level
+    /// (Sticky is talking); processing feeds 0 because the EdgeGlowView
+    /// synthesizes its own breathing pulse in that mode.
     private var edgeGlowAudioPowerLevel: CGFloat {
         if companionManager.teachSessionState == .recording {
             return companionManager.currentAudioPowerLevel
@@ -262,17 +271,18 @@ struct BlueCursorView: View {
         }
     }
 
-    /// The point the aurora's gravity should pull toward, in this
-    /// screen's SwiftUI coordinates. Non-nil during navigate/point so
-    /// the curtains visibly bend toward the element Clicky is
-    /// indicating; nil when the buddy is just following the cursor so
-    /// the aurora hangs at the edges as usual.
-    private var edgeGlowPullTarget: CGPoint? {
-        switch buddyNavigationMode {
-        case .navigatingToTarget, .pointingAtTarget:
-            return navigationTargetPosition
-        case .followingCursor:
-            return nil
+    /// Picks the color of the glow based on whose turn it is in the
+    /// conversation. The user's voice (listening / processing /
+    /// teach-recording) glows in the user color; Sticky's voice
+    /// (responding) glows in Sticky's voice color, which tracks the
+    /// selected ElevenLabs voice so the picker orb, the cursor, and
+    /// the response halo all match.
+    private var edgeGlowColor: Color {
+        switch edgeGlowMode {
+        case .respondingWithAI:
+            return companionManager.stickyVoiceColor
+        case .listeningToUser, .processingThinking, .teachRecording:
+            return CompanionManager.userVoiceColor
         }
     }
 
@@ -289,10 +299,11 @@ struct BlueCursorView: View {
             EdgeGlowView(
                 audioPowerLevel: edgeGlowAudioPowerLevel,
                 mode: edgeGlowMode,
-                pullTarget: edgeGlowPullTarget
+                color: edgeGlowColor
             )
                 .opacity(edgeGlowShouldBeVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.4), value: companionManager.voiceState)
+                .animation(.easeInOut(duration: 0.4), value: companionManager.teachSessionState)
                 .animation(.linear(duration: 0.08), value: edgeGlowAudioPowerLevel)
 
             // Welcome speech bubble (first launch only)
@@ -304,8 +315,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(companionManager.stickyVoiceColor)
+                            .shadow(color: companionManager.stickyVoiceColor.opacity(0.5), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -348,8 +359,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(companionManager.stickyVoiceColor)
+                            .shadow(color: companionManager.stickyVoiceColor.opacity(0.5), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -378,9 +389,9 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
+                            .fill(companionManager.stickyVoiceColor)
                             .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
+                                color: companionManager.stickyVoiceColor.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
                                 radius: 6 + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
@@ -403,7 +414,33 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Mystical orb — only visible when Clicky is "showing the user
+            // Applied-taste transparency chip — appears below the cursor
+            // after a voice reply that actually leaned on the user's
+            // saved principles, listing which ones Sticky used. Drawn
+            // ONLY on the screen the cursor is currently on so the chip
+            // doesn't duplicate across multiple monitors. Visibility is
+            // gated on `isShowingAppliedPrinciplesChip` — CompanionManager
+            // only flips that flag on when at least one principle was
+            // applied, so we don't need a separate empty-state branch here.
+            if isCursorOnThisScreen
+                && companionManager.isShowingAppliedPrinciplesChip {
+                AppliedPrinciplesChip(
+                    lastAppliedPrinciples: companionManager.lastAppliedPrinciples,
+                    lastAppliedSourceWasTeam: companionManager.lastAppliedSourceWasTeam,
+                    teamOriginPrincipleIds: companionManager.teamOriginPrincipleIds
+                )
+                .frame(maxWidth: 320, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                // Anchor the chip a bit further below the cursor than the
+                // navigation bubble so they don't visually collide if a
+                // [POINT:...] tag was also returned in the same reply.
+                .position(x: cursorPosition.x + 170, y: cursorPosition.y + 60)
+                .animation(.easeInOut(duration: 0.25), value: companionManager.isShowingAppliedPrinciplesChip)
+                .animation(.easeInOut(duration: 0.2), value: companionManager.lastAppliedPrinciples)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // Mystical orb — only visible when Sticky is "showing the user
             // something" (flying to a target or pointing at one). It does
             // NOT follow the cursor. During the bezier flight, position is
             // driven frame-by-frame by the navigation timer; we suppress
@@ -411,13 +448,22 @@ struct BlueCursorView: View {
             // The orb is symmetric so triangleRotationDegrees no longer
             // drives a visible rotation; the directional cue during flight
             // comes from buddyFlightScale (grows mid-arc, shrinks on landing).
-            MysticalOrbView()
-                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            MysticalOrbView(
+                bodyColor: companionManager.stickyVoiceColor,
+                personaAvatar: companionManager.activePersonaAvatar
+            )
+                .shadow(color: companionManager.stickyVoiceColor.opacity(0.6), radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
                 .opacity(orbShouldBeVisible ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.easeInOut(duration: 0.4), value: orbShouldBeVisible)
 
+            // Persona wheel overlay — drawn last so it sits on top of
+            // the cursor orb, edge glow, and any speech bubble while
+            // the user is holding the wheel hotkey. Only renders on
+            // the screen containing the wheel's anchor point so the
+            // other displays stay clean.
+            personaWheelOverlay
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
@@ -495,6 +541,13 @@ struct BlueCursorView: View {
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
 
+            // While the persona wheel is held open, every cursor frame
+            // figures out which spoke the user is pointing at and
+            // pushes the result into CompanionManager so the wheel
+            // (rendered below in the same view) and the release-commit
+            // logic both see a fresh hovered id.
+            self.updateHoveredPersonaSpokeIfWheelVisible(currentMouseLocation: mouseLocation)
+
             // During forward flight or pointing, the buddy is NOT interrupted by
             // mouse movement — it completes its full animation and return flight.
             // Only during the RETURN flight do we allow cursor movement to cancel
@@ -530,6 +583,53 @@ struct BlueCursorView: View {
         let x = screenPoint.x - screenFrame.origin.x
         let y = (screenFrame.origin.y + screenFrame.height) - screenPoint.y
         return CGPoint(x: x, y: y)
+    }
+
+    // MARK: - Persona Wheel Hover Tracking
+
+    /// While the persona wheel is held open, computes which spoke the
+    /// cursor is currently pointing toward (or nil for the dead zone)
+    /// and writes the result back to CompanionManager. Only the
+    /// overlay covering the screen the wheel was summoned on does the
+    /// computation — overlays on other screens skip it so the published
+    /// hovered-id isn't being clobbered by N writers per frame.
+    private func updateHoveredPersonaSpokeIfWheelVisible(currentMouseLocation: CGPoint) {
+        guard companionManager.isPersonaWheelVisible,
+              let wheelCenterScreenLocation = companionManager.personaWheelCenterScreenLocation else {
+            return
+        }
+
+        // Only the overlay containing the wheel's anchor point owns
+        // hover updates. (When the cursor crosses to another screen
+        // mid-hold, the cursor moves but the wheel stays anchored —
+        // releasing dismisses it without a commit, which feels right.)
+        guard screenFrame.contains(wheelCenterScreenLocation) else { return }
+
+        let cursorOffsetFromWheelCenter = CGPoint(
+            x: currentMouseLocation.x - wheelCenterScreenLocation.x,
+            // Negate so positive y-offset reads as "below the center"
+            // in SwiftUI screen-space (matches the wheel's spoke layout).
+            y: wheelCenterScreenLocation.y - currentMouseLocation.y
+        )
+
+        let totalSpokeCount = companionManager.allWheelPersonas.count
+        let hoveredSpokeIndex = PersonaWheelGeometry.hoveredSpokeIndex(
+            cursorOffsetFromCenter: cursorOffsetFromWheelCenter,
+            totalSpokes: totalSpokeCount
+        )
+
+        let hoveredPersonaId: String?
+        if let hoveredSpokeIndex,
+           hoveredSpokeIndex >= 0,
+           hoveredSpokeIndex < totalSpokeCount {
+            hoveredPersonaId = companionManager.allWheelPersonas[hoveredSpokeIndex].id
+        } else {
+            hoveredPersonaId = nil
+        }
+
+        if companionManager.hoveredWheelPersonaId != hoveredPersonaId {
+            companionManager.hoveredWheelPersonaId = hoveredPersonaId
+        }
     }
 
     // MARK: - Element Navigation
@@ -867,730 +967,559 @@ private struct BlueCursorSpinnerView: View {
 /// Identifies the conversational beat the edge glow is currently
 /// rendering for. Each mode has a distinct visual treatment so the
 /// user can tell — without looking at the cursor or the panel — which
-/// half of the conversation Clicky is in.
+/// half of the conversation Sticky is in.
+/// Which edge(s) of the screen the glow anchors to. Mode picks the
+/// anchor (see `EdgeGlowMode.defaultAnchor`) so the user reads the
+/// direction of the glow as the direction of conversation: glow up from
+/// the bottom while *they* speak, glow down from the top while *Sticky*
+/// speaks back, glow as a full-screen halo while a teach session is
+/// recording the desktop.
+enum EdgeGlowAnchor {
+    case bottom
+    case top
+    /// All four edges. Used during teach-mode recording to communicate
+    /// "the whole environment is being observed" — reads as a halo ring
+    /// around the desktop rather than a single directional glow.
+    case all
+
+    var includesBottom: Bool { self == .bottom || self == .all }
+    var includesTop: Bool { self == .top || self == .all }
+    var includesLeading: Bool { self == .all }
+    var includesTrailing: Bool { self == .all }
+}
+
 enum EdgeGlowMode {
-    /// User is holding push-to-talk and speaking. Mic-driven aurora,
-    /// full-saturation cool palette, fast motion. The "you're being
-    /// heard" state.
+    /// User is holding push-to-talk and speaking. Mic-driven, anchored
+    /// to the bottom edge in their voice color (blue by default).
     case listeningToUser
     /// Transcript finalized; waiting for Claude (and the first TTS
-    /// chunk) to come back. No real audio source — instead the aurora
-    /// breathes on a slow synthetic pulse so it's clearly distinct
-    /// from both speaking states.
+    /// chunk) to come back. Same anchor + color as listening so the
+    /// transition is visually continuous, but a horizontal shimmer
+    /// sweep + slow synthetic breathing replace the mic-reactivity so
+    /// the user can tell at a glance that we're now waiting on the
+    /// model rather than listening.
     case processingThinking
-    /// AI is speaking the response back. TTS-driven, but visibly
-    /// different from `.listeningToUser`: warmer palette skew (more
-    /// magenta/pink, less green), slightly slower phase speeds, so the
-    /// user reads the glow as "the AI talking" rather than mirroring
-    /// their own voice.
+    /// AI is speaking the response back. TTS-driven, anchored to the
+    /// top edge in Sticky's voice color so it reads as "Sticky talking
+    /// down at me" — conversational, the opposite direction of the
+    /// user's own bottom glow.
     case respondingWithAI
-}
+    /// Reverse Clicky teach session is recording. All four edges glow
+    /// in the user's voice color (mic-reactive) — a halo ring around
+    /// the desktop. The full-screen surround is the indicator that this
+    /// is a different mode from a normal Ask interaction.
+    case teachRecording
 
-/// Per-mode visual configuration that the EdgeGlowView applies on top
-/// of the per-layer baseline parameters. Lets `.listeningToUser`,
-/// `.processingThinking`, and `.respondingWithAI` share the same
-/// ribbon stack while looking and behaving distinctly.
-private struct EdgeGlowModeStyle {
-    /// When true, the EdgeGlowView ignores the input `audioPowerLevel`
-    /// and synthesizes its own slow sine pulse instead. Used by
-    /// `.processingThinking` to telegraph "AI is thinking" without
-    /// needing real audio.
-    let usesSyntheticPulse: Bool
-    /// Period of the synthetic pulse in seconds. Only relevant when
-    /// `usesSyntheticPulse` is true.
-    let pulsePeriodSeconds: Double
-    /// Multiplied into every layer's `primaryPhaseSpeed` and
-    /// `secondaryPhaseSpeed`. < 1.0 = calmer / more considered motion.
-    let phaseSpeedMultiplier: Double
-    /// Multiplied into every layer's `waveAmplitude`. Lets a mode dial
-    /// the entire stack's expressiveness up or down without changing
-    /// each layer's individual character.
-    let amplitudeMultiplier: CGFloat
-    /// Per-color opacity scalars (1.0 = baseline, 0.0 = layer hidden).
-    /// Lets each mode tune the color balance — e.g. boost magenta/pink
-    /// for `.respondingWithAI`, drop them for `.processingThinking`.
-    let indigoOpacityScale: Double
-    let blueOpacityScale: Double
-    let cyanOpacityScale: Double
-    let greenOpacityScale: Double
-    let magentaOpacityScale: Double
-    let whiteOpacityScale: Double
-    let pinkOpacityScale: Double
-
-    static func style(for mode: EdgeGlowMode) -> EdgeGlowModeStyle {
-        switch mode {
-        case .listeningToUser:
-            // Baseline behavior: every layer at 1.0, mic-driven.
-            return EdgeGlowModeStyle(
-                usesSyntheticPulse: false,
-                pulsePeriodSeconds: 0,
-                phaseSpeedMultiplier: 1.0,
-                amplitudeMultiplier: 1.0,
-                indigoOpacityScale: 1.0,
-                blueOpacityScale: 1.0,
-                cyanOpacityScale: 1.0,
-                greenOpacityScale: 1.0,
-                magentaOpacityScale: 1.0,
-                whiteOpacityScale: 1.0,
-                pinkOpacityScale: 1.0
-            )
-        case .processingThinking:
-            // Cooler, calmer "thinking" feel. Magenta and pink mostly
-            // off so the palette reads cool/blue/cyan; phase speed
-            // slowed; a 2.4s synthetic pulse drives the swell so the
-            // aurora visibly breathes while waiting.
-            return EdgeGlowModeStyle(
-                usesSyntheticPulse: true,
-                pulsePeriodSeconds: 2.4,
-                phaseSpeedMultiplier: 0.55,
-                amplitudeMultiplier: 0.85,
-                indigoOpacityScale: 1.0,
-                blueOpacityScale: 1.0,
-                cyanOpacityScale: 0.95,
-                greenOpacityScale: 0.55,
-                magentaOpacityScale: 0.20,
-                whiteOpacityScale: 0.85,
-                pinkOpacityScale: 0.25
-            )
-        case .respondingWithAI:
-            // Warmer skew so it reads as the AI's voice rather than
-            // the user's. Slightly slower phase speed so the AI feels
-            // measured next to the user's energetic input.
-            return EdgeGlowModeStyle(
-                usesSyntheticPulse: false,
-                pulsePeriodSeconds: 0,
-                phaseSpeedMultiplier: 0.78,
-                amplitudeMultiplier: 1.0,
-                indigoOpacityScale: 1.0,
-                blueOpacityScale: 0.85,
-                cyanOpacityScale: 0.70,
-                greenOpacityScale: 0.45,
-                magentaOpacityScale: 1.55,
-                whiteOpacityScale: 1.0,
-                pinkOpacityScale: 1.55
-            )
+    /// Each mode has a single natural anchor. Centralizing the mapping
+    /// here means call sites only choose a mode — they don't also have
+    /// to remember which edges that mode glows on.
+    var defaultAnchor: EdgeGlowAnchor {
+        switch self {
+        case .listeningToUser, .processingThinking: return .bottom
+        case .respondingWithAI: return .top
+        case .teachRecording: return .all
         }
+    }
+
+    /// Only `.processingThinking` shows the moving highlight sweep.
+    /// Listening / responding / teach are all driven by real audio so
+    /// they're inherently animated; processing has nothing to react to,
+    /// which is exactly when we need an extra animation to feel alive.
+    var usesShimmerSweep: Bool {
+        self == .processingThinking
+    }
+
+    /// `.processingThinking` ignores the input audio level (which is 0
+    /// during the wait) and breathes on a slow synthetic pulse instead.
+    /// Every other mode is driven by real audio.
+    var usesSyntheticBreathing: Bool {
+        self == .processingThinking
     }
 }
 
-/// An aurora-like glow anchored to the bottom edge of the screen during
-/// any active voice interaction. Built as a stack of bottom-anchored
-/// "ribbons" — each ribbon is a band of color whose top edge undulates
-/// like an aurora curtain (sum of two sine waves at different
-/// frequencies, both phase-shifted continuously over time). The ribbons
-/// drift laterally at different speeds and use cool aurora colors
-/// (indigo → blue → cyan → green → magenta → white highlight), with
-/// most layers using `.plusLighter` for the luminous additive feel of
-/// real auroras. The center stays fully transparent so the user's work
-/// is never occluded.
-///
-/// The `mode` parameter selects an `EdgeGlowModeStyle` that applies
-/// global motion + per-color opacity scalars on top of each layer's
-/// baseline configuration, so the same ribbon stack visibly distinguishes
-/// listening (mic-driven, cool palette), processing (synthetic
-/// breathing pulse, cooler/dimmer), and responding (TTS-driven, warmer
-/// pink/magenta skew, slightly slower).
-private struct EdgeGlowView: View {
-    let audioPowerLevel: CGFloat
-    let mode: EdgeGlowMode
-    /// Screen-local point the aurora should warp toward, in this
-    /// overlay's SwiftUI coordinates. When non-nil, every ribbon's top
-    /// edge curves up toward this point with a Gaussian falloff in x —
-    /// reading visually as the target exerting "gravity" on the four
-    /// edge stacks. Nil = no pull, ribbons hang at the edges normally.
-    let pullTarget: CGPoint?
-
-    // Each mode-derived value is stored as its own @State so SwiftUI
-    // can interpolate them independently when the mode changes. Without
-    // this, switching from `.listening` → `.processingThinking`
-    // (or any other transition) snaps every multiplier and opacity
-    // scalar to the new mode's value in a single frame, which is what
-    // produces the "jagged" feel during state changes. With these
-    // animated, the entire stack glides between modes over ~600ms.
-    @State private var amplitudeMultiplier: CGFloat
-    @State private var phaseSpeedMultiplier: Double
-    @State private var indigoOpacityScale: Double
-    @State private var blueOpacityScale: Double
-    @State private var cyanOpacityScale: Double
-    @State private var greenOpacityScale: Double
-    @State private var magentaOpacityScale: Double
-    @State private var whiteOpacityScale: Double
-    @State private var pinkOpacityScale: Double
-    /// 0 = drive aurora purely from real audio (mic or TTS).
-    /// 1 = drive aurora purely from the synthetic processing pulse.
-    /// Animated between the two so transitions in/out of `.processing`
-    /// fade rather than snap.
-    @State private var pulseInfluence: Double
-
-    /// Animated 0...1 strength of the gravity pull. Tweens up to 1.0
-    /// when `pullTarget` becomes non-nil and back to 0 when it clears,
-    /// so the aurora doesn't snap into and out of the warped shape —
-    /// it eases in over ~450ms and eases back out the same way.
-    @State private var pullStrength: Double = 0
-    /// Animated x of the gravity well, used when the target moves
-    /// (e.g. a new element is detected before the previous pull has
-    /// finished fading). Tracking the position via @State means the
-    /// pull location slides between targets rather than teleporting.
-    @State private var animatedPullTargetX: CGFloat = 0
-    @State private var animatedPullTargetY: CGFloat = 0
-
-    init(audioPowerLevel: CGFloat, mode: EdgeGlowMode, pullTarget: CGPoint?) {
-        self.audioPowerLevel = audioPowerLevel
-        self.mode = mode
-        self.pullTarget = pullTarget
-        let initial = EdgeGlowModeStyle.style(for: mode)
-        _amplitudeMultiplier = State(initialValue: initial.amplitudeMultiplier)
-        _phaseSpeedMultiplier = State(initialValue: initial.phaseSpeedMultiplier)
-        _indigoOpacityScale = State(initialValue: initial.indigoOpacityScale)
-        _blueOpacityScale = State(initialValue: initial.blueOpacityScale)
-        _cyanOpacityScale = State(initialValue: initial.cyanOpacityScale)
-        _greenOpacityScale = State(initialValue: initial.greenOpacityScale)
-        _magentaOpacityScale = State(initialValue: initial.magentaOpacityScale)
-        _whiteOpacityScale = State(initialValue: initial.whiteOpacityScale)
-        _pinkOpacityScale = State(initialValue: initial.pinkOpacityScale)
-        _pulseInfluence = State(initialValue: initial.usesSyntheticPulse ? 1.0 : 0.0)
-        // Seed the animated pull-target with the current target (or zero
-        // if there isn't one) so the first non-nil transition doesn't
-        // lerp from a stale position.
-        _animatedPullTargetX = State(initialValue: pullTarget?.x ?? 0)
-        _animatedPullTargetY = State(initialValue: pullTarget?.y ?? 0)
-        _pullStrength = State(initialValue: pullTarget != nil ? 1.0 : 0.0)
-    }
-
-    /// Period of the synthetic processing-state pulse. Fixed rather
-    /// than mode-derived so its phase stays continuous when fading
-    /// in/out of processing — animating the period would speed up or
-    /// slow down the visible pulse mid-cycle, which looks worse than
-    /// just keeping a steady 2.4s rhythm whose amplitude fades.
-    private static let syntheticPulsePeriodSeconds: Double = 2.4
-
-    var body: some View {
-        // TimelineView drives a continuous animation independent of audio
-        // so the aurora keeps "living" between words. We compute the
-        // shared per-frame values once here and hand them down to all
-        // four edge stacks, rather than letting each stack run its own
-        // TimelineView (which would still work, but redundantly).
-        TimelineView(.animation) { timeline in
-            let elapsedSeconds = timeline.date.timeIntervalSinceReferenceDate
-
-            // Synthetic pulse for the processing/loading state. 0...1.
-            // Always computed; its visual influence is gated by
-            // `pulseInfluence` (animated) rather than a hard switch.
-            let syntheticPulse = CGFloat((sin(elapsedSeconds * 2 * .pi / Self.syntheticPulsePeriodSeconds) + 1) / 2)
-
-            // Crossfade audio reactivity between real-audio and pulse.
-            // When pulseInfluence is 0 (listening/responding), only the
-            // mic/TTS-derived value contributes; when it's 1
-            // (processing), only the synthetic pulse contributes; in
-            // between we blend, so transitioning between states slides
-            // smoothly rather than snapping.
-            let micReactivity = audioReactivityNormalized
-            let pulseReactivity = syntheticPulse * 0.65
-            let audioReactivity = micReactivity * (1 - CGFloat(pulseInfluence))
-                                + pulseReactivity * CGFloat(pulseInfluence)
-
-            // Same crossfade for overall opacity. Real-audio mode uses
-            // the eased mic/TTS curve (0.55 baseline → 1.0 peak); pulse
-            // mode breathes 0.45 → 0.80; the blend is what the user
-            // sees during transitions.
-            let micIntensity = audioReactiveIntensity
-            let pulseIntensity = 0.45 + Double(syntheticPulse) * 0.35
-            let overallOpacity = micIntensity * (1 - pulseInfluence) + pulseIntensity * pulseInfluence
-
-            // Reconstitute the (continuously interpolated) style from
-            // the @State scalars so AuroraEdgeRibbonStack can keep its
-            // existing struct-based parameter API. usesSyntheticPulse
-            // and pulsePeriodSeconds are forced off here because we've
-            // already baked the pulse into `audioReactivity` above.
-            let interpolatedStyle = EdgeGlowModeStyle(
-                usesSyntheticPulse: false,
-                pulsePeriodSeconds: 0,
-                phaseSpeedMultiplier: phaseSpeedMultiplier,
-                amplitudeMultiplier: amplitudeMultiplier,
-                indigoOpacityScale: indigoOpacityScale,
-                blueOpacityScale: blueOpacityScale,
-                cyanOpacityScale: cyanOpacityScale,
-                greenOpacityScale: greenOpacityScale,
-                magentaOpacityScale: magentaOpacityScale,
-                whiteOpacityScale: whiteOpacityScale,
-                pinkOpacityScale: pinkOpacityScale
-            )
-
-            // GeometryReader is needed because the left/right edges
-            // require frame-swapped sizing (we render the bottom-anchored
-            // ribbon stack into a tall-and-narrow frame whose long axis
-            // matches the screen height, then rotate it 90° onto the
-            // side edge). Without the actual screen dimensions in hand,
-            // we can't size those frames correctly.
-            GeometryReader { geometry in
-                let screenWidth = geometry.size.width
-                let screenHeight = geometry.size.height
-
-                // The pull target lives in screen-local SwiftUI
-                // coordinates, but each rotated stack draws in its own
-                // coordinate system. Convert once per frame so each
-                // stack receives the target expressed in its own
-                // bottom-anchored frame:
-                //   bottom: identity
-                //   top:    rotated 180° around frame center
-                //   left:   rotated 90° CW around top-leading + shifted
-                //   right:  rotated 90° CCW around top-leading + shifted
-                // These inversions match the rotations applied to each
-                // stack below — derived by inverting the geometric
-                // transforms used to position the four edges.
-                let screenPullPoint = CGPoint(x: animatedPullTargetX, y: animatedPullTargetY)
-                let bottomLocalPullTarget = screenPullPoint
-                let topLocalPullTarget = CGPoint(
-                    x: screenWidth - screenPullPoint.x,
-                    y: screenHeight - screenPullPoint.y
-                )
-                let leftLocalPullTarget = CGPoint(
-                    x: screenPullPoint.y,
-                    y: screenWidth - screenPullPoint.x
-                )
-                let rightLocalPullTarget = CGPoint(
-                    x: screenHeight - screenPullPoint.y,
-                    y: screenPullPoint.x
-                )
-
-                // ZStack is anchored top-leading so each stack's frame
-                // origin lines up at (0, 0). The rotation math for the
-                // side edges below assumes that origin — with default
-                // .center alignment the side stacks would be centered
-                // first and then the rotations would land in the wrong
-                // place.
-                ZStack(alignment: .topLeading) {
-                    // BOTTOM edge — natural orientation.
-                    AuroraEdgeRibbonStack(
-                        elapsedSeconds: elapsedSeconds,
-                        audioReactivity: audioReactivity,
-                        style: interpolatedStyle,
-                        localPullTarget: bottomLocalPullTarget,
-                        pullStrength: pullStrength
-                    )
-                    .frame(width: screenWidth, height: screenHeight)
-
-                    // TOP edge — rotated 180° around frame center.
-                    AuroraEdgeRibbonStack(
-                        elapsedSeconds: elapsedSeconds,
-                        audioReactivity: audioReactivity,
-                        style: interpolatedStyle,
-                        localPullTarget: topLocalPullTarget,
-                        pullStrength: pullStrength
-                    )
-                    .frame(width: screenWidth, height: screenHeight)
-                    .rotationEffect(.degrees(180))
-
-                    // LEFT edge — frame swapped + rotated 90° CW.
-                    AuroraEdgeRibbonStack(
-                        elapsedSeconds: elapsedSeconds,
-                        audioReactivity: audioReactivity,
-                        style: interpolatedStyle,
-                        localPullTarget: leftLocalPullTarget,
-                        pullStrength: pullStrength
-                    )
-                    .frame(width: screenHeight, height: screenWidth)
-                    .rotationEffect(.degrees(90), anchor: .topLeading)
-                    .offset(x: screenWidth, y: 0)
-
-                    // RIGHT edge — frame swapped + rotated 90° CCW.
-                    AuroraEdgeRibbonStack(
-                        elapsedSeconds: elapsedSeconds,
-                        audioReactivity: audioReactivity,
-                        style: interpolatedStyle,
-                        localPullTarget: rightLocalPullTarget,
-                        pullStrength: pullStrength
-                    )
-                    .frame(width: screenHeight, height: screenWidth)
-                    .rotationEffect(.degrees(-90), anchor: .topLeading)
-                    .offset(x: 0, y: screenHeight)
-                }
-                .opacity(overallOpacity)
-                .allowsHitTesting(false)
-            }
-        }
-        // Animate every mode-derived scalar over 600ms whenever the
-        // parent flips `mode`. This is what turns the previously hard
-        // snap between listening/processing/responding into a smooth
-        // crossfade — the curtains slow down (or speed up), the
-        // palette warms (or cools), and the synthetic pulse fades in
-        // (or out) all in lockstep over a single eased transition.
-        .onChange(of: mode) { _, newMode in
-            let target = EdgeGlowModeStyle.style(for: newMode)
-            withAnimation(.easeInOut(duration: 0.6)) {
-                amplitudeMultiplier = target.amplitudeMultiplier
-                phaseSpeedMultiplier = target.phaseSpeedMultiplier
-                indigoOpacityScale = target.indigoOpacityScale
-                blueOpacityScale = target.blueOpacityScale
-                cyanOpacityScale = target.cyanOpacityScale
-                greenOpacityScale = target.greenOpacityScale
-                magentaOpacityScale = target.magentaOpacityScale
-                whiteOpacityScale = target.whiteOpacityScale
-                pinkOpacityScale = target.pinkOpacityScale
-                pulseInfluence = target.usesSyntheticPulse ? 1.0 : 0.0
-            }
-        }
-        // Animate the gravity well: pull strength eases in and out, and
-        // when the target moves while the pull is already active the
-        // anchor location glides rather than teleports.
-        .onChange(of: pullTarget) { oldTarget, newTarget in
-            if let target = newTarget {
-                if oldTarget == nil {
-                    // Cold start (no prior pull): snap the position so
-                    // the warp grows out of the right place, then ease
-                    // the strength up over 450ms.
-                    animatedPullTargetX = target.x
-                    animatedPullTargetY = target.y
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        pullStrength = 1.0
-                    }
-                } else {
-                    // Hot swap (target moved between elements): slide
-                    // the anchor from the previous target to the new
-                    // one without flickering the strength.
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        animatedPullTargetX = target.x
-                        animatedPullTargetY = target.y
-                    }
-                }
-            } else {
-                withAnimation(.easeInOut(duration: 0.45)) {
-                    pullStrength = 0.0
-                }
-            }
-        }
-    }
-
-    /// Same easing curve the old waveform indicator used. Keeps a soft
-    /// baseline glow even in silence (so the user knows the mic is hot)
-    /// and ramps up to full intensity when they speak.
-    private var audioReactiveIntensity: Double {
-        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
-        let easedAudioPowerLevel = pow(min(Double(normalizedAudioPowerLevel) * 2.85, 1), 0.76)
-        let baselineIntensity: Double = 0.55
-        let audioReactiveBoost: Double = 0.45
-        return baselineIntensity + easedAudioPowerLevel * audioReactiveBoost
-    }
-
-    /// 0...1 audio drive used inside the ribbons to scale wave amplitude
-    /// and animation speed. Same eased curve as `audioReactiveIntensity`
-    /// but without the baseline offset — silence really is 0 here so the
-    /// aurora calms down between words instead of constantly thrashing.
-    private var audioReactivityNormalized: CGFloat {
-        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
-        let eased = pow(min(Double(normalizedAudioPowerLevel) * 2.85, 1), 0.76)
-        return CGFloat(eased)
-    }
-}
-
-/// A single configuration entry for one aurora ribbon. Used to drive
-/// the per-ribbon draw inside `AuroraEdgeRibbonStack`'s consolidated
-/// Canvas. Every ribbon has the same per-frame inputs (`audioReactivity`,
-/// `elapsedSeconds`) which the stack supplies once, and a small set of
-/// per-layer parameters captured in this struct.
-private struct AuroraRibbonSpec {
+/// A single layered "halo" of soft inner-shadow-style glow that emanates
+/// from one edge of the screen and fades inward. Built as a stack of
+/// gradient bands at increasing blur radii, masked at a soft corner
+/// radius so the corners curve gracefully and the glow never looks like
+/// a hard rectangle. Audio reactivity scales the overall intensity so
+/// the halo pulses with the user's voice or the AI's TTS.
+private struct InnerShadowEdgeHalo: View {
+    /// Which edge of the screen the halo emanates from. The four cases
+    /// (`.bottom`, `.top`, `.leading`, `.trailing`) each rotate the
+    /// gradient and frame alignment so the brightest band sits flush
+    /// against the matching screen edge.
+    let edge: Edge
+    /// Saturated color of the glow's outer halo. Bright color near the
+    /// edge fades to fully transparent toward the center of the screen.
     let color: Color
-    let baseHeight: CGFloat
-    let waveAmplitude: CGFloat
-    let primaryFrequency: CGFloat
-    let secondaryFrequency: CGFloat
-    let primaryPhaseSpeed: Double
-    let secondaryPhaseSpeed: Double
-    let lateralDriftAmplitude: CGFloat
-    let lateralDriftSpeed: Double
-    let bottomOpacity: Double
-    let blurRadius: CGFloat
-    let blendMode: GraphicsContext.BlendMode
-}
-
-/// Renders the seven-ribbon aurora curtain stack into a single
-/// `Canvas`. Each ribbon is drawn inside its own `drawLayer` block so it
-/// gets its individual blur radius and blend mode, but the entire stack
-/// shares one SwiftUI view and one Canvas redraw per frame instead of
-/// spawning seven blurred subviews. With four edges around the screen
-/// that takes the per-frame compositing budget from 28 blurred Canvas
-/// views down to 4 — which is the main reason the previous version
-/// dropped frames once all four edges were visible. EdgeGlowView
-/// renders four of these by rotating and reframing this view into the
-/// bottom / top / left / right edges.
-private struct AuroraEdgeRibbonStack: View {
-    let elapsedSeconds: Double
-    let audioReactivity: CGFloat
-    let style: EdgeGlowModeStyle
-    /// Gravity-well point in this stack's local (bottom-anchored)
-    /// coordinates. EdgeGlowView produces this by inverting the
-    /// rotation/offset of each edge so all four stacks see the
-    /// "target" in their own frame. Always non-nil; when the pull is
-    /// inactive `pullStrength` is 0 and the value is ignored, so we
-    /// don't bother making this Optional.
-    let localPullTarget: CGPoint
-    /// 0...1 strength of the gravity pull. 0 = no warp (ribbons hang
-    /// at the edge as usual), 1 = full warp (ribbon's top edge reaches
-    /// up to the target at x = localPullTarget.x).
-    let pullStrength: Double
-
-    // Aurora palette: deep atmospheric base, classic aurora green/cyan,
-    // a magenta accent for the rarer high-altitude tones, and a white
-    // highlight right at the edge for that "hot core" specular feel.
-    private let deepIndigo = Color(hex: "#1B1F6E")
-    private let blue = Color(hex: "#2E5BFF")
-    private let cyan = Color(hex: "#3CD9F0")
-    private let auroraGreen = Color(hex: "#4DFFA8")
-    private let magenta = Color(hex: "#C45CFF")
-    private let pink = Color(hex: "#FF7AC8")
-
-    /// All seven ribbon specs, generated fresh each render so the
-    /// `style` multipliers (which animate when the mode changes) flow
-    /// through. Building them as a small array keeps the Canvas body
-    /// readable and lets us iterate cleanly.
-    private var ribbons: [AuroraRibbonSpec] {
-        [
-            // Layer 1 — broad deep-indigo atmospheric bed. Reaches
-            // farthest into the screen but at very low opacity.
-            AuroraRibbonSpec(
-                color: deepIndigo,
-                baseHeight: 180,
-                waveAmplitude: 24 * style.amplitudeMultiplier,
-                primaryFrequency: 1.3,
-                secondaryFrequency: 0.55,
-                primaryPhaseSpeed: 0.18 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: 0.10 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 90,
-                lateralDriftSpeed: 0.07 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.42 * style.indigoOpacityScale,
-                blurRadius: 38,
-                blendMode: .normal
-            ),
-            // Layer 2 — blue mid bloom.
-            AuroraRibbonSpec(
-                color: blue,
-                baseHeight: 130,
-                waveAmplitude: 32 * style.amplitudeMultiplier,
-                primaryFrequency: 1.7,
-                secondaryFrequency: 0.95,
-                primaryPhaseSpeed: 0.32 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: -0.21 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 70,
-                lateralDriftSpeed: 0.11 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.30 * style.blueOpacityScale,
-                blurRadius: 26,
-                blendMode: .plusLighter
-            ),
-            // Layer 3 — cyan aurora curtain.
-            AuroraRibbonSpec(
-                color: cyan,
-                baseHeight: 95,
-                waveAmplitude: 36 * style.amplitudeMultiplier,
-                primaryFrequency: 2.3,
-                secondaryFrequency: 1.1,
-                primaryPhaseSpeed: 0.42 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: 0.28 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 60,
-                lateralDriftSpeed: -0.14 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.24 * style.cyanOpacityScale,
-                blurRadius: 18,
-                blendMode: .plusLighter
-            ),
-            // Layer 4 — classic aurora green.
-            AuroraRibbonSpec(
-                color: auroraGreen,
-                baseHeight: 75,
-                waveAmplitude: 30 * style.amplitudeMultiplier,
-                primaryFrequency: 1.7,
-                secondaryFrequency: 2.6,
-                primaryPhaseSpeed: -0.27 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: 0.36 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 80,
-                lateralDriftSpeed: 0.17 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.18 * style.greenOpacityScale,
-                blurRadius: 16,
-                blendMode: .plusLighter
-            ),
-            // Layer 5 — magenta accent.
-            AuroraRibbonSpec(
-                color: magenta,
-                baseHeight: 58,
-                waveAmplitude: 26 * style.amplitudeMultiplier,
-                primaryFrequency: 1.2,
-                secondaryFrequency: 2.1,
-                primaryPhaseSpeed: 0.22 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: -0.31 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 100,
-                lateralDriftSpeed: -0.09 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.16 * style.magentaOpacityScale,
-                blurRadius: 14,
-                blendMode: .plusLighter
-            ),
-            // Layer 6 — white hot core.
-            AuroraRibbonSpec(
-                color: .white,
-                baseHeight: 22,
-                waveAmplitude: 5 * style.amplitudeMultiplier,
-                primaryFrequency: 3.0,
-                secondaryFrequency: 1.5,
-                primaryPhaseSpeed: 0.50 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: -0.30 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 40,
-                lateralDriftSpeed: 0.20 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.24 * style.whiteOpacityScale,
-                blurRadius: 7,
-                blendMode: .plusLighter
-            ),
-            // Layer 7 — pink under-glow.
-            AuroraRibbonSpec(
-                color: pink,
-                baseHeight: 16,
-                waveAmplitude: 3 * style.amplitudeMultiplier,
-                primaryFrequency: 2.5,
-                secondaryFrequency: 1.0,
-                primaryPhaseSpeed: -0.18 * style.phaseSpeedMultiplier,
-                secondaryPhaseSpeed: 0.24 * style.phaseSpeedMultiplier,
-                lateralDriftAmplitude: 30,
-                lateralDriftSpeed: 0.15 * style.phaseSpeedMultiplier,
-                bottomOpacity: 0.16 * style.pinkOpacityScale,
-                blurRadius: 5,
-                blendMode: .plusLighter
-            ),
-        ]
-    }
+    /// 0...1 reactivity scalar. Drives both the brightness of every
+    /// layer and the height/spread of the saturated band, so silence
+    /// reads as a calm dim glow and shouting reads as a tall vivid one.
+    let intensity: CGFloat
+    /// Soft mask radius applied to the entire halo. The reference uses
+    /// a small ~24pt radius so the corners feel gently rounded but the
+    /// glow is still flush against three of the four screen edges.
+    let cornerRadius: CGFloat
 
     var body: some View {
-        // ONE Canvas draws all seven ribbons. Each ribbon is wrapped
-        // in its own drawLayer + blur filter so the per-layer softness
-        // varies (deep indigo gets a 38pt halo, the white hot core
-        // stays sharp), but everything happens inside a single SwiftUI
-        // view rather than a stack of seven blurred Canvas subviews.
-        Canvas { context, size in
-            let specs = ribbons
-            for spec in specs {
-                drawRibbon(spec: spec, in: context, size: size)
-            }
+        ZStack {
+            // Layer 1 — broad outer halo. Largest blur, biggest spread,
+            // lowest opacity. Establishes the "atmospheric" reach of
+            // the glow into the center of the screen.
+            haloBand(
+                colorOpacity: 0.42,
+                bandHeight: 280,
+                blurRadius: 42
+            )
+            // Layer 2 — mid bloom. Medium blur, more saturated. This
+            // is the band the eye reads as "the color" of the glow.
+            haloBand(
+                colorOpacity: 0.72,
+                bandHeight: 170,
+                blurRadius: 28
+            )
+            // Layer 3 — saturated core. Tight blur, near-full opacity,
+            // sitting close to the screen edge. Gives the glow its
+            // visual weight.
+            haloBand(
+                colorOpacity: 0.92,
+                bandHeight: 80,
+                blurRadius: 16
+            )
+            // Layer 4 — white inner highlight. Sits hottest at the
+            // very edge so the band has a luminous rim, like the
+            // reference's "Inner Shadow 3" white pass at Plus Lighter.
+            haloBand(
+                colorOpacity: 0.55,
+                bandHeight: 28,
+                blurRadius: 8,
+                colorOverride: .white,
+                blendMode: .plusLighter
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        // Scale the entire halo's brightness with audio reactivity. We
+        // multiply opacity (rather than the per-band opacity scalars)
+        // so the four-layer relationship stays consistent across
+        // intensities — every band gets brighter together.
+        .opacity(Double(intensity))
+        // Round the corners so the glow doesn't look like a hard
+        // rectangle pasted onto the screen. Mac screens are nearly
+        // square at the corners so this is a deliberate softening, not
+        // a literal match.
+        .mask {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        }
         .allowsHitTesting(false)
     }
 
-    private func drawRibbon(
-        spec: AuroraRibbonSpec,
-        in context: GraphicsContext,
-        size: CGSize
-    ) {
-        // Audio amplifies wave amplitude up to 1.4x and phase speed up
-        // to 1.6x. Subtle enough that silence still has motion, strong
-        // enough that speaking visibly energizes the aurora.
-        let amplitude = spec.waveAmplitude * (1 + audioReactivity * 0.4)
-        let phaseSpeedBoost = 1 + Double(audioReactivity) * 0.6
-        let primaryPhase = elapsedSeconds * spec.primaryPhaseSpeed * phaseSpeedBoost
-        let secondaryPhase = elapsedSeconds * spec.secondaryPhaseSpeed * phaseSpeedBoost
-        let lateralDrift = CGFloat(sin(elapsedSeconds * spec.lateralDriftSpeed)) * spec.lateralDriftAmplitude
-
-        // Gravity-pull setup. `pullSigma` controls how wide the warped
-        // region is (in points along the ribbon's long axis); the
-        // Gaussian centered at localPullTarget.x is what gives the
-        // single-peak "pulled toward a single point" shape rather than
-        // a generic upward bulge. `pullVerticalDistance` is how far up
-        // the wave can reach at x = target.x with full pull strength —
-        // capped to a positive value so we never pull the wave DOWN
-        // (which would happen if the target sits below the ribbon's
-        // resting top, e.g. for an element near a screen edge).
-        let baseTopY = size.height - spec.baseHeight
-        let pullSigma: CGFloat = 220
-        let pullVerticalDistance = max(0, baseTopY - localPullTarget.y) * CGFloat(pullStrength)
-
-        // Top edge of the ribbon: two sine waves summed at a 60/40
-        // weighting, then warped upward by the Gaussian-weighted pull
-        // toward the local target. With pullStrength=0 the warp term
-        // is zero and we get the original undulating ribbon.
-        func topEdgeY(at x: CGFloat) -> CGFloat {
-            let primaryComponent = sin(2 * .pi * spec.primaryFrequency * (x + lateralDrift) / size.width + primaryPhase) * 0.6
-            let secondaryComponent = sin(2 * .pi * spec.secondaryFrequency * (x - lateralDrift) / size.width + secondaryPhase) * 0.4
-            let unwarpedTopY = baseTopY + amplitude * CGFloat(primaryComponent + secondaryComponent)
-            // Gaussian falloff in x — peaks at 1 when x == target.x,
-            // decays to ~0 at distances beyond ~3 sigma.
-            let distanceFromTargetX = x - localPullTarget.x
-            let gaussian = exp(-(distanceFromTargetX * distanceFromTargetX) / (2 * pullSigma * pullSigma))
-            // Pull up by `pullVerticalDistance * gaussian`. Subtract
-            // because smaller y is up the screen.
-            return unwarpedTopY - CGFloat(gaussian) * pullVerticalDistance
-        }
-
-        // Sample at 8pt steps. The blur smooths over any visible
-        // segmentation, and 8pt halves the per-frame path-construction
-        // cost vs the original 4pt sampling — meaningful when this
-        // runs seven times per stack × four stacks per frame.
-        let sampleStep: CGFloat = 8
-        var path = Path()
-        path.move(to: CGPoint(x: 0, y: topEdgeY(at: 0)))
-        var x: CGFloat = sampleStep
-        while x <= size.width {
-            path.addLine(to: CGPoint(x: x, y: topEdgeY(at: x)))
-            x += sampleStep
-        }
-        // Close down through the bottom corners into a filled shape.
-        path.addLine(to: CGPoint(x: size.width, y: size.height))
-        path.addLine(to: CGPoint(x: 0, y: size.height))
-        path.closeSubpath()
-
-        // Vertical gradient: transparent at the wave's average top,
-        // fully colored at the screen edge, with a soft midpoint so the
-        // upper half of the ribbon doesn't look hollow. When the pull
-        // is active, extend the gradient's transparent end upward by
-        // the maximum possible warp distance so the pulled "spire" of
-        // the ribbon actually has visible color at its tip rather than
-        // sitting in the gradient's invisible zone.
-        let gradient = Gradient(stops: [
-            .init(color: spec.color.opacity(0), location: 0),
-            .init(color: spec.color.opacity(spec.bottomOpacity * 0.55), location: 0.55),
-            .init(color: spec.color.opacity(spec.bottomOpacity), location: 1)
-        ])
-        let gradientTopY = size.height - spec.baseHeight - amplitude - pullVerticalDistance
-        let shading = GraphicsContext.Shading.linearGradient(
-            gradient,
-            startPoint: CGPoint(x: 0, y: gradientTopY),
-            endPoint: CGPoint(x: 0, y: size.height)
+    /// Renders a single gradient band along the chosen edge, sized to
+    /// the requested height and blurred. Stacking several of these with
+    /// different opacities and blur radii creates the layered
+    /// inner-shadow look from the reference.
+    @ViewBuilder
+    private func haloBand(
+        colorOpacity: Double,
+        bandHeight: CGFloat,
+        blurRadius: CGFloat,
+        colorOverride: Color? = nil,
+        blendMode: BlendMode = .normal
+    ) -> some View {
+        let bandColor = colorOverride ?? color
+        // The band is a linear gradient running from transparent (deep
+        // inside the screen) to fully colored (right at the edge), so
+        // the glow appears to emanate from the edge inward.
+        let gradient = LinearGradient(
+            stops: [
+                .init(color: bandColor.opacity(0), location: 0),
+                .init(color: bandColor.opacity(colorOpacity * 0.55), location: 0.45),
+                .init(color: bandColor.opacity(colorOpacity), location: 1)
+            ],
+            startPoint: gradientStartPoint,
+            endPoint: gradientEndPoint
         )
 
-        // The outer mutable copy of context carries the ribbon's blend
-        // mode — that's what determines how the layer composites onto
-        // whatever's already been drawn (.plusLighter for additive
-        // glow, .normal for the first base layer). The inner drawLayer
-        // is where we add the per-ribbon blur filter and do the actual
-        // fill. Wrapping in drawLayer means the blur applies only to
-        // this ribbon's pixels, not to the whole canvas.
-        var ribbonContext = context
-        ribbonContext.blendMode = spec.blendMode
-        ribbonContext.drawLayer { layerContext in
-            layerContext.addFilter(.blur(radius: spec.blurRadius))
-            layerContext.fill(path, with: shading)
+        gradient
+            // Frame the band so its long axis runs along the chosen
+            // edge and its short axis (the height for top/bottom, the
+            // width for leading/trailing) controls how far the glow
+            // reaches into the screen.
+            .frame(
+                maxWidth: edgeIsHorizontal ? .infinity : bandHeight,
+                maxHeight: edgeIsHorizontal ? bandHeight : .infinity,
+                alignment: edgeAlignment
+            )
+            // Frame again at the parent size so we can position the
+            // band flush against the chosen edge regardless of where
+            // it would otherwise lay out.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edgeAlignment)
+            .blur(radius: blurRadius)
+            .blendMode(blendMode)
+    }
+
+    /// Whether the chosen edge runs horizontally (`.bottom` or `.top`).
+    /// Used to flip the band's frame so the long axis stays aligned to
+    /// the edge.
+    private var edgeIsHorizontal: Bool {
+        edge == .bottom || edge == .top
+    }
+
+    /// Frame alignment that pins the band against the chosen edge.
+    private var edgeAlignment: Alignment {
+        switch edge {
+        case .bottom: return .bottom
+        case .top: return .top
+        case .leading: return .leading
+        case .trailing: return .trailing
         }
+    }
+
+    /// Gradient start point. The "transparent" stop sits at the inner
+    /// side of the band (away from the edge); the "saturated" stop
+    /// sits flush against the edge.
+    private var gradientStartPoint: UnitPoint {
+        switch edge {
+        case .bottom: return .top       // transparent at top, saturated at bottom
+        case .top: return .bottom
+        case .leading: return .trailing
+        case .trailing: return .leading
+        }
+    }
+
+    private var gradientEndPoint: UnitPoint {
+        switch edge {
+        case .bottom: return .bottom
+        case .top: return .top
+        case .leading: return .leading
+        case .trailing: return .trailing
+        }
+    }
+}
+
+/// A horizontally-traveling highlight that sweeps across the bottom
+/// edge of the screen during the `.processingThinking` mode. Gives the
+/// otherwise-static "we're waiting on Claude" state a visible rhythm
+/// so the user can tell something is happening — without us pretending
+/// to react to audio that isn't there.
+private struct ProcessingShimmerSweep: View {
+    /// Color of the shimmer band — same hue as the bottom edge halo so
+    /// it reads as part of the same glow rather than a separate effect.
+    let color: Color
+    /// 0...1 visibility multiplier. Animated up to 1 when entering
+    /// processing mode and back to 0 when leaving, so the shimmer
+    /// fades in/out rather than snapping.
+    let visibility: CGFloat
+    /// Seconds the shimmer takes to traverse the screen once. 2.4s is
+    /// slow enough that the eye reads the sweep clearly, fast enough
+    /// to feel "alive" rather than sluggish during the wait.
+    private let cycleSeconds: Double = 2.4
+    /// Width of the moving highlight as a fraction of the screen width.
+    /// 0.45 lands on a noticeable-but-not-overwhelming band.
+    private let bandWidthFraction: CGFloat = 0.45
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let elapsedSeconds = timeline.date.timeIntervalSinceReferenceDate
+            // Phase advances 0 → 1 over `cycleSeconds`, then wraps. Eased
+            // with a sine so the sweep slows at the edges and is
+            // fastest in the middle — feels more like a breath than a
+            // metronome tick.
+            let rawPhase = (elapsedSeconds.truncatingRemainder(dividingBy: cycleSeconds)) / cycleSeconds
+            let easedPhase = (1 - cos(rawPhase * .pi)) / 2
+
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                let height = geometry.size.height
+                let bandWidth = width * bandWidthFraction
+                // Travel range goes from -bandWidth (band fully off
+                // the leading edge) to width + bandWidth (band fully
+                // off the trailing edge), so the sweep enters and
+                // exits the screen smoothly rather than popping.
+                let bandXOffset = -bandWidth + (width + 2 * bandWidth) * CGFloat(easedPhase)
+
+                LinearGradient(
+                    stops: [
+                        .init(color: color.opacity(0), location: 0),
+                        .init(color: color.opacity(0.55), location: 0.5),
+                        .init(color: color.opacity(0), location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: bandWidth, height: 220)
+                .blur(radius: 38)
+                // Sit the band flush against the bottom edge with its
+                // top fading inward. `position` places its center, so
+                // we offset by bandWidth/2 horizontally and put the
+                // band's vertical center 60pt above the bottom edge so
+                // the brightest part of the blur lands on the edge.
+                .position(x: bandXOffset + bandWidth / 2, y: height - 60)
+                .blendMode(.plusLighter)
+            }
+        }
+        .opacity(Double(visibility))
+        .allowsHitTesting(false)
+    }
+}
+
+/// Screen-edge glow that comes alive during any active voice interaction
+/// — the user holding push-to-talk, Sticky talking back, or a Reverse
+/// Clicky teach session recording. Built as four `InnerShadowEdgeHalo`
+/// instances (one per edge) whose individual opacities are driven by the
+/// current mode's `defaultAnchor`. Crossfades between anchors when the
+/// mode changes (e.g. listening's bottom glow handing off to responding's
+/// top glow) by animating those per-edge opacities rather than swapping
+/// the view tree, so the bottom-to-top transition looks like a smooth
+/// reorientation of light rather than a hard cut.
+///
+/// Audio reactivity (mic level during listening / teach, TTS level
+/// during responding) scales the halo's intensity in real time. When
+/// silent, a slow synthetic breathing pulse keeps the glow visibly
+/// alive at low brightness. During processing, a horizontal shimmer
+/// sweep fades in to communicate "we're waiting on Claude" without
+/// pretending to react to non-existent audio.
+private struct EdgeGlowView: View {
+    /// Live audio power level in 0...1. Mic during listening / teach,
+    /// TTS playback level during responding, 0 during processing.
+    let audioPowerLevel: CGFloat
+    /// Mode determines the anchor (which edges glow), the color usage
+    /// (handled by the caller via `color`), the audio source (handled
+    /// by the caller via `audioPowerLevel`), and whether the synthetic
+    /// breathing + shimmer sweep are active.
+    let mode: EdgeGlowMode
+    /// The hue of the glow. The caller picks user vs Sticky color
+    /// based on whose turn it is in the conversation, so this view
+    /// doesn't need to know about the voice picker or the user's blue.
+    let color: Color
+
+    /// Per-edge opacity drivers. All four halos are mounted at all
+    /// times; switching modes animates these between 0 and 1 (or 0 and
+    /// `teachEdgeOpacity` for the four-edge halo ring) to crossfade
+    /// the glow from one anchor to another. Mounting them statically
+    /// is cheaper than tearing the tree on every state change and
+    /// gives us a built-in crossfade for free.
+    @State private var bottomEdgeOpacity: Double
+    @State private var topEdgeOpacity: Double
+    @State private var leadingEdgeOpacity: Double
+    @State private var trailingEdgeOpacity: Double
+
+    /// 0...1 visibility of the processing shimmer sweep. Animated up
+    /// when entering `.processingThinking` and back down when leaving
+    /// so the sweep fades cleanly rather than appearing/disappearing.
+    @State private var shimmerVisibility: Double
+
+    /// 0 = drive the halo from real audio. 1 = drive from the synthetic
+    /// breathing pulse used during `.processingThinking`. Crossfaded
+    /// rather than hard-switched so transitions in/out of processing
+    /// don't look like the glow snaps to a different rhythm.
+    @State private var syntheticBreathingInfluence: Double
+
+    /// Per-edge opacity used when all four edges are active (teach
+    /// mode). Dimmed below 1.0 so the four overlapping halos read as a
+    /// halo ring around the desktop rather than a heavy frame.
+    private static let teachEdgeOpacity: Double = 0.62
+
+    /// Soft corner radius applied to every halo's mask. ~24pt is large
+    /// enough to feel gently rounded but small enough that three edges
+    /// still feel visually flush with the screen.
+    private static let cornerRadius: CGFloat = 24
+
+    /// Slow synthetic pulse period used during processing. Also drives
+    /// the silent-but-alive baseline breathing during listening / teach.
+    /// 3.5s is slower than a heartbeat — settled, contemplative.
+    private static let breathingPeriodSeconds: Double = 3.5
+    /// Faster pulse period used specifically during processing so it
+    /// feels like a wait, not just a calm idle.
+    private static let processingPulsePeriodSeconds: Double = 2.4
+
+    init(audioPowerLevel: CGFloat, mode: EdgeGlowMode, color: Color) {
+        self.audioPowerLevel = audioPowerLevel
+        self.mode = mode
+        self.color = color
+        let anchor = mode.defaultAnchor
+        let activeOpacity: Double = (anchor == .all) ? Self.teachEdgeOpacity : 1.0
+        _bottomEdgeOpacity = State(initialValue: anchor.includesBottom ? activeOpacity : 0)
+        _topEdgeOpacity = State(initialValue: anchor.includesTop ? activeOpacity : 0)
+        _leadingEdgeOpacity = State(initialValue: anchor.includesLeading ? activeOpacity : 0)
+        _trailingEdgeOpacity = State(initialValue: anchor.includesTrailing ? activeOpacity : 0)
+        _shimmerVisibility = State(initialValue: mode.usesShimmerSweep ? 1.0 : 0.0)
+        _syntheticBreathingInfluence = State(initialValue: mode.usesSyntheticBreathing ? 1.0 : 0.0)
+    }
+
+    var body: some View {
+        // TimelineView keeps the breathing and shimmer animations
+        // ticking independently of audio so the glow feels alive even
+        // in silence.
+        TimelineView(.animation) { timeline in
+            let elapsedSeconds = timeline.date.timeIntervalSinceReferenceDate
+
+            // Real audio reactivity, eased so soft sounds register and
+            // peaks plateau cleanly.
+            let easedAudio = audioReactivityEased
+
+            // Slow synthetic breathing — used both as the
+            // silent-but-alive baseline (when audio is near zero) and
+            // as the primary driver during processing.
+            let processingBreath = (sin(elapsedSeconds * 2 * .pi / Self.processingPulsePeriodSeconds) + 1) / 2  // 0...1
+            let idleBreath = (sin(elapsedSeconds * 2 * .pi / Self.breathingPeriodSeconds) + 1) / 2  // 0...1
+
+            // Audio-driven intensity: a moving baseline so the halo
+            // is always visible, plus a reactive boost on top.
+            let baselineIntensity: CGFloat = 0.28 + 0.06 * CGFloat(idleBreath)
+            let audioIntensity = baselineIntensity + (1 - baselineIntensity) * easedAudio
+
+            // Processing intensity: ignore audio entirely, breathe on
+            // a calmer 0.32 → 0.78 swing so the glow feels like a
+            // patient wait.
+            let processingIntensity: CGFloat = 0.32 + 0.46 * CGFloat(processingBreath)
+
+            // Crossfade between the two regimes. The animated influence
+            // value goes 0 → 1 over 600ms when entering processing and
+            // back the other way when leaving, so the rhythm changes
+            // smoothly rather than snapping.
+            let intensity = audioIntensity * (1 - CGFloat(syntheticBreathingInfluence))
+                          + processingIntensity * CGFloat(syntheticBreathingInfluence)
+
+            ZStack {
+                InnerShadowEdgeHalo(
+                    edge: .bottom,
+                    color: color,
+                    intensity: intensity,
+                    cornerRadius: Self.cornerRadius
+                )
+                .opacity(bottomEdgeOpacity)
+
+                InnerShadowEdgeHalo(
+                    edge: .top,
+                    color: color,
+                    intensity: intensity,
+                    cornerRadius: Self.cornerRadius
+                )
+                .opacity(topEdgeOpacity)
+
+                InnerShadowEdgeHalo(
+                    edge: .leading,
+                    color: color,
+                    intensity: intensity,
+                    cornerRadius: Self.cornerRadius
+                )
+                .opacity(leadingEdgeOpacity)
+
+                InnerShadowEdgeHalo(
+                    edge: .trailing,
+                    color: color,
+                    intensity: intensity,
+                    cornerRadius: Self.cornerRadius
+                )
+                .opacity(trailingEdgeOpacity)
+
+                // Shimmer sweep is mounted at all times; visibility
+                // animates between 0 (every other mode) and 1
+                // (processing) so it crossfades rather than appears.
+                ProcessingShimmerSweep(
+                    color: color,
+                    visibility: CGFloat(shimmerVisibility)
+                )
+            }
+            .allowsHitTesting(false)
+        }
+        // Animate the per-edge opacities, shimmer visibility, and
+        // synthetic-breathing influence together when the mode changes.
+        // Done in a single `withAnimation` block so the visual handoff
+        // (e.g. listening → responding crossfading bottom → top) reads
+        // as one coordinated reorientation of light rather than several
+        // disjoint property animations.
+        .onChange(of: mode) { _, newMode in
+            let anchor = newMode.defaultAnchor
+            let activeOpacity: Double = (anchor == .all) ? Self.teachEdgeOpacity : 1.0
+            withAnimation(.easeInOut(duration: 0.55)) {
+                bottomEdgeOpacity = anchor.includesBottom ? activeOpacity : 0
+                topEdgeOpacity = anchor.includesTop ? activeOpacity : 0
+                leadingEdgeOpacity = anchor.includesLeading ? activeOpacity : 0
+                trailingEdgeOpacity = anchor.includesTrailing ? activeOpacity : 0
+                shimmerVisibility = newMode.usesShimmerSweep ? 1.0 : 0.0
+                syntheticBreathingInfluence = newMode.usesSyntheticBreathing ? 1.0 : 0.0
+            }
+        }
+    }
+
+    /// Eased version of the audio power level. Subtracts a tiny noise
+    /// floor so background room hum doesn't drive the glow, then
+    /// eases with a sub-1 exponent so soft sounds register strongly
+    /// and loud peaks plateau cleanly.
+    private var audioReactivityEased: CGFloat {
+        let normalized = max(audioPowerLevel - 0.008, 0)
+        let eased = pow(min(Double(normalized) * 2.85, 1), 0.76)
+        return CGFloat(eased)
     }
 }
 
 // MARK: - Mystical Orb
 
-/// Clicky's pointer cursor — a solid right-tilted parallelogram (matches
-/// the menu bar logo) sitting inside a single-color blue glow. The outer
-/// 88x88 frame is preserved so positioning math elsewhere is unaffected.
+/// Sticky's pointer cursor — a glowing single-color orb with a soft halo
+/// that pulses gently. Two render modes:
+///
+/// 1. **Default** (`personaAvatar` is nil) — solid colored orb body
+///    tinted with `bodyColor`. Used for `.me` / `.team` selections.
+/// 2. **Persona** (`personaAvatar` is non-nil) — the orb body is replaced
+///    with a circular avatar (initials / SF Symbol / image file) so the
+///    cursor visually becomes the active teammate. The pulsing halo
+///    stays on, tinted with the persona's accent color so the visual
+///    identity is consistent with the response bubbles and edge glow.
+///
+/// The outer 88x88 frame is preserved in both modes so positioning math
+/// elsewhere (cursor offset, navigation arcs) doesn't need to change.
 private struct MysticalOrbView: View {
+    /// Halo / body color of the orb. Tied to Sticky's voice color so the
+    /// cursor visually matches the picker orb in the panel and the top-
+    /// edge halo when Sticky talks back. When `personaAvatar` is set,
+    /// this is used only for the halo (the body becomes the avatar).
+    let bodyColor: Color
+
+    /// When non-nil, replaces the solid orb body with a circular avatar
+    /// for the active teammate persona. Nil for the default Sticky look.
+    let personaAvatar: PersonaAvatar?
+
     @State private var pulseScale: CGFloat = 1.0
 
-    private let bodyBlue = Color(hex: "#3380FF")
+    /// Diameter of the orb body / avatar. Slightly larger when wearing
+    /// a persona so a face / initials are legible at a glance — the
+    /// solid orb works fine at 28pt but a tiny portrait at 28pt is just
+    /// a colored dot.
+    private var bodyDiameter: CGFloat {
+        return personaAvatar != nil ? 36 : 28
+    }
 
     var body: some View {
         ZStack {
-            // Soft single-color glow that pulses gently behind the body.
-            Parallelogram()
-                .fill(bodyBlue.opacity(0.55))
-                .frame(width: 52, height: 52)
+            // Outer halo — broad blurred glow that pulses gently behind
+            // the body. Same in both modes so the "this is Sticky" cue
+            // (a calm pulsing aura) reads identically whether you're
+            // looking at the default orb or a persona's face.
+            Circle()
+                .fill(bodyColor.opacity(0.55))
+                .frame(width: 60, height: 60)
                 .blur(radius: 18)
                 .scaleEffect(pulseScale)
 
-            // Solid parallelogram body — a square skewed into a right-tilted
-            // parallelogram, so width and height match.
-            Parallelogram()
-                .fill(bodyBlue)
-                .frame(width: 28, height: 28)
-                .shadow(color: bodyBlue.opacity(0.7), radius: 6, x: 0, y: 0)
+            // Body — either the default solid orb, or the persona's
+            // circular avatar. The persona case still gets the same
+            // colored glow shadow so the figure has weight on a busy
+            // desktop wallpaper.
+            if let personaAvatar {
+                PersonaAvatarView(
+                    avatar: personaAvatar,
+                    diameter: bodyDiameter,
+                    showsRing: true,
+                    ringColor: Color.white.opacity(0.85),
+                    ringLineWidth: 1.5
+                )
+                .shadow(color: bodyColor.opacity(0.7), radius: 6, x: 0, y: 0)
+            } else {
+                Circle()
+                    .fill(bodyColor)
+                    .frame(width: bodyDiameter, height: bodyDiameter)
+                    .shadow(color: bodyColor.opacity(0.7), radius: 6, x: 0, y: 0)
+            }
         }
         .frame(width: 88, height: 88)
         .onAppear {

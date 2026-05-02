@@ -747,6 +747,481 @@ extension View {
     }
 }
 
+// MARK: - ElevenLabs Brand Styling
+//
+// A parallel branding token set inspired by ElevenLabs' visual identity:
+//   - Cream/paper light background with near-black foreground
+//   - Bold, tight, sans-serif typography
+//   - Hard-edged cards with hairline borders and generous whitespace
+//   - Saturated gradient meshes (sunset, sky, ember) as feature surfaces
+//   - Topographic / clover line motifs overlaid on gradients
+//
+// Use these tokens for surfaces that should adopt the ElevenLabs look
+// (marketing-style cards, hero panels, gradient feature tiles). Existing
+// dark UI continues to use the `DS.Colors` palette above; the two systems
+// coexist so screens can be migrated independently.
+
+enum ElevenLabsBrand {
+
+    // MARK: - Surfaces & Ink
+
+    enum Colors {
+        /// Paper background — the warm off-white used in ElevenLabs landing
+        /// pages and OOH (bus stop, billboard frames). Slightly warmer than
+        /// pure white so it reads as printed paper, not a screen.
+        static let paper = Color(hex: "#F4F2ED")
+
+        /// Pure white card surface — sits on top of `paper` with a hairline
+        /// border for the marketing-card look (the audiobook hero card,
+        /// the chat preview tile, the voice cards).
+        static let card = Color(hex: "#FFFFFF")
+
+        /// Subtle paper variation — used for alternating sections or
+        /// secondary surfaces that should feel one step recessed from `card`.
+        static let paperRecessed = Color(hex: "#ECEAE4")
+
+        /// Near-black ink — the headline + body color. Slightly warm so it
+        /// pairs with the paper background instead of feeling clinical.
+        static let ink = Color(hex: "#0B0B0B")
+
+        /// Pure black — used for the wordmark, poster headlines, and the
+        /// dark-mode hero surface ("The most realistic voice AI platform").
+        static let inkPure = Color(hex: "#000000")
+
+        /// Secondary ink — body copy, supporting labels (the small product
+        /// description text under "Audiobooks" / "Video Voiceovers").
+        static let inkSecondary = Color(hex: "#3D3D3B")
+
+        /// Tertiary ink — captions, metadata ("14m", "2.1k" pills under
+        /// voice cards), section eyebrows ("For Creators, Media...").
+        static let inkTertiary = Color(hex: "#7A7A77")
+
+        /// Hairline border — the thin 1px outlines on cards and the dotted
+        /// grid frames inside gradient tiles. Very low contrast so cards
+        /// look like printed cuts on paper rather than UI panels.
+        static let hairline = Color(hex: "#DEDBD3")
+
+        /// A stronger hairline used for hover/focus on the otherwise
+        /// almost-invisible default border.
+        static let hairlineStrong = Color(hex: "#B9B5AB")
+
+        /// White overlay text — used on top of saturated gradient surfaces
+        /// (the bus-stop poster, the dark hero, the wordmark on the OOH
+        /// billboard).
+        static let onAccent = Color.white
+
+        // MARK: - Gradient Mesh Stops
+        //
+        // ElevenLabs uses a recurring set of mesh-gradient stops that
+        // appear across web, OOH, social, and event collateral. We expose
+        // them as named stops so individual gradients can recombine them.
+
+        /// Soft sky blue — the upper-left of the bus-stop poster and the
+        /// "british narration" voice tile.
+        static let gradientSky = Color(hex: "#A6C3F2")
+
+        /// Cool periwinkle — the deeper blue used in the voice card mesh
+        /// gradients ("Engaging characters for video games").
+        static let gradientPeriwinkle = Color(hex: "#7C8BD9")
+
+        /// Blush pink — the soft pink that appears in the audiobook hero
+        /// card and the voice cards.
+        static let gradientBlush = Color(hex: "#F5C8D1")
+
+        /// Hot coral — the warm red-orange that defines the Summit 25
+        /// posters and the lanyard speaker badge.
+        static let gradientCoral = Color(hex: "#E8593A")
+
+        /// Sunset orange — the "Bring your stories to life" tile and the
+        /// audiobook card warm corner.
+        static let gradientSunset = Color(hex: "#F1A06A")
+
+        /// Goldenrod — sits between sunset and blush, used to make the
+        /// warm gradients feel multi-stop rather than flat.
+        static let gradientGoldenrod = Color(hex: "#F2D08A")
+
+        /// Lavender — the cooler edge of the chat-preview gradient and
+        /// some social tiles.
+        static let gradientLavender = Color(hex: "#C9B6E8")
+
+        // MARK: - Dark Hero
+        //
+        // For the "most realistic voice AI platform" trade-show wall and
+        // any inverted hero surfaces that flip ink → paper.
+
+        static let darkHero = Color(hex: "#0A0A0A")
+        static let darkHeroInk = Color(hex: "#F4F2ED")
+        static let darkHeroHairline = Color.white.opacity(0.10)
+    }
+
+    // MARK: - Typography
+    //
+    // ElevenLabs uses a tightly tracked geometric sans (close to Inter
+    // Display / NeueHaasGrotesk). On macOS we map to SF Pro with weights
+    // and tracking that approximate the brand's dense, confident voice.
+
+    enum Typography {
+        /// Display — the giant poster headline ("ElevenLabs Summit 25",
+        /// "The most realistic voice AI platform").
+        static func display(size: CGFloat = 56) -> Font {
+            .system(size: size, weight: .bold, design: .default)
+        }
+
+        /// Hero headline — landing-page-scale title, tighter and slightly
+        /// lighter than display ("Generate high-quality AI audio...").
+        static func hero(size: CGFloat = 36) -> Font {
+            .system(size: size, weight: .semibold, design: .default)
+        }
+
+        /// Card title — the headline inside a feature card ("Epic voices
+        /// for british narration", "Bring your stories to life").
+        static func cardTitle(size: CGFloat = 22) -> Font {
+            .system(size: size, weight: .semibold, design: .default)
+        }
+
+        /// Eyebrow — the small all-caps / sentence-case category label
+        /// above a hero ("For Creators, Media & Entertainment",
+        /// "Collections", "Top picks").
+        static let eyebrow = Font.system(size: 11, weight: .medium, design: .default)
+
+        /// Body — running paragraph text inside cards and product
+        /// descriptions.
+        static let body = Font.system(size: 14, weight: .regular, design: .default)
+
+        /// Body emphasis — used for the small bold product names
+        /// ("Audiobooks", "Video Voiceovers", "Podcasts").
+        static let bodyStrong = Font.system(size: 14, weight: .semibold, design: .default)
+
+        /// Caption — metadata pills ("14m", "2.1k"), timestamps,
+        /// fine-print legal.
+        static let caption = Font.system(size: 11, weight: .medium, design: .default)
+
+        /// Wordmark — the "IIElevenLabs" lockup. Use only for the
+        /// brand mark; don't apply to UI labels.
+        static func wordmark(size: CGFloat = 20) -> Font {
+            .system(size: size, weight: .bold, design: .default)
+        }
+    }
+
+    // MARK: - Shape
+
+    enum Radius {
+        /// Pills and metadata chips — almost-circle.
+        static let pill: CGFloat = 999
+        /// Card corner — the audiobook hero card, voice cards, billboard
+        /// frame. Subtle but present, so cards still read as "printed".
+        static let card: CGFloat = 14
+        /// Tight corner for inner elements (the chat bubbles inside the
+        /// preview card).
+        static let chip: CGFloat = 10
+        /// Hard / near-zero — used by some posters where corners are
+        /// effectively right-angle.
+        static let crisp: CGFloat = 2
+    }
+
+    // MARK: - Spacing
+    //
+    // ElevenLabs marketing uses generous whitespace — closer to print
+    // editorial than typical product UI. These steps are intentionally
+    // larger than `DS.Spacing` so card padding feels airy.
+
+    enum Spacing {
+        static let xs: CGFloat = 6
+        static let sm: CGFloat = 12
+        static let md: CGFloat = 20
+        static let lg: CGFloat = 32
+        static let xl: CGFloat = 48
+        static let xxl: CGFloat = 72
+    }
+
+    // MARK: - Gradient Presets
+    //
+    // The four meshes that recur across ElevenLabs' brand surfaces.
+    // Implemented as `LinearGradient`s with multiple stops; for a fuller
+    // mesh look, layer the topographic overlay (`Overlays.cloverGrid`) on
+    // top.
+
+    enum Gradients {
+        /// Sunset mesh — coral → sunset → goldenrod → blush. The Summit 25
+        /// poster, the lanyard speaker badge.
+        static let sunset = LinearGradient(
+            stops: [
+                .init(color: Colors.gradientCoral, location: 0.0),
+                .init(color: Colors.gradientSunset, location: 0.45),
+                .init(color: Colors.gradientGoldenrod, location: 0.75),
+                .init(color: Colors.gradientBlush, location: 1.0)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+
+        /// Sky-to-blush mesh — the bus-stop poster gradient (cool top-right
+        /// fading to warm bottom-left).
+        static let skyBlush = LinearGradient(
+            stops: [
+                .init(color: Colors.gradientSky, location: 0.0),
+                .init(color: Colors.gradientLavender, location: 0.5),
+                .init(color: Colors.gradientBlush, location: 0.85),
+                .init(color: Colors.gradientSunset, location: 1.0)
+            ],
+            startPoint: .topTrailing,
+            endPoint: .bottomLeading
+        )
+
+        /// Ember mesh — saturated red-orange used as the warm corner of
+        /// voice cards ("british narration").
+        static let ember = LinearGradient(
+            stops: [
+                .init(color: Colors.gradientCoral, location: 0.0),
+                .init(color: Colors.gradientSunset, location: 0.6),
+                .init(color: Colors.gradientGoldenrod, location: 1.0)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+
+        /// Cool mesh — the periwinkle/sky/blush mix used in "video games"
+        /// and "stories to life" voice tiles.
+        static let cool = LinearGradient(
+            stops: [
+                .init(color: Colors.gradientPeriwinkle, location: 0.0),
+                .init(color: Colors.gradientSky, location: 0.4),
+                .init(color: Colors.gradientLavender, location: 0.75),
+                .init(color: Colors.gradientBlush, location: 1.0)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    // MARK: - Shadow
+
+    enum Shadow {
+        /// The soft drop shadow on white cards floating over paper.
+        /// Subtle — under 6px blur — so cards read as printed pieces.
+        static func card<V: View>(_ view: V) -> some View {
+            view.shadow(color: Color.black.opacity(0.04), radius: 1, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 4)
+        }
+    }
+}
+
+// MARK: - ElevenLabs Wordmark
+//
+// Renders the "IIElevenLabs" lockup. The leading "II" represents the
+// pause-symbol mark from the brand. We approximate it with two short
+// vertical bars set tightly against the wordmark.
+
+struct ElevenLabsWordmark: View {
+    var size: CGFloat = 20
+    var color: Color = ElevenLabsBrand.Colors.inkPure
+
+    var body: some View {
+        HStack(spacing: size * 0.18) {
+            // The "II" mark — two bars, slightly narrower than capital height.
+            HStack(spacing: size * 0.14) {
+                Capsule()
+                    .fill(color)
+                    .frame(width: size * 0.16, height: size * 0.95)
+                Capsule()
+                    .fill(color)
+                    .frame(width: size * 0.16, height: size * 0.95)
+            }
+            Text("ElevenLabs")
+                .font(ElevenLabsBrand.Typography.wordmark(size: size))
+                .foregroundColor(color)
+                .tracking(-0.5)
+        }
+    }
+}
+
+// MARK: - ElevenLabs Card Container
+//
+// The signature "white card on paper" frame. Hairline border, subtle
+// shadow, large internal padding. Use this as the chrome for any
+// content that should feel like an editorial card on the brand site.
+
+struct ElevenLabsCard<Content: View>: View {
+    var padding: CGFloat = ElevenLabsBrand.Spacing.lg
+    var radius: CGFloat = ElevenLabsBrand.Radius.card
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ElevenLabsBrand.Shadow.card(
+            content()
+                .padding(padding)
+                .background(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(ElevenLabsBrand.Colors.card)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Topographic Clover Overlay
+//
+// The recurring line motif overlaid on every gradient surface — clover
+// shapes inside a 3x3 grid with crosshairs at the cell intersections.
+// Drawn procedurally at low opacity so it can layer on any gradient.
+
+struct ElevenLabsCloverOverlay: View {
+    var lineColor: Color = Color.white.opacity(0.55)
+    var gridDivisions: Int = 3
+
+    var body: some View {
+        GeometryReader { geo in
+            let cellWidth = geo.size.width / CGFloat(gridDivisions)
+            let cellHeight = geo.size.height / CGFloat(gridDivisions)
+
+            ZStack {
+                // Grid lines — crosshair frame dividing the surface into
+                // a 3x3 layout (matches the dotted grid on ElevenLabs
+                // gradient cards).
+                Path { path in
+                    for column in 1..<gridDivisions {
+                        let xPosition = CGFloat(column) * cellWidth
+                        path.move(to: CGPoint(x: xPosition, y: 0))
+                        path.addLine(to: CGPoint(x: xPosition, y: geo.size.height))
+                    }
+                    for row in 1..<gridDivisions {
+                        let yPosition = CGFloat(row) * cellHeight
+                        path.move(to: CGPoint(x: 0, y: yPosition))
+                        path.addLine(to: CGPoint(x: geo.size.width, y: yPosition))
+                    }
+                }
+                .stroke(lineColor.opacity(0.4), lineWidth: 0.6)
+
+                // Clover shapes — one inside each grid cell. Built from
+                // four overlapping circles arranged in a quatrefoil so the
+                // outline traces the petal-like silhouette ElevenLabs uses
+                // on its OOH and voice tiles.
+                ForEach(0..<gridDivisions, id: \.self) { row in
+                    ForEach(0..<gridDivisions, id: \.self) { column in
+                        let centerX = (CGFloat(column) + 0.5) * cellWidth
+                        let centerY = (CGFloat(row) + 0.5) * cellHeight
+                        let petalRadius = min(cellWidth, cellHeight) * 0.22
+
+                        ZStack {
+                            ForEach(0..<4, id: \.self) { petalIndex in
+                                let angleRadians = Double(petalIndex) * .pi / 2
+                                let offsetX = CGFloat(cos(angleRadians)) * petalRadius
+                                let offsetY = CGFloat(sin(angleRadians)) * petalRadius
+                                Circle()
+                                    .stroke(lineColor, lineWidth: 0.7)
+                                    .frame(width: petalRadius * 2, height: petalRadius * 2)
+                                    .position(x: centerX + offsetX, y: centerY + offsetY)
+                            }
+                        }
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+// MARK: - ElevenLabs Gradient Tile
+//
+// The signature voice-card / poster tile: a saturated gradient with the
+// clover-grid overlay and (optionally) a centered wordmark or label.
+// Use for hero tiles, feature surfaces, or large empty-state art.
+
+struct ElevenLabsGradientTile<Label: View>: View {
+    var gradient: LinearGradient
+    var radius: CGFloat = ElevenLabsBrand.Radius.card
+    var showsOverlay: Bool = true
+    @ViewBuilder var label: () -> Label
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(gradient)
+
+            if showsOverlay {
+                ElevenLabsCloverOverlay()
+                    .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            }
+
+            label()
+        }
+    }
+}
+
+extension ElevenLabsGradientTile where Label == EmptyView {
+    init(gradient: LinearGradient,
+         radius: CGFloat = ElevenLabsBrand.Radius.card,
+         showsOverlay: Bool = true) {
+        self.init(gradient: gradient, radius: radius, showsOverlay: showsOverlay) {
+            EmptyView()
+        }
+    }
+}
+
+// MARK: - ElevenLabs Eyebrow Label
+
+struct ElevenLabsEyebrow: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(ElevenLabsBrand.Typography.eyebrow)
+            .tracking(0.2)
+            .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+    }
+}
+
+// MARK: - ElevenLabs Primary Button
+//
+// Pill-shaped, pure-black fill with white label — the "Try a call"
+// button on the voice cards. Inverts to white-on-black on hover.
+
+struct ElevenLabsPrimaryButtonStyle: ButtonStyle {
+    var isFullWidth: Bool = true
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(
+                isHovered ? ElevenLabsBrand.Colors.inkPure : ElevenLabsBrand.Colors.onAccent
+            )
+            .frame(maxWidth: isFullWidth ? .infinity : nil)
+            .padding(.vertical, 10)
+            .padding(.horizontal, isFullWidth ? 0 : 18)
+            .background(
+                Capsule()
+                    .fill(isHovered ? ElevenLabsBrand.Colors.paper : ElevenLabsBrand.Colors.inkPure)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(ElevenLabsBrand.Colors.inkPure, lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
+            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+    }
+}
+
+extension View {
+    /// Applies the ElevenLabs-style pill button (black fill, white label,
+    /// inverts on hover). Use for primary CTAs on light brand surfaces.
+    func elevenLabsPrimaryButtonStyle(isFullWidth: Bool = true) -> some View {
+        self.buttonStyle(ElevenLabsPrimaryButtonStyle(isFullWidth: isFullWidth))
+    }
+}
+
 // MARK: - Buddy Composer Visual Style
 
 enum BuddyComposerVisualStyle {

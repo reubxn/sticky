@@ -2,26 +2,12 @@
 //  TasteTypes.swift
 //  leanring-buddy
 //
-//  Shared data shapes for Reverse Clicky's teach/apply modes.
+//  Shared data shapes for Reverse Clicky's ask/teach modes.
 //  Frozen at hour 0 of the hackathon — do not change without coordinating
 //  across all owners.
 //
 
 import Foundation
-
-enum TasteMode: String, Codable, CaseIterable {
-    case ask
-    case teach
-    case apply
-
-    var displayName: String {
-        switch self {
-        case .ask: return "Ask"
-        case .teach: return "Teach"
-        case .apply: return "Apply"
-        }
-    }
-}
 
 enum TasteScope: String, Codable {
     case personal
@@ -37,7 +23,7 @@ enum TasteDomain: String, Codable {
 
 /// A single taste principle the user has approved. Stored on disk in
 /// taste-profile.json. Each teach session can produce many of these.
-struct TastePrinciple: Codable, Identifiable {
+struct TastePrinciple: Codable, Identifiable, Equatable {
     let id: String
     var domain: TasteDomain
     var statement: String
@@ -50,7 +36,7 @@ struct TastePrinciple: Codable, Identifiable {
     var updatedAt: Date
 }
 
-struct TasteProfile: Codable {
+struct TasteProfile: Codable, Equatable {
     var userId: String
     var principles: [TastePrinciple]
     var updatedAt: Date
@@ -83,10 +69,19 @@ struct TeachSessionResult: Codable {
 }
 
 /// State machine for a teach session. Parallel to (and independent of)
-/// CompanionVoiceState — the user can still talk to Clicky while a teach
+/// CompanionVoiceState — the user can still talk to Sticky while a teach
 /// session is running, though for MVP we don't expect them to.
 enum TeachSessionState {
     case idle
     case recording
     case analyzing
+}
+
+/// Bundles a finished analyzer result with the JPEG frames it picked.
+/// Kept in memory only — never persisted. The TeachSessionResultCard
+/// reads this to render the checklist and (eventually) ambiguous-moment
+/// thumbnails. Discarding wipes both fields without touching disk.
+struct PendingTeachSessionReview {
+    let result: TeachSessionResult
+    let selectedFrames: [(data: Data, timestamp: TimeInterval)]
 }

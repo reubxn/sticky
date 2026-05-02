@@ -10,6 +10,38 @@
 import AVFoundation
 import SwiftUI
 
+// MARK: - Warm Dropdown Palette
+
+/// Warm, painterly color palette used throughout the dropdown to match
+/// the walnut→rust gradient + amber glow background. These colors are
+/// deliberately *not* tied to the system appearance: the dropdown is
+/// always rendered in the warm aesthetic regardless of light/dark mode.
+enum WarmPalette {
+    /// Soft cream — primary headline text on the warm surface.
+    static let textPrimary = Color(red: 1.00, green: 0.94, blue: 0.86)
+    /// Warm peach — body / secondary copy.
+    static let textSecondary = Color(red: 0.93, green: 0.78, blue: 0.59)
+    /// Muted faded peach — tertiary captions, status text, icon tints.
+    static let textTertiary = Color(red: 0.78, green: 0.58, blue: 0.40)
+    /// Amber accent — buttons, selected pills, focus states.
+    static let accent = Color(red: 1.00, green: 0.62, blue: 0.18)
+    /// Slight cream overlay — used as subtle row / chip fills on the
+    /// gradient. `Color.primary.opacity` would resolve to the system
+    /// label color which would break the warm look in light mode.
+    static let surfaceTint = Color(red: 1.00, green: 0.94, blue: 0.86).opacity(0.10)
+    /// Stronger cream overlay — used for selected state in segmented
+    /// pickers (Sonnet/Opus, Personal/Team) so the chosen pill stands
+    /// out clearly against the warm gradient.
+    static let surfaceTintStrong = Color(red: 1.00, green: 0.94, blue: 0.86).opacity(0.18)
+    /// Faint amber hairline — dividers, button outlines.
+    static let separator = Color(red: 1.00, green: 0.66, blue: 0.32).opacity(0.22)
+    /// Status dot color when "good" — keeps a green hue but warmed
+    /// toward lime so it doesn't clash with the rust background.
+    static let statusGood = Color(red: 0.62, green: 0.86, blue: 0.40)
+    /// Status dot / row icon color when warning attention is needed.
+    static let warning = Color(red: 1.00, green: 0.74, blue: 0.20)
+}
+
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
@@ -20,7 +52,9 @@ struct CompanionPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
-            Divider()
+            Rectangle()
+                .fill(WarmPalette.separator)
+                .frame(height: 0.5)
                 .padding(.horizontal, 16)
 
             permissionsCopySection
@@ -37,19 +71,29 @@ struct CompanionPanelView: View {
                 voicePickerRow
                     .padding(.horizontal, 16)
 
-                tasteModePickerRow
-                    .padding(.horizontal, 16)
-
+                // Scope picker — Personal vs Team taste. Always visible
+                // because every voice question now has the saved taste
+                // profile prepended to the system prompt; the user picks
+                // here whether that means just their own principles or
+                // their personal principles unioned with the team's.
                 tasteScopePickerRow
                     .padding(.horizontal, 16)
 
-                if companionManager.tasteMode == .teach {
-                    teachSessionControlRow
-                        .padding(.horizontal, 16)
-                        .padding(.top, 4)
-                }
+                personaPickerRow
+                    .padding(.horizontal, 16)
 
-                if !companionManager.pendingAmbiguousMoments.isEmpty {
+                teachSessionControlRow
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+
+                if let pendingTeachSessionReview = companionManager.pendingTeachSessionResult {
+                    TeachSessionResultCard(
+                        companionManager: companionManager,
+                        pendingReview: pendingTeachSessionReview
+                    )
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                } else if !companionManager.pendingAmbiguousMoments.isEmpty {
                     ReviewCardStack(companionManager: companionManager)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
@@ -77,19 +121,30 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            // Show Clicky toggle — hidden for now
+            // Show Sticky toggle — hidden for now
             // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             //     Spacer()
             //         .frame(height: 16)
             //
-            //     showClickyCursorToggleRow
+            //     showStickyCursorToggleRow
             //         .padding(.horizontal, 16)
             // }
+
+            // "View Library" row — gated on onboarding+permissions so we
+            // don't tempt the user into the library before they've granted
+            // microphone/screen-recording (the library is empty anyway).
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                tasteLibraryRow
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
 
             Spacer()
                 .frame(height: 12)
 
-            Divider()
+            Rectangle()
+                .fill(WarmPalette.separator)
+                .frame(height: 0.5)
                 .padding(.horizontal, 16)
 
             footerSection
@@ -113,14 +168,14 @@ struct CompanionPanelView: View {
 
                 Text("Sticky")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.primary)
+                    .foregroundColor(WarmPalette.textPrimary)
             }
 
             Spacer()
 
             Text(statusText)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(WarmPalette.textTertiary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -131,35 +186,35 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
+            Text(modeAwareTopInstructionCopy)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Drop your email to get started.")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
                 Text("If I keep building this, I'll keep you in the loop.")
                     .font(.system(size: 11))
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .foregroundColor(WarmPalette.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {
             Text("You're all set. Hit Start to meet Sticky.")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.hasCompletedOnboarding {
             // Permissions were revoked after onboarding — tell user to re-grant
             VStack(alignment: .leading, spacing: 6) {
                 Text("Permissions needed")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
 
                 Text("Some permissions were revoked. Grant all four below to keep using Sticky.")
                     .font(.system(size: 11))
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .foregroundColor(WarmPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -167,11 +222,11 @@ struct CompanionPanelView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Welcome to Sticky.")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
 
                 Text("Grant the permissions below to get started. Nothing runs in the background — Sticky only captures the screen when you press the hotkey.")
                     .font(.system(size: 11))
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .foregroundColor(WarmPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -188,16 +243,16 @@ struct CompanionPanelView: View {
                     TextField("Enter your email", text: $emailInput)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
-                        .foregroundColor(Color.primary)
+                        .foregroundColor(WarmPalette.textPrimary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(Color.primary.opacity(0.08))
+                                .fill(WarmPalette.surfaceTint)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                                .stroke(WarmPalette.separator, lineWidth: 0.5)
                         )
 
                     Button(action: {
@@ -211,8 +266,8 @@ struct CompanionPanelView: View {
                             .background(
                                 RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
                                     .fill(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                          ? Color.accentColor.opacity(0.4)
-                                          : Color.accentColor)
+                                          ? WarmPalette.accent.opacity(0.4)
+                                          : WarmPalette.accent)
                             )
                     }
                     .buttonStyle(.plain)
@@ -230,7 +285,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                .fill(Color.accentColor)
+                                .fill(WarmPalette.accent)
                         )
                 }
                 .buttonStyle(.plain)
@@ -245,7 +300,7 @@ struct CompanionPanelView: View {
         VStack(spacing: 2) {
             Text("Permissions")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(WarmPalette.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 6)
 
@@ -268,12 +323,12 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: "hand.raised")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? Color(NSColor.tertiaryLabelColor) : Color(NSColor.systemOrange))
+                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
                     .frame(width: 16)
 
                 Text("Accessibility")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
@@ -281,11 +336,11 @@ struct CompanionPanelView: View {
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(NSColor.systemGreen))
+                        .fill(WarmPalette.statusGood)
                         .frame(width: 6, height: 6)
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(NSColor.systemGreen))
+                        .foregroundColor(WarmPalette.statusGood)
                 }
             } else {
                 HStack(spacing: 6) {
@@ -301,7 +356,7 @@ struct CompanionPanelView: View {
                             .padding(.vertical, 4)
                             .background(
                                 Capsule()
-                                    .fill(Color.accentColor)
+                                    .fill(WarmPalette.accent)
                             )
                     }
                     .buttonStyle(.plain)
@@ -316,12 +371,12 @@ struct CompanionPanelView: View {
                     }) {
                         Text("Find App")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(Color.secondary)
+                            .foregroundColor(WarmPalette.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                             .background(
                                 Capsule()
-                                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.8)
+                                    .stroke(WarmPalette.separator, lineWidth: 0.8)
                             )
                     }
                     .buttonStyle(.plain)
@@ -338,19 +393,19 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: "rectangle.dashed.badge.record")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? Color(NSColor.tertiaryLabelColor) : Color(NSColor.systemOrange))
+                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
                     .frame(width: 16)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Screen Recording")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color.secondary)
+                        .foregroundColor(WarmPalette.textSecondary)
 
                     Text(isGranted
                          ? "Only takes a screenshot when you use the hotkey"
                          : "Quit and reopen after granting")
                         .font(.system(size: 10))
-                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                        .foregroundColor(WarmPalette.textTertiary)
                 }
             }
 
@@ -359,11 +414,11 @@ struct CompanionPanelView: View {
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(NSColor.systemGreen))
+                        .fill(WarmPalette.statusGood)
                         .frame(width: 6, height: 6)
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(NSColor.systemGreen))
+                        .foregroundColor(WarmPalette.statusGood)
                 }
             } else {
                 Button(action: {
@@ -379,7 +434,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 4)
                         .background(
                             Capsule()
-                                .fill(Color.accentColor)
+                                .fill(WarmPalette.accent)
                         )
                 }
                 .buttonStyle(.plain)
@@ -395,12 +450,12 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: "eye")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? Color(NSColor.tertiaryLabelColor) : Color(NSColor.systemOrange))
+                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
                     .frame(width: 16)
 
                 Text("Screen Content")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
@@ -408,11 +463,11 @@ struct CompanionPanelView: View {
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(NSColor.systemGreen))
+                        .fill(WarmPalette.statusGood)
                         .frame(width: 6, height: 6)
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(NSColor.systemGreen))
+                        .foregroundColor(WarmPalette.statusGood)
                 }
             } else {
                 Button(action: {
@@ -425,7 +480,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 4)
                         .background(
                             Capsule()
-                                .fill(Color.accentColor)
+                                .fill(WarmPalette.accent)
                         )
                 }
                 .buttonStyle(.plain)
@@ -441,12 +496,12 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: "mic")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? Color(NSColor.tertiaryLabelColor) : Color(NSColor.systemOrange))
+                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
                     .frame(width: 16)
 
                 Text("Microphone")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
@@ -454,11 +509,11 @@ struct CompanionPanelView: View {
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(NSColor.systemGreen))
+                        .fill(WarmPalette.statusGood)
                         .frame(width: 6, height: 6)
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(NSColor.systemGreen))
+                        .foregroundColor(WarmPalette.statusGood)
                 }
             } else {
                 Button(action: {
@@ -480,7 +535,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 4)
                         .background(
                             Capsule()
-                                .fill(Color.accentColor)
+                                .fill(WarmPalette.accent)
                         )
                 }
                 .buttonStyle(.plain)
@@ -500,12 +555,12 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: iconName)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? Color(NSColor.tertiaryLabelColor) : Color(NSColor.systemOrange))
+                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
                     .frame(width: 16)
 
                 Text(label)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
@@ -513,11 +568,11 @@ struct CompanionPanelView: View {
             if isGranted {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(NSColor.systemGreen))
+                        .fill(WarmPalette.statusGood)
                         .frame(width: 6, height: 6)
                     Text("Granted")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color(NSColor.systemGreen))
+                        .foregroundColor(WarmPalette.statusGood)
                 }
             } else {
                 Button(action: {
@@ -532,7 +587,7 @@ struct CompanionPanelView: View {
                         .padding(.vertical, 4)
                         .background(
                             Capsule()
-                                .fill(Color.accentColor)
+                                .fill(WarmPalette.accent)
                         )
                 }
                 .buttonStyle(.plain)
@@ -544,19 +599,19 @@ struct CompanionPanelView: View {
 
 
 
-    // MARK: - Show Clicky Cursor Toggle
+    // MARK: - Show Sticky Cursor Toggle
 
-    private var showClickyCursorToggleRow: some View {
+    private var showStickyCursorToggleRow: some View {
         HStack {
             HStack(spacing: 8) {
                 Image(systemName: "cursorarrow")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .foregroundColor(WarmPalette.textTertiary)
                     .frame(width: 16)
 
                 Text("Show Sticky")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
@@ -567,7 +622,7 @@ struct CompanionPanelView: View {
             ))
             .toggleStyle(.switch)
             .labelsHidden()
-            .tint(Color.accentColor)
+            .tint(WarmPalette.accent)
             .scaleEffect(0.8)
         }
         .padding(.vertical, 4)
@@ -578,19 +633,19 @@ struct CompanionPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: "mic.badge.waveform")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .foregroundColor(WarmPalette.textTertiary)
                     .frame(width: 16)
 
                 Text("Speech to Text")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.secondary)
+                    .foregroundColor(WarmPalette.textSecondary)
             }
 
             Spacer()
 
             Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(WarmPalette.textTertiary)
         }
         .padding(.vertical, 4)
     }
@@ -601,21 +656,26 @@ struct CompanionPanelView: View {
         HStack {
             Text("Model")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
 
             HStack(spacing: 0) {
+                // Haiku first because it's the new default — fastest TTFT,
+                // most appropriate for short voice replies. Sonnet/Opus are
+                // there for users who want higher-quality answers at the
+                // cost of a noticeable latency bump.
+                modelOptionButton(label: "Haiku", modelID: "claude-haiku-4-5-20251001")
                 modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
                 modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(WarmPalette.surfaceTint.opacity(0.6))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                    .stroke(WarmPalette.separator, lineWidth: 0.5)
             )
         }
         .padding(.vertical, 4)
@@ -638,28 +698,35 @@ struct CompanionPanelView: View {
         return HStack {
             Text("Voice")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
 
-            Button(action: { isVoicePickerOpen.toggle() }) {
+            Button(action: {
+                isVoicePickerOpen.toggle()
+                if isVoicePickerOpen {
+                    // Warm the disk cache the first time the dropdown
+                    // opens so subsequent play taps are instant.
+                    companionManager.prefetchAllVoicePreviewsIfNeeded()
+                }
+            }) {
                 HStack(spacing: 4) {
                     Text(triggerLabel)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.primary)
+                        .foregroundColor(WarmPalette.textPrimary)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                        .foregroundColor(WarmPalette.textTertiary)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
+                        .fill(WarmPalette.surfaceTint.opacity(0.6))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                        .stroke(WarmPalette.separator, lineWidth: 0.5)
                 )
             }
             .buttonStyle(.plain)
@@ -686,7 +753,7 @@ struct CompanionPanelView: View {
             VoicePickerOrbRow(
                 title: "Default",
                 subtitle: "Bundled with Sticky",
-                orbColor: Color(NSColor.tertiaryLabelColor).opacity(0.6),
+                orbColor: CompanionManager.stickyDefaultVoiceColor,
                 isSelected: companionManager.selectedVoiceID == nil,
                 isPreviewing: companionManager.previewingVoiceID == CompanionManager.defaultVoicePreviewSentinel,
                 onSelect: {
@@ -727,64 +794,107 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// Hand-tuned palette mapping every free ElevenLabs voice to its own
-    /// orb color. Picked so vocal "warmth" tracks color warmth (deep
-    /// voices skew indigo/burnt-orange, bright voices skew coral/magenta,
-    /// British voices skew muted/cool, etc). Falls back to a neutral
-    /// accent if a new voice ID slips in unmapped.
-    private static let voiceOrbPalette: [String: Color] = [
-        "pNInz6obpgDQGcFmaJgB": Color(red: 0.34, green: 0.30, blue: 0.74), // Adam      — deep indigo
-        "Xb7hH8MSUJpSbSDYk0k2": Color(red: 0.18, green: 0.66, blue: 0.65), // Alice     — teal
-        "hpp4J3VqNfWAUOO0d1Us": Color(red: 0.96, green: 0.50, blue: 0.55), // Bella     — coral pink
-        "pqHfZKP75CvOlQylNhV4": Color(red: 0.78, green: 0.55, blue: 0.20), // Bill      — bronze
-        "nPczCjzI2devNBz1zQrb": Color(red: 0.85, green: 0.45, blue: 0.20), // Brian     — burnt orange
-        "N2lVS1w4EtoT3dr4eOWO": Color(red: 0.45, green: 0.60, blue: 0.32), // Callum    — moss green
-        "IKne3meq5aSn9XLyUdCD": Color(red: 0.16, green: 0.66, blue: 0.45), // Charlie   — emerald
-        "iP95p4xoKVk53GoZ742B": Color(red: 0.35, green: 0.66, blue: 0.92), // Chris     — sky blue
-        "onwK4e9ZLuTAKqWW03F9": Color(red: 0.40, green: 0.50, blue: 0.65), // Daniel    — slate blue
-        "cjVigY5qzO86Huf0OWal": Color(red: 0.18, green: 0.45, blue: 0.32), // Eric      — forest green
-        "JBFqnCBsd6RMkjVDRZzb": Color(red: 0.82, green: 0.42, blue: 0.30), // George    — terracotta
-        "SOYHLrjzK2X1ezoPC6cr": Color(red: 0.82, green: 0.20, blue: 0.25), // Harry     — crimson
-        "cgSgspJ2msm6clMCkdW9": Color(red: 0.86, green: 0.32, blue: 0.62), // Jessica   — magenta
-        "FGY2WhTYpPnrIDTdsKH5": Color(red: 0.62, green: 0.36, blue: 0.80), // Laura     — violet
-        "TX3LPaxmHKxFdv7VOQHJ": Color(red: 0.95, green: 0.55, blue: 0.18), // Liam      — orange
-        "pFZP5JQG7iQjIQuC4Bku": Color(red: 0.70, green: 0.55, blue: 0.78), // Lily      — lavender
-        "XrExE9yKIg1WjnnlVkGX": Color(red: 0.88, green: 0.72, blue: 0.25), // Matilda   — mustard
-        "SAz9YHcvj6GT2YYXdXww": Color(red: 0.55, green: 0.62, blue: 0.68), // River     — cool steel
-        "CwhRBWXzGAHq8TQ4Fs17": Color(red: 0.55, green: 0.58, blue: 0.30), // Roger     — olive
-        "EXAVITQu4vr4xnSDxMaL": Color(red: 0.92, green: 0.45, blue: 0.55), // Sarah     — rose
-        "bIHbv24MWmeRgasZH58o": Color(red: 0.50, green: 0.65, blue: 0.50), // Will      — sage
-    ]
-
+    /// Voice picker orbs reuse the same palette as Sticky's overlay
+    /// chrome so the color you preview here matches what you see in the
+    /// overlay when Sticky talks back. Lives on `CompanionManager`.
     private static func orbColor(forVoiceID voiceID: String) -> Color {
-        return voiceOrbPalette[voiceID] ?? Color.accentColor
+        return CompanionManager.voiceColor(forVoiceID: voiceID)
     }
 
-    // MARK: - Reverse Clicky: Taste Mode Picker
+    // MARK: - Reverse Clicky: Persona Picker
+    //
+    // Surface for the active persona ("who Sticky is wearing right now")
+    // plus a discoverability hint about the hold-shift-cmd radial wheel.
+    // Tapping the row also opens a flat list as a fallback for users who
+    // can't or won't learn the hotkey gesture.
 
-    private var tasteModePickerRow: some View {
-        HStack {
-            Text("Mode")
+    private var personaPickerRow: some View {
+        let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
+            ?? PersonaStore.mePseudoPersona
+
+        return HStack(spacing: 10) {
+            Text("Wearing")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
 
-            HStack(spacing: 0) {
-                ForEach(TasteMode.allCases, id: \.self) { tasteModeOption in
-                    tasteModeOptionButton(tasteModeOption: tasteModeOption)
+            // Native SwiftUI Menu — works reliably inside the non-
+            // activating menu-bar NSPanel where the previous custom
+            // .popover wasn't getting a chance to display. The trigger
+            // label keeps the warm chip aesthetic; the dropdown itself
+            // renders as a system menu so the user can always pick a
+            // persona without learning the ⇧⌘ wheel hotkey.
+            Menu {
+                ForEach(PersonaStore.allWheelPersonas, id: \.id) { persona in
+                    personaMenuItem(persona: persona)
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    PersonaAvatarView(
+                        avatar: activePersonaBundle.avatar,
+                        diameter: 22
+                    )
+                    Text(activePersonaBundle.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(WarmPalette.textPrimary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(WarmPalette.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(WarmPalette.surfaceTint.opacity(0.6))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(WarmPalette.separator, lineWidth: 0.5)
+                )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
-            )
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerCursor()
+            .nativeTooltip("hold ⇧⌘ to summon the persona wheel around your cursor")
         }
         .padding(.vertical, 4)
+    }
+
+    /// One row inside the persona menu. Native Menu items don't render
+    /// multi-line labels or thumbnails, so the role appears as an em-
+    /// dashed suffix and the active selection gets a leading checkmark
+    /// (using the standard `Label(_:systemImage:)` pattern macOS menus
+    /// expect for "currently selected").
+    private func personaMenuItem(persona: PersonaBundle) -> some View {
+        let isCurrentlyActive = (PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)?.id ?? "") == persona.id
+
+        let menuLabel: String = {
+            if let role = persona.role, !role.isEmpty {
+                return "\(persona.displayName) — \(role)"
+            }
+            return persona.displayName
+        }()
+
+        return Button(action: {
+            companionManager.setPersonaSelection(PersonaStore.selectionForWheelPersona(persona))
+        }) {
+            if isCurrentlyActive {
+                Label(menuLabel, systemImage: "checkmark")
+            } else {
+                Text(menuLabel)
+            }
+        }
+    }
+
+    // MARK: - Reverse Clicky: Mode-Aware Copy
+
+    /// Top-of-panel push-to-talk instruction. Hold-to-talk is the same
+    /// for ask and teach (teach has its own dedicated button below the
+    /// scope picker), so we keep this copy single-track.
+    private var modeAwareTopInstructionCopy: String {
+        return "Hold Control+Option to talk."
     }
 
     // MARK: - Reverse Clicky: Taste Scope Picker
@@ -793,7 +903,7 @@ struct CompanionPanelView: View {
         HStack {
             Text("Scope")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
 
@@ -803,11 +913,11 @@ struct CompanionPanelView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(WarmPalette.surfaceTint.opacity(0.6))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                    .stroke(WarmPalette.separator, lineWidth: 0.5)
             )
         }
         .padding(.vertical, 4)
@@ -820,42 +930,16 @@ struct CompanionPanelView: View {
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? Color.primary : Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(isSelected ? WarmPalette.textPrimary : WarmPalette.textTertiary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+                        .fill(isSelected ? WarmPalette.surfaceTintStrong : Color.clear)
                 )
         }
         .buttonStyle(.plain)
         .pointerCursor()
-    }
-
-    private func tasteModeOptionButton(tasteModeOption: TasteMode) -> some View {
-        let isSelected = companionManager.tasteMode == tasteModeOption
-        // Disable mode switching mid-session so the user can't accidentally
-        // throw away an in-progress teach session by tapping Apply.
-        let isDisabled = companionManager.teachSessionState != .idle
-            && companionManager.tasteMode != tasteModeOption
-
-        return Button(action: {
-            companionManager.setTasteMode(tasteModeOption)
-        }) {
-            Text(tasteModeOption.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? Color.primary : Color(NSColor.tertiaryLabelColor))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.primary.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.4 : 1.0)
     }
 
     // MARK: - Reverse Clicky: Teach Session Controls
@@ -872,6 +956,46 @@ struct CompanionPanelView: View {
         }
     }
 
+    // MARK: - Reverse Clicky: Taste Library
+
+    /// "View Library" row that opens the Sticky Memory window. Styled
+    /// like `teachSessionStartButton` so the two sit comfortably together
+    /// at the bottom of the panel — same warm cream tint, same medium
+    /// corner radius, same icon-then-label layout.
+    private var tasteLibraryRow: some View {
+        Button(action: {
+            // The menu bar panel is the only place this button lives, so
+            // we route through `MenuBarPanelManager.shared` to open the
+            // window. If the manager hasn't been wired yet (shouldn't
+            // happen at runtime), the no-op is the safe fallback.
+            MenuBarPanelManager.shared?.openTasteLibraryWindow(
+                companionManager: companionManager
+            )
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(WarmPalette.textPrimary)
+                Text("View Library")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(WarmPalette.textPrimary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(WarmPalette.surfaceTint)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(WarmPalette.separator, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .nativeTooltip("See every principle Sticky has learned")
+    }
+
     private var teachSessionStartButton: some View {
         Button(action: {
             companionManager.startTeachSession()
@@ -882,17 +1006,17 @@ struct CompanionPanelView: View {
                     .foregroundColor(Color(NSColor.systemRed))
                 Text("Start Teach Session")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color.primary)
+                    .foregroundColor(WarmPalette.textPrimary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(Color.primary.opacity(0.08))
+                    .fill(WarmPalette.surfaceTint)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                    .stroke(WarmPalette.separator, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -904,21 +1028,27 @@ struct CompanionPanelView: View {
             companionManager.stopTeachSession()
         }) {
             HStack(spacing: 8) {
-                // Pulsing red dot to make it obvious the mic is open
-                Circle()
-                    .fill(Color(NSColor.systemRed))
-                    .frame(width: 8, height: 8)
-                    .shadow(color: Color(NSColor.systemRed).opacity(0.6), radius: 4)
+                // Square stop glyph instead of a red dot — the start button
+                // already uses a red dot ("begin recording"), so reusing the
+                // same affordance for "stop" was visually ambiguous. The
+                // SF Symbol stop.fill reads unambiguously as a stop control.
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(WarmPalette.textPrimary)
 
                 Text("Stop")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Color.primary)
+                    .foregroundColor(WarmPalette.textPrimary)
 
                 Spacer()
 
+                // Elapsed duration is the most important live signal during a
+                // teach session — bumped to primary text + monospaced semibold
+                // so it carries the weight it deserves instead of fading into
+                // the panel as tertiary metadata.
                 Text(formatTeachSessionElapsed(companionManager.teachSessionElapsedSeconds))
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                    .foregroundColor(WarmPalette.textPrimary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -944,7 +1074,7 @@ struct CompanionPanelView: View {
 
             Text("Reviewing your decisions…")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
         }
@@ -953,7 +1083,7 @@ struct CompanionPanelView: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
+                .fill(WarmPalette.surfaceTint.opacity(0.6))
         )
     }
 
@@ -974,11 +1104,11 @@ struct CompanionPanelView: View {
         return HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color(NSColor.systemGreen))
+                .foregroundColor(WarmPalette.statusGood)
 
             Text("Saved \(savedCount) new \(principleNoun) to your taste")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.secondary)
+                .foregroundColor(WarmPalette.textSecondary)
 
             Spacer()
         }
@@ -987,11 +1117,11 @@ struct CompanionPanelView: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(Color(NSColor.systemGreen).opacity(0.08))
+                .fill(WarmPalette.statusGood.opacity(0.08))
         )
         .overlay(
             RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .stroke(Color(NSColor.systemGreen).opacity(0.3), lineWidth: 0.5)
+                .stroke(WarmPalette.statusGood.opacity(0.3), lineWidth: 0.5)
         )
     }
 
@@ -1002,12 +1132,12 @@ struct CompanionPanelView: View {
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? Color.primary : Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(isSelected ? WarmPalette.textPrimary : WarmPalette.textTertiary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+                        .fill(isSelected ? WarmPalette.surfaceTintStrong : Color.clear)
                 )
         }
         .buttonStyle(.plain)
@@ -1027,28 +1157,11 @@ struct CompanionPanelView: View {
                     Text("Quit Sticky")
                         .font(.system(size: 12, weight: .medium))
                 }
-                .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                .foregroundColor(WarmPalette.textTertiary)
             }
             .buttonStyle(.plain)
             .pointerCursor()
 
-            if companionManager.hasCompletedOnboarding {
-                Spacer()
-
-                Button(action: {
-                    companionManager.replayOnboarding()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.circle")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Watch Onboarding Again")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
         }
     }
 
@@ -1065,15 +1178,15 @@ struct CompanionPanelView: View {
 
     private var statusDotColor: Color {
         if !companionManager.isOverlayVisible {
-            return Color(NSColor.tertiaryLabelColor)
+            return WarmPalette.textTertiary
         }
         switch companionManager.voiceState {
         case .idle:
-            return Color(NSColor.systemGreen)
+            return WarmPalette.statusGood
         case .listening:
-            return Color(NSColor.systemBlue)
+            return WarmPalette.accent
         case .processing, .responding:
-            return Color(NSColor.systemBlue)
+            return WarmPalette.accent
         }
     }
 
@@ -1121,41 +1234,49 @@ private struct VoicePickerOrbRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 10) {
-                voiceOrb
+        // Intentionally NOT wrapped in a Button. SwiftUI doesn't route
+        // taps reliably between a parent `Button` and a child `Button`
+        // — the parent ends up capturing the play button's tap, which
+        // would commit the selection and dismiss the popover whenever
+        // the user just wanted to preview. Using `.onTapGesture` on the
+        // row + a real `Button` for the play control lets the inner
+        // button consume its own taps cleanly.
+        HStack(spacing: 10) {
+            voiceOrb
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.primary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.primary)
 
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color.accentColor)
-                }
-
-                previewButton
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovering ? Color.primary.opacity(0.08) : .clear)
-            )
-            .padding(.horizontal, 6)
+
+            Spacer(minLength: 8)
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(WarmPalette.accent)
+            }
+
+            previewButton
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isHovering ? WarmPalette.surfaceTint : .clear)
+        )
+        .padding(.horizontal, 6)
+        // Hit area for "select this voice" — the play button sits on
+        // top of this and intercepts its own tap area before it reaches
+        // the gesture.
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
         .pointerCursor()
         .onHover { hovering in isHovering = hovering }
     }
@@ -1220,7 +1341,7 @@ private struct VoicePickerOrbRow: View {
                 .frame(width: 22, height: 22)
                 .background(
                     Circle()
-                        .fill(isPreviewing ? Color(NSColor.systemRed) : Color.accentColor)
+                        .fill(isPreviewing ? Color(NSColor.systemRed) : WarmPalette.accent)
                 )
         }
         .buttonStyle(.plain)

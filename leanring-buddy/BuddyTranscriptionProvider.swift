@@ -27,6 +27,15 @@ protocol BuddyTranscriptionProvider {
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession
+
+    /// Optional: warm any per-session credentials (e.g. short-lived API
+    /// tokens) in the background so the next streaming session opens
+    /// faster. Default impl is a no-op for providers that don't need it.
+    func prewarmCredentialsIfNeeded()
+}
+
+extension BuddyTranscriptionProvider {
+    func prewarmCredentialsIfNeeded() {}
 }
 
 enum BuddyTranscriptionProviderFactory {

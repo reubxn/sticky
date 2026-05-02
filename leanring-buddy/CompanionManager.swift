@@ -70,6 +70,13 @@ final class CompanionManager: ObservableObject {
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+
+    /// Listener for the persona-wheel hotkey (shift + cmd held). Lives
+    /// alongside the push-to-talk monitor — the two are independent so
+    /// the user can summon the wheel without cancelling a voice session
+    /// and vice versa.
+    let personaWheelHotkeyMonitor = PersonaWheelHotkeyMonitor()
+
     let overlayWindowManager = OverlayWindowManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
@@ -86,6 +93,18 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient()
     }()
 
+    /// On-disk cache of the per-voice "Hey, it's Sticky!" preview clips
+    /// shown in the menu bar voice picker. Kept here (rather than as a
+    /// global) so its lifetime is tied to the manager — and so we can
+    /// hand it the same `elevenLabsTTSClient` for downloads.
+    private let voicePreviewCache = VoicePreviewCache()
+
+    /// Background prefetch of every voice's preview clip. Started the
+    /// first time the user opens the voice picker dropdown, then never
+    /// again for the rest of the session — subsequent launches reuse
+    /// whatever the prefetch managed to write to disk.
+    private var voicePrefetchTask: Task<Void, Never>?
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
@@ -94,7 +113,15 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
 
+    /// Screenshot capture started on push-to-talk key DOWN so it overlaps with
+    /// the user speaking instead of running serially after release. The
+    /// response pipeline awaits this task instead of issuing its own capture,
+    /// shaving ~400-700ms off the perceived latency. Reset on every press so a
+    /// new utterance always works against a fresh capture.
+    private var preflightScreenCaptureTask: Task<[CompanionScreenCapture], Error>?
+
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var personaWheelHotkeyCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var ttsPowerCancellable: AnyCancellable?
@@ -119,7 +146,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isOverlayVisible: Bool = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    /// Haiku is the default — its TTFT is roughly 2-3x faster than Sonnet,
+    /// which dominates the response-pipeline latency budget for voice
+    /// answers. Users can switch to Sonnet/Opus from the picker for higher-
+    /// quality replies at the cost of perceived speed.
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-haiku-4-5-20251001"
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
@@ -142,6 +173,77 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Voice Colors
+
+    /// Color used everywhere "you" are visually represented — the bottom
+    /// edge glow when you hold push-to-talk, the all-edges halo while a
+    /// teach session is recording, etc. Fixed for now (matches today's
+    /// blue cursor); a future preference could let the user pick their
+    /// own hue.
+    static let userVoiceColor: Color = DS.Colors.overlayCursorBlue
+
+    /// Color used everywhere Sticky is visually represented — the cursor
+    /// itself, the response speech bubbles, the top edge glow while Sticky
+    /// is talking back. Tracks the selected ElevenLabs voice via
+    /// `voiceColorPalette` so swapping voices in the panel automatically
+    /// re-tints all of Sticky's chrome. Falls back to amber when no voice
+    /// is selected, which complements the user's blue.
+    ///
+    /// When a teammate persona is active, the bundle's `accentColor`
+    /// takes over so the cursor halo / response bubble / top-edge glow
+    /// all read as that person rather than as the user's default Sticky.
+    var stickyVoiceColor: Color {
+        if let teammate = activeTeammateBundle {
+            return teammate.accentColor
+        }
+        return Self.voiceColor(forVoiceID: selectedVoiceID)
+    }
+
+    /// Default Sticky color used when no voice override is selected (i.e.
+    /// the bundled default voice is in use). Amber complements the user's
+    /// blue and matches the "warning" accent used elsewhere in the app.
+    static let stickyDefaultVoiceColor: Color = DS.Colors.warning
+
+    /// Hand-tuned palette mapping every free ElevenLabs voice to its own
+    /// visual color. Picked so vocal "warmth" tracks color warmth (deep
+    /// voices skew indigo/burnt-orange, bright voices skew coral/magenta,
+    /// British voices skew muted/cool, etc). Used for both the voice
+    /// picker orbs in the panel AND for everything Sticky-themed in the
+    /// overlay (cursor, bubbles, top edge glow). Falls back to
+    /// `stickyDefaultVoiceColor` if a new voice ID slips in unmapped.
+    private static let voiceColorPalette: [String: Color] = [
+        "pNInz6obpgDQGcFmaJgB": Color(red: 0.34, green: 0.30, blue: 0.74), // Adam      — deep indigo
+        "Xb7hH8MSUJpSbSDYk0k2": Color(red: 0.18, green: 0.66, blue: 0.65), // Alice     — teal
+        "hpp4J3VqNfWAUOO0d1Us": Color(red: 0.96, green: 0.50, blue: 0.55), // Bella     — coral pink
+        "pqHfZKP75CvOlQylNhV4": Color(red: 0.78, green: 0.55, blue: 0.20), // Bill      — bronze
+        "nPczCjzI2devNBz1zQrb": Color(red: 0.85, green: 0.45, blue: 0.20), // Brian     — burnt orange
+        "N2lVS1w4EtoT3dr4eOWO": Color(red: 0.45, green: 0.60, blue: 0.32), // Callum    — moss green
+        "IKne3meq5aSn9XLyUdCD": Color(red: 0.16, green: 0.66, blue: 0.45), // Charlie   — emerald
+        "iP95p4xoKVk53GoZ742B": Color(red: 0.35, green: 0.66, blue: 0.92), // Chris     — sky blue
+        "onwK4e9ZLuTAKqWW03F9": Color(red: 0.40, green: 0.50, blue: 0.65), // Daniel    — slate blue
+        "cjVigY5qzO86Huf0OWal": Color(red: 0.18, green: 0.45, blue: 0.32), // Eric      — forest green
+        "JBFqnCBsd6RMkjVDRZzb": Color(red: 0.82, green: 0.42, blue: 0.30), // George    — terracotta
+        "SOYHLrjzK2X1ezoPC6cr": Color(red: 0.82, green: 0.20, blue: 0.25), // Harry     — crimson
+        "cgSgspJ2msm6clMCkdW9": Color(red: 0.86, green: 0.32, blue: 0.62), // Jessica   — magenta
+        "FGY2WhTYpPnrIDTdsKH5": Color(red: 0.62, green: 0.36, blue: 0.80), // Laura     — violet
+        "TX3LPaxmHKxFdv7VOQHJ": Color(red: 0.95, green: 0.55, blue: 0.18), // Liam      — orange
+        "pFZP5JQG7iQjIQuC4Bku": Color(red: 0.70, green: 0.55, blue: 0.78), // Lily      — lavender
+        "XrExE9yKIg1WjnnlVkGX": Color(red: 0.88, green: 0.72, blue: 0.25), // Matilda   — mustard
+        "SAz9YHcvj6GT2YYXdXww": Color(red: 0.55, green: 0.62, blue: 0.68), // River     — cool steel
+        "CwhRBWXzGAHq8TQ4Fs17": Color(red: 0.55, green: 0.58, blue: 0.30), // Roger     — olive
+        "EXAVITQu4vr4xnSDxMaL": Color(red: 0.92, green: 0.45, blue: 0.55), // Sarah     — rose
+        "bIHbv24MWmeRgasZH58o": Color(red: 0.50, green: 0.65, blue: 0.50), // Will      — sage
+    ]
+
+    /// Public lookup. The panel's voice picker also uses this so the orb
+    /// next to each row matches what the user will see in the overlay.
+    static func voiceColor(forVoiceID voiceID: String?) -> Color {
+        guard let voiceID, let color = voiceColorPalette[voiceID] else {
+            return stickyDefaultVoiceColor
+        }
+        return color
+    }
+
     // MARK: - Voice Preview
 
     /// The voice ID that's currently playing a preview clip in the panel,
@@ -158,11 +260,13 @@ final class CompanionManager: ObservableObject {
 
     private var voicePreviewTask: Task<Void, Never>?
 
-    /// Plays a short "Hey, I'm Sticky!" preview through the given voice
-    /// so the user can test it in the panel dropdown before committing.
-    /// Cancels any in-flight preview first so rapid clicking through the
-    /// list doesn't stack up overlapping playback. Does NOT change the
-    /// persisted `selectedVoiceID` — selection is a separate action.
+    /// Plays the cached "Hey, it's Sticky!" preview clip for the given
+    /// voice. If the clip isn't on disk yet (e.g. user clicked play
+    /// before the background prefetch reached this voice), it's
+    /// downloaded inline first. Cancels any in-flight preview before
+    /// starting so rapid clicking doesn't stack up overlapping playback.
+    /// Does NOT change the persisted `selectedVoiceID` — selection is a
+    /// separate action.
     func previewVoice(_ voiceID: String?) {
         voicePreviewTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
@@ -171,13 +275,18 @@ final class CompanionManager: ObservableObject {
             guard let self else { return }
             self.previewingVoiceID = voiceID ?? Self.defaultVoicePreviewSentinel
             do {
-                try await self.elevenLabsTTSClient.speakText(
-                    "Hey, I'm Sticky!",
-                    overrideVoiceID: voiceID
+                let clipURL = try await self.voicePreviewCache.cachedOrDownloadedClipURL(
+                    forVoiceID: voiceID,
+                    using: self.elevenLabsTTSClient
                 )
-                // speakText returns once playback starts — poll until it
-                // actually finishes so the panel UI keeps the stop icon
-                // visible for the full duration of the clip.
+                try Task.checkCancellation()
+                let audioData = try Data(contentsOf: clipURL)
+                try Task.checkCancellation()
+                try self.elevenLabsTTSClient.playAudioData(audioData)
+
+                // playAudioData returns once playback starts — poll until
+                // it actually finishes so the panel UI keeps the stop
+                // icon visible for the full duration of the clip.
                 while self.elevenLabsTTSClient.isPlaying {
                     try? await Task.sleep(nanoseconds: 150_000_000)
                     if Task.isCancelled { return }
@@ -200,31 +309,36 @@ final class CompanionManager: ObservableObject {
         previewingVoiceID = nil
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// Kicks off a background download of every free voice's preview
+    /// clip the first time the user opens the voice picker. Subsequent
+    /// calls within the same session are no-ops — the prefetch task
+    /// runs once. Failures on individual voices are logged but don't
+    /// abort the rest of the prefetch.
+    func prefetchAllVoicePreviewsIfNeeded() {
+        guard voicePrefetchTask == nil else { return }
+
+        // Build the full list of voice IDs we want cached: the bundled
+        // default (nil) first so it's ready before any specific override,
+        // then every free voice in display order.
+        let voiceIDs: [String?] = [nil] + ElevenLabsTTSClient.freeVoices.map { $0.id }
+
+        voicePrefetchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.voicePreviewCache.prefetchAll(
+                voiceIDs: voiceIDs,
+                using: self.elevenLabsTTSClient
+            )
+        }
+    }
+
+    /// User preference for whether the Sticky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
     @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
         ? true
         : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
 
-    // MARK: - Reverse Clicky: Taste Modes
-
-    /// Which taste mode the app is in. .ask is the default Clicky behaviour.
-    /// .teach captures Loom-style sessions for taste extraction. .apply prepends
-    /// the saved taste profile to the system prompt for every voice question.
-    /// Persisted to UserDefaults so the user's mode survives restarts.
-    @Published var tasteMode: TasteMode = {
-        if let rawTasteMode = UserDefaults.standard.string(forKey: "tasteMode"),
-           let storedTasteMode = TasteMode(rawValue: rawTasteMode) {
-            return storedTasteMode
-        }
-        return .ask
-    }()
-
-    func setTasteMode(_ newTasteMode: TasteMode) {
-        tasteMode = newTasteMode
-        UserDefaults.standard.set(newTasteMode.rawValue, forKey: "tasteMode")
-    }
+    // MARK: - Reverse Clicky: Taste Scope
 
     /// Personal vs. team scope for taste injection. Personal uses just the
     /// user's own principles; Team also unions in the shared team-profile.json
@@ -240,6 +354,213 @@ final class CompanionManager: ObservableObject {
     func setTasteScope(_ newTasteScope: TasteScope) {
         tasteScope = newTasteScope
         UserDefaults.standard.set(newTasteScope.rawValue, forKey: "tasteScope")
+    }
+
+    // MARK: - Reverse Clicky: Applied-Taste Transparency
+    //
+    // After every voice reply, Claude returns a `[USED:P1,T2]` tag listing
+    // which principles it actually leaned on. We resolve those short
+    // labels back into TastePrinciple objects via the mapping the
+    // TasteContextBlock builder hands back, and stash them here so the
+    // AppliedPrinciplesChip in the cursor overlay can render them.
+    //
+    // All three properties are transient — reset at the start of every
+    // voice request.
+
+    /// Principles Sticky's most recent reply genuinely leaned on, in the
+    /// order Claude listed them. Empty when no reply yet or when Claude
+    /// returned `[USED:none]`.
+    @Published var lastAppliedPrinciples: [TastePrinciple] = []
+
+    /// True if at least one principle in `lastAppliedPrinciples` came
+    /// from the team profile (vs. the user's personal profile). Drives a
+    /// trailing "Team" pill on the chip's expanded view.
+    @Published var lastAppliedSourceWasTeam: Bool = false
+
+    /// Per-principle origin lookup for the chip — the set of ids whose
+    /// principle came from the team profile. Used to render the right
+    /// "Personal" / "Team" pill on each expanded row.
+    @Published var teamOriginPrincipleIds: Set<String> = []
+
+    /// Whether the AppliedPrinciplesChip should currently render. Set to
+    /// true once a reply that leaned on at least one principle is fully
+    /// resolved (so the chip appears as the response settles), flipped
+    /// back to false when the user starts the next push-to-talk request
+    /// OR after the same fade window the response bubble would use.
+    @Published var isShowingAppliedPrinciplesChip: Bool = false
+
+    /// Cancellable that fades the chip out roughly when a response bubble
+    /// would have faded. Kept here so a new request can cancel the
+    /// previous fade-out before it fires (otherwise the chip from the
+    /// new request would inherit a stale hide timer).
+    private var appliedPrinciplesChipHideTask: Task<Void, Never>?
+
+    /// Most recent `TasteContextBlock` for the in-flight voice request.
+    /// Cached at prompt-build time so the response handler can resolve
+    /// the `[USED:...]` short labels back to principles without
+    /// re-reading the taste files. nil when the profile is empty.
+    private var inFlightTasteContextBlock: TasteContextBlock?
+
+    // MARK: - Reverse Clicky: Persona Selection
+
+    /// Which identity Sticky is currently wearing.
+    ///
+    /// - `.me` (default) → the user's own configured experience: their
+    ///   selected ElevenLabs voice, their saved personal TasteProfile,
+    ///   the default colored orb cursor.
+    /// - `.team` → same chrome as `.me` but the system prompt unions in
+    ///   the team taste profile (Personal ∪ Team).
+    /// - `.teammate(id)` → borrow another person's full persona bundle:
+    ///   their soul.md, their voice, their taste, and their avatar take
+    ///   over until the user picks something else from the wheel.
+    ///
+    /// Persisted across launches via UserDefaults using the persona's
+    /// `persistenceKey`.
+    @Published private(set) var personaSelection: PersonaSelection = {
+        if let rawValue = UserDefaults.standard.string(forKey: "personaSelection"),
+           let storedSelection = PersonaSelection.fromPersistenceKey(rawValue) {
+            return storedSelection
+        }
+        return .me
+    }()
+
+    /// Updates the active persona and persists it. Also keeps `tasteScope`
+    /// in sync for `.me` / `.team` so any code path still reading
+    /// tasteScope directly (legacy panel rows, prompt composition,
+    /// analytics) doesn't see a stale value. `.teammate` leaves
+    /// tasteScope alone — the teammate's bundle replaces both scope and
+    /// taste anyway.
+    func setPersonaSelection(_ newSelection: PersonaSelection) {
+        personaSelection = newSelection
+        UserDefaults.standard.set(newSelection.persistenceKey, forKey: "personaSelection")
+
+        switch newSelection {
+        case .me:
+            if tasteScope != .personal {
+                setTasteScope(.personal)
+            }
+        case .team:
+            if tasteScope != .team {
+                setTasteScope(.team)
+            }
+        case .teammate:
+            break
+        }
+    }
+
+    /// The active teammate's full persona bundle when persona is
+    /// `.teammate(id)`, otherwise nil. Read by the prompt composer (to
+    /// inject soul + taste), the TTS path (to override voice), and the
+    /// cursor renderer (to swap in the avatar).
+    var activeTeammateBundle: PersonaBundle? {
+        if case .teammate(let id) = personaSelection {
+            return PersonaStore.teammate(withId: id)
+        }
+        return nil
+    }
+
+    /// The avatar Sticky's cursor should render right now, or nil to
+    /// keep the default colored orb. Returns the active teammate's
+    /// avatar when one is active; nil for `.me` / `.team`.
+    var activePersonaAvatar: PersonaAvatar? {
+        return activeTeammateBundle?.avatar
+    }
+
+    // MARK: - Reverse Clicky: Persona Wheel
+
+    /// True while the radial wheel picker is being held open. The
+    /// overlay reads this to decide whether to render the wheel layer.
+    /// Toggled by the `PersonaWheelHotkeyMonitor` press / release events.
+    @Published private(set) var isPersonaWheelVisible: Bool = false
+
+    /// Where on screen the wheel is anchored — set to the cursor
+    /// position at the moment the user pressed the hotkey, then frozen
+    /// while held so the user can move OUT to a spoke instead of
+    /// dragging the wheel along with the cursor. Coordinates are in
+    /// AppKit screen space (origin bottom-left). Nil when not visible.
+    @Published private(set) var personaWheelCenterScreenLocation: CGPoint? = nil
+
+    /// Id of the persona currently being hovered toward in the wheel,
+    /// or nil when the cursor is in the dead-zone in the middle. Updated
+    /// every cursor-tracking frame by `BlueCursorView` while the wheel
+    /// is visible. Read by `PersonaWheelView` to highlight the right
+    /// spoke; consumed on release to commit the selection.
+    @Published var hoveredWheelPersonaId: String? = nil
+
+    /// Personas to show in the wheel, in clockwise display order
+    /// starting at 12 o'clock. Convenience accessor so the overlay
+    /// doesn't have to import PersonaStore directly.
+    var allWheelPersonas: [PersonaBundle] {
+        return PersonaStore.allWheelPersonas
+    }
+
+    /// Id of the currently-active persona in wheel-display terms (i.e.
+    /// the special "__me__" / "__team__" id for the pseudo-personas, or
+    /// the teammate's id). Used by the wheel to draw a "currently
+    /// active" indicator on the right spoke so the user can tell which
+    /// release-position is a no-op.
+    var activeWheelPersonaId: String {
+        return PersonaStore.wheelPersonaForSelection(personaSelection)?.id
+            ?? PersonaStore.mePseudoPersona.id
+    }
+
+    /// Sets up the persona-wheel hotkey subscription. Mirrors
+    /// `bindShortcutTransitions()` — kept as a separate method so the
+    /// two listeners stay clearly independent in the call graph.
+    private func bindPersonaWheelHotkeyTransitions() {
+        personaWheelHotkeyCancellable = personaWheelHotkeyMonitor
+            .hotkeyTransitionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] transition in
+                self?.handlePersonaWheelHotkeyTransition(transition)
+            }
+    }
+
+    /// Press → freeze the wheel center at the current cursor location
+    /// and show the wheel. Release → read whatever spoke is hovered and
+    /// commit it as the new persona selection (or no-op if the user
+    /// released in the dead zone).
+    private func handlePersonaWheelHotkeyTransition(_ transition: PersonaWheelHotkeyMonitor.HotkeyTransition) {
+        switch transition {
+        case .pressed:
+            // Don't summon the wheel during onboarding video — the user
+            // is being shown a focused tutorial moment and shouldn't
+            // accidentally trigger picker chrome on top of it.
+            guard !showOnboardingVideo else { return }
+
+            // Bring the overlay back transiently if the user has Sticky
+            // hidden — the wheel renders inside the overlay so it needs
+            // to be on screen.
+            if !isClickyCursorEnabled && !isOverlayVisible {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+            }
+
+            personaWheelCenterScreenLocation = NSEvent.mouseLocation
+            hoveredWheelPersonaId = nil
+            isPersonaWheelVisible = true
+
+        case .released:
+            commitPersonaWheelSelectionIfHovered()
+            isPersonaWheelVisible = false
+            personaWheelCenterScreenLocation = nil
+            hoveredWheelPersonaId = nil
+        }
+    }
+
+    /// Translates the currently-hovered wheel persona id back into a
+    /// `PersonaSelection` and stores it. No-op when the user released
+    /// in the dead zone or when the hovered id has been removed since.
+    private func commitPersonaWheelSelectionIfHovered() {
+        guard let hoveredId = hoveredWheelPersonaId else { return }
+        guard let hoveredPersona = allWheelPersonas.first(where: { $0.id == hoveredId }) else { return }
+
+        let newSelection = PersonaStore.selectionForWheelPersona(hoveredPersona)
+        guard newSelection != personaSelection else { return }
+
+        setPersonaSelection(newSelection)
+        print("🎡 Persona wheel selected: \(hoveredPersona.displayName) (\(hoveredId))")
     }
 
     /// Current state of the in-progress teach session, if any. Independent
@@ -277,11 +598,29 @@ final class CompanionManager: ObservableObject {
     /// JPEG data after every session.
     @Published private(set) var pendingReviewFrames: [(data: Data, timestamp: TimeInterval)] = []
 
+    /// Lightweight undo stack for the review queue. Each entry captures the
+    /// moment that was just answered or skipped plus the id of the principle
+    /// (if any) that was written to disk. Bounded at 5 entries so we don't
+    /// retain unbounded review history. `unadvanceReviewQueue()` pops the
+    /// most recent entry, deletes the associated principle (if any), and
+    /// re-prepends the moment to `pendingAmbiguousMoments` — making misclicks
+    /// recoverable without reloading the entire review session.
+    private var recentlyAdvancedMoments: [(moment: AmbiguousMoment, savedPrincipleId: String?)] = []
+    private let recentlyAdvancedMomentsMaxDepth: Int = 5
+
     /// Most recent count of confident principles auto-saved from a finished
     /// teach session. Drives the small "Saved N principle(s)" toast in the
     /// panel so the user gets feedback even when the session has no
     /// ambiguous moments to review.
     @Published private(set) var lastTeachSessionSavedPrincipleCount: Int = 0
+
+    /// Analyzer output that's waiting for the user to confirm before
+    /// anything hits disk. When non-nil, the panel shows the
+    /// TeachSessionResultCard with a checklist of confident principles, an
+    /// "+ N moments to talk about" hint for ambiguous ones, and Save /
+    /// Discard buttons. Until the user clicks Save, no principle has been
+    /// written to taste-profile.json — Discard wipes everything cleanly.
+    @Published private(set) var pendingTeachSessionResult: PendingTeachSessionReview?
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
@@ -299,11 +638,11 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Whether the user has completed onboarding at least once. Persisted
-    /// to UserDefaults so the Start button only appears on first launch.
+    /// Onboarding is disabled — always treat the user as already onboarded so
+    /// the Start button and intro video flow never appear.
     var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
+        get { true }
+        set { /* no-op: onboarding is disabled */ }
     }
 
     /// Whether the user has submitted their email during onboarding.
@@ -334,15 +673,22 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        print("🔑 Sticky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindTTSPowerLevel()
         bindShortcutTransitions()
+        bindPersonaWheelHotkeyTransitions()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+
+        // Pre-fetch the AssemblyAI streaming token in the background so the
+        // very first push-to-talk press doesn't pay the ~100-200ms HTTP
+        // round-trip to the worker. Subsequent presses are kept hot from
+        // BuddyDictationManager.finishCurrentDictationSessionIfNeeded.
+        buddyDictationManager.prewarmTranscriptionCredentialsIfNeeded()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -401,7 +747,7 @@ final class CompanionManager: ObservableObject {
     private func startOnboardingMusic() {
         stopOnboardingMusic()
         guard let musicURL = Bundle.main.url(forResource: "ff", withExtension: "mp3") else {
-            print("⚠️ Clicky: ff.mp3 not found in bundle")
+            print("⚠️ Sticky: ff.mp3 not found in bundle")
             return
         }
 
@@ -416,7 +762,7 @@ final class CompanionManager: ObservableObject {
                 self?.fadeOutOnboardingMusic()
             }
         } catch {
-            print("⚠️ Clicky: Failed to play onboarding music: \(error)")
+            print("⚠️ Sticky: Failed to play onboarding music: \(error)")
         }
     }
 
@@ -449,6 +795,18 @@ final class CompanionManager: ObservableObject {
     }
 
     // MARK: - Teach Session
+
+    /// The menu bar panel's click-outside dismiss handler should consult this
+    /// before dismissing. Returns true when there's transient teach-flow state
+    /// the user could lose (mid-recording, mid-analysis, mid-review-queue, or
+    /// looking at a pre-save result card). Idle ask state returns false
+    /// so normal panel behavior is preserved.
+    var shouldKeepPanelOpenForActiveTeachState: Bool {
+        if teachSessionState != .idle { return true }
+        if !pendingAmbiguousMoments.isEmpty { return true }
+        if pendingTeachSessionResult != nil { return true }
+        return false
+    }
 
     /// Maximum length of a teach session before we auto-stop it. Keeps the
     /// frame count and transcript size manageable for the analyzer call.
@@ -623,18 +981,18 @@ final class CompanionManager: ObservableObject {
                 self?.lastTeachSessionResult = analysis.result
                 Self.printTeachSessionResultForDebugging(analysis.result)
 
-                // Confident principles auto-save to the central mind on disk.
-                let savedCount = self?.persistConfidentPrinciplesFromTeachSession(analysis.result) ?? 0
-                self?.lastTeachSessionSavedPrincipleCount = savedCount
-
-                // Ambiguous moments queue up as review cards. We hold onto
-                // the analyzer's selected frames so each card can render a
-                // thumbnail of the moment in question. Both queues are
-                // cleared together when the user finishes (or ends) review.
-                self?.pendingAmbiguousMoments = analysis.result.ambiguous
-                self?.pendingReviewFrames = analysis.result.ambiguous.isEmpty
-                    ? []
-                    : analysis.selectedFrames
+                // Don't auto-save anything yet — surface the result to the
+                // user via TeachSessionResultCard so they can uncheck
+                // principles or discard the whole session before any disk
+                // write happens. Save fires confirmTeachSessionSave; discard
+                // fires discardTeachSessionResult.
+                self?.lastTeachSessionSavedPrincipleCount = 0
+                self?.pendingAmbiguousMoments.removeAll()
+                self?.pendingReviewFrames.removeAll()
+                self?.pendingTeachSessionResult = PendingTeachSessionReview(
+                    result: analysis.result,
+                    selectedFrames: analysis.selectedFrames
+                )
 
                 self?.resetTeachSessionState()
             } catch {
@@ -642,6 +1000,66 @@ final class CompanionManager: ObservableObject {
                 self?.resetTeachSessionState()
             }
         }
+    }
+
+    // MARK: - Teach Session Result Confirmation
+
+    /// User clicked Save on the result card. Persists the subset of
+    /// confident principles whose ids are in `selectedConfidentPrincipleIds`,
+    /// then promotes any ambiguous moments into the existing review queue
+    /// so the MCQ cards take over. Clears the pending result either way.
+    func confirmTeachSessionSave(selectedConfidentPrincipleIds: Set<String>) {
+        guard let pendingReview = pendingTeachSessionResult else { return }
+
+        let principlesToPersist = pendingReview.result.confident.filter { candidatePrinciple in
+            selectedConfidentPrincipleIds.contains(candidatePrinciple.id)
+        }
+
+        // Stamp approval + freshen timestamps so the on-disk profile shows
+        // when the user actually accepted them, not when Claude generated.
+        let approvalDate = Date()
+        let stampedPrinciplesToPersist: [TastePrinciple] = principlesToPersist.map { rawPrinciple in
+            var stampedPrinciple = rawPrinciple
+            stampedPrinciple.approved = true
+            stampedPrinciple.createdAt = approvalDate
+            stampedPrinciple.updatedAt = approvalDate
+            return stampedPrinciple
+        }
+
+        var savedPrincipleCount = 0
+        if !stampedPrinciplesToPersist.isEmpty {
+            do {
+                savedPrincipleCount = try TasteProfileStore.appendApprovedPrinciples(stampedPrinciplesToPersist)
+                print("🧠 Teach session: saved \(savedPrincipleCount) principle(s) to \(TasteProfileStore.profileFileLocation())")
+                mirrorPrinciplesToOwnerTasteFile(stampedPrinciplesToPersist)
+            } catch {
+                print("⚠️ Teach session: failed to save principles: \(error)")
+            }
+        }
+        lastTeachSessionSavedPrincipleCount = savedPrincipleCount
+
+        // Promote ambiguous moments into the review queue so the existing
+        // ReviewCardStack picks up where the result card leaves off. Frames
+        // are only worth keeping if there's something to review.
+        let ambiguousMomentsToReview = pendingReview.result.ambiguous
+        pendingAmbiguousMoments = ambiguousMomentsToReview
+        pendingReviewFrames = ambiguousMomentsToReview.isEmpty
+            ? []
+            : pendingReview.selectedFrames
+
+        pendingTeachSessionResult = nil
+    }
+
+    /// User clicked Discard. Throws away the analyzer output without
+    /// touching disk. Also clears the saved-toast counter so a stale
+    /// "Saved 3" toast from an earlier session doesn't reappear.
+    func discardTeachSessionResult() {
+        guard pendingTeachSessionResult != nil else { return }
+        print("🧠 Teach session: discarded by user — nothing saved")
+        pendingTeachSessionResult = nil
+        lastTeachSessionSavedPrincipleCount = 0
+        pendingAmbiguousMoments.removeAll()
+        pendingReviewFrames.removeAll()
     }
 
     /// Appends every confident principle from the analyzer result to the
@@ -659,6 +1077,7 @@ final class CompanionManager: ObservableObject {
         do {
             let savedCount = try TasteProfileStore.appendApprovedPrinciples(result.confident)
             print("🧠 Teach session: saved \(savedCount) principle(s) to \(TasteProfileStore.profileFileLocation())")
+            mirrorPrinciplesToOwnerTasteFile(result.confident)
             return savedCount
         } catch {
             print("⚠️ Teach session: failed to save principles: \(error)")
@@ -685,13 +1104,60 @@ final class CompanionManager: ObservableObject {
         chosenPrinciple.createdAt = approvalDate
         chosenPrinciple.updatedAt = approvalDate
 
+        var savedPrincipleIdForUndo: String? = nil
         do {
             try TasteProfileStore.appendApprovedPrinciples([chosenPrinciple])
+            savedPrincipleIdForUndo = chosenPrinciple.id
             print("🧠 Review: approved principle — \(chosenPrinciple.statement)")
+            mirrorPrinciplesToOwnerTasteFile([chosenPrinciple])
         } catch {
             print("⚠️ Review: failed to save approved principle: \(error)")
         }
 
+        // Capture the moment + saved-principle id for undo BEFORE advancing,
+        // so the user can back-arrow to recover from a misclick.
+        pushRecentlyAdvancedMoment(currentMoment, savedPrincipleId: savedPrincipleIdForUndo)
+        advanceReviewQueue()
+    }
+
+    /// Saves a free-text answer the user typed for the current ambiguous
+    /// moment, then advances the queue. Used when none of the four
+    /// suggested options fits and the user wants to phrase the principle
+    /// themselves. The new principle inherits the domain of the 4th
+    /// candidate (the "Something else" stub) so domain bookkeeping stays
+    /// consistent — falls back to `.general` if no candidate is available.
+    func approveCustomAnswer(_ rawAnswer: String) {
+        let trimmedAnswer = rawAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAnswer.isEmpty else { return }
+        guard let currentMoment = pendingAmbiguousMoments.first else { return }
+
+        let inheritedDomain = currentMoment.principleByOption.last?.domain ?? .general
+        let approvalDate = Date()
+
+        let customPrinciple = TastePrinciple(
+            id: UUID().uuidString,
+            domain: inheritedDomain,
+            statement: trimmedAnswer,
+            confidence: 0.75,
+            evidence: ["User-typed during teach-session review."],
+            tags: ["custom"],
+            approved: true,
+            authorId: "local-user",
+            createdAt: approvalDate,
+            updatedAt: approvalDate
+        )
+
+        var savedPrincipleIdForUndo: String? = nil
+        do {
+            try TasteProfileStore.appendApprovedPrinciples([customPrinciple])
+            savedPrincipleIdForUndo = customPrinciple.id
+            print("🧠 Review: approved custom principle — \(trimmedAnswer)")
+            mirrorPrinciplesToOwnerTasteFile([customPrinciple])
+        } catch {
+            print("⚠️ Review: failed to save custom principle: \(error)")
+        }
+
+        pushRecentlyAdvancedMoment(currentMoment, savedPrincipleId: savedPrincipleIdForUndo)
         advanceReviewQueue()
     }
 
@@ -699,9 +1165,47 @@ final class CompanionManager: ObservableObject {
     /// Used when the user doesn't want any of the suggested options and
     /// doesn't feel like typing a custom one.
     func skipCurrentReviewMoment() {
-        guard !pendingAmbiguousMoments.isEmpty else { return }
+        guard let currentMoment = pendingAmbiguousMoments.first else { return }
         print("🧠 Review: skipped a moment")
+        // Skipped moments push onto the undo stack with a nil principle id —
+        // back-arrow recovers the question without anything to delete.
+        pushRecentlyAdvancedMoment(currentMoment, savedPrincipleId: nil)
         advanceReviewQueue()
+    }
+
+    /// Pops the most recently advanced moment off the undo stack and
+    /// re-prepends it to the review queue. If a principle was saved when
+    /// the moment was originally answered, that principle is also deleted
+    /// from the on-disk taste profile so the round-trip is clean. No-op if
+    /// the stack is empty (e.g. the user just opened the review).
+    func unadvanceReviewQueue() {
+        guard let mostRecentlyAdvanced = recentlyAdvancedMoments.popLast() else { return }
+
+        if let principleIdToDelete = mostRecentlyAdvanced.savedPrincipleId {
+            do {
+                try TasteProfileStore.deletePrinciple(id: principleIdToDelete)
+                print("🧠 Review: undone — deleted principle \(principleIdToDelete) and restored moment")
+            } catch {
+                // Even if deletion fails we still restore the moment so the
+                // user isn't stuck — the orphan can be cleaned up later via
+                // the upcoming Library view.
+                print("⚠️ Review: undo failed to delete principle \(principleIdToDelete): \(error)")
+            }
+        } else {
+            print("🧠 Review: undone — restored skipped moment")
+        }
+
+        pendingAmbiguousMoments.insert(mostRecentlyAdvanced.moment, at: 0)
+    }
+
+    /// Inserts a moment into the bounded undo stack, dropping the oldest
+    /// entry if we'd exceed `recentlyAdvancedMomentsMaxDepth`. The bound
+    /// keeps memory predictable across long review sessions.
+    private func pushRecentlyAdvancedMoment(_ moment: AmbiguousMoment, savedPrincipleId: String?) {
+        recentlyAdvancedMoments.append((moment: moment, savedPrincipleId: savedPrincipleId))
+        if recentlyAdvancedMoments.count > recentlyAdvancedMomentsMaxDepth {
+            recentlyAdvancedMoments.removeFirst(recentlyAdvancedMoments.count - recentlyAdvancedMomentsMaxDepth)
+        }
     }
 
     /// Ends the review entirely, dropping any remaining ambiguous moments.
@@ -713,6 +1217,10 @@ final class CompanionManager: ObservableObject {
         }
         pendingAmbiguousMoments.removeAll()
         pendingReviewFrames.removeAll()
+        // Explicit end means the user is walking away — stop offering undo
+        // for prior answers so we don't dangle a re-prepend onto an empty
+        // queue if they open another review.
+        recentlyAdvancedMoments.removeAll()
     }
 
     private func advanceReviewQueue() {
@@ -766,6 +1274,7 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        personaWheelHotkeyMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
@@ -782,6 +1291,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
+        personaWheelHotkeyCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         ttsPowerCancellable?.cancel()
@@ -800,8 +1310,10 @@ final class CompanionManager: ObservableObject {
 
         if currentlyHasAccessibility {
             globalPushToTalkShortcutMonitor.start()
+            personaWheelHotkeyMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
+            personaWheelHotkeyMonitor.stop()
         }
 
         hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
@@ -996,6 +1508,16 @@ final class CompanionManager: ObservableObject {
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
+            // Kick off the screenshot capture immediately on key-down so it
+            // overlaps with the user speaking. By the time they release and
+            // we have a transcript, the screenshots are already encoded and
+            // sitting in memory. The previous task (if any) is cancelled so
+            // a new utterance always works against a fresh capture.
+            preflightScreenCaptureTask?.cancel()
+            preflightScreenCaptureTask = Task {
+                try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+            }
+
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -1042,7 +1564,13 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're sticky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+
+    about the product:
+    sticky is a macos companion that learns the user's taste — their judgment about design, writing, and code — and uses it to help them work. it has three modes the user picks from a menu bar panel:
+    - ask (you are here right now by default): the user asks a question about what's on their screen, you answer and can fly your blue thumbtack cursor to point at things.
+    - teach: the user holds the same shortcut, narrates a creative decision out loud while looking at their work (e.g. "i made the logo bigger because brand presence matters"), and a separate path extracts that into a saved taste principle. you don't handle teach mode — a different system prompt does.
+    - apply: same as ask, except the user's saved taste principles get prepended to your system prompt as judgment context. when you see a "current taste context" block above, treat those principles as the user's preferences — use them to ground critique, suggestions, and rankings, but they're judgment context, not rigid rules. say so if evidence is weak or conflicting.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -1059,7 +1587,7 @@ final class CompanionManager: ObservableObject {
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
-    you have a small blue parallelogram cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    you have a small glowing blue orb cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
@@ -1081,15 +1609,45 @@ final class CompanionManager: ObservableObject {
     /// personal-only or personal ∪ team. Falls back to the unmodified base
     /// prompt if the profile is empty or fails to load — Sticky should
     /// never break because of a taste-file issue.
+    ///
+    /// When a teammate persona is active, this branches into the teammate
+    /// path: their soul.md is prepended (so Claude is told who it's
+    /// playing) followed by their bundled taste principles, and the user's
+    /// own taste profile + team profile are NOT used. The teammate's
+    /// identity replaces Sticky's defaults wholesale.
     private func composeVoiceSystemPromptWithTaste() -> String {
         let basePrompt = Self.companionVoiceResponseSystemPrompt
 
+        if let teammateBundle = activeTeammateBundle {
+            // Teammate persona path doesn't drive the AppliedPrinciplesChip
+            // — the chip is for the user's own / team taste, not for a
+            // borrowed persona. Clear the in-flight cache so a stale
+            // mapping from the previous request can't bleed into the
+            // [USED:...] resolver.
+            inFlightTasteContextBlock = nil
+            return composeSystemPromptForTeammatePersona(
+                teammateBundle: teammateBundle,
+                basePrompt: basePrompt
+            )
+        }
+
+        // Phase 2: prefer the owner's TASTE.md (the new source of
+        // truth) so teach-mode appends become visible in apply mode
+        // without a restart. Falls back to the legacy JSON store when
+        // the markdown file isn't reachable — once everything reads
+        // TASTE.md cleanly, the JSON store can go away.
         let loadedPersonalProfile: TasteProfile
-        do {
-            loadedPersonalProfile = try TasteProfileStore.loadProfile()
-        } catch {
-            print("⚠️ Couldn't load personal taste profile, using base prompt: \(error)")
-            return basePrompt
+        if let ownerBundle = PersonaStore.myCurrentBundle() {
+            loadedPersonalProfile = ownerBundle.taste
+            print("📄 Personal taste loaded from \(PersonaStore.myPersonaId)/TASTE.md (\(loadedPersonalProfile.principles.count) principle(s))")
+        } else {
+            do {
+                loadedPersonalProfile = try TasteProfileStore.loadProfile()
+            } catch {
+                print("⚠️ Couldn't load personal taste profile, using base prompt: \(error)")
+                inFlightTasteContextBlock = nil
+                return basePrompt
+            }
         }
 
         // Team profile is best-effort. If it's missing or malformed we just
@@ -1098,12 +1656,13 @@ final class CompanionManager: ObservableObject {
             ? TeamTasteProfileStore.loadTeamProfile()
             : nil
 
-        let tasteContextBlock = TastePromptBuilder.tasteContextBlock(
+        let builtTasteContextBlock = TastePromptBuilder.buildTasteContextBlock(
             personalProfile: loadedPersonalProfile,
             teamProfile: loadedTeamProfile,
             scope: tasteScope
         )
-        guard !tasteContextBlock.isEmpty else {
+        guard !builtTasteContextBlock.promptText.isEmpty else {
+            inFlightTasteContextBlock = nil
             return basePrompt
         }
 
@@ -1116,7 +1675,69 @@ final class CompanionManager: ObservableObject {
             print("🧠 Applying taste — \(approvedPersonalCount) personal + \(approvedTeamCount) team principle(s)")
         }
 
-        return tasteContextBlock + "\n\n" + basePrompt
+        // Cache the block so the response handler can resolve Claude's
+        // trailing [USED:...] tag back into TastePrinciple objects.
+        // Ask mode now always injects taste, so the chip always has a
+        // mapping available. Teach mode follows a separate code path.
+        inFlightTasteContextBlock = builtTasteContextBlock
+
+        return builtTasteContextBlock.promptText + "\n\n" + basePrompt
+    }
+
+    /// Builds the system prompt when the user is wearing a teammate's
+    /// persona. The teammate's `soul` (their personality / voice prose)
+    /// goes first so Claude knows who it's roleplaying, followed by
+    /// their bundled taste principles framed as judgment context, and
+    /// finally the base Sticky prompt that defines the response format
+    /// (the [POINT:...] tag protocol etc). Personal/team taste from
+    /// disk is intentionally NOT mixed in — when you pick a teammate
+    /// you want to hear from them, not a blend of you and them.
+    private func composeSystemPromptForTeammatePersona(
+        teammateBundle: PersonaBundle,
+        basePrompt: String
+    ) -> String {
+        let teammateTasteContextBlock = TastePromptBuilder.tasteContextBlock(
+            personalProfile: teammateBundle.taste,
+            teamProfile: nil,
+            scope: .personal
+        )
+
+        print("🎭 Wearing persona: \(teammateBundle.displayName) (\(teammateBundle.id)) — \(teammateBundle.taste.principles.filter { $0.approved }.count) approved principle(s)")
+
+        var promptSections: [String] = []
+
+        if !teammateBundle.soul.isEmpty {
+            promptSections.append(teammateBundle.soul)
+        }
+
+        if !teammateTasteContextBlock.isEmpty {
+            promptSections.append(teammateTasteContextBlock)
+        }
+
+        promptSections.append(basePrompt)
+
+        return promptSections.joined(separator: "\n\n")
+    }
+
+    /// Phase 2 — mirrors freshly-saved teach-mode principles into the
+    /// local owner's TASTE.md so they show up to teammates who borrow
+    /// this persona. Best-effort: failures are logged but don't block
+    /// the primary JSON save (which the rest of the app — TasteLibrary,
+    /// review queue, undo — still reads from). Eventually we'll cut
+    /// the JSON store; until then both writes happen in lockstep.
+    private func mirrorPrinciplesToOwnerTasteFile(_ principles: [TastePrinciple]) {
+        guard !principles.isEmpty else { return }
+        for principle in principles {
+            do {
+                try PersonaTasteFileStore.appendPrinciple(
+                    principle,
+                    toPersonaId: PersonaStore.myPersonaId
+                )
+            } catch {
+                print("⚠️ TASTE.md mirror failed for \(PersonaStore.myPersonaId): \(error)")
+            }
+        }
+        print("📄 Mirrored \(principles.count) principle(s) to \(PersonaStore.myPersonaId)/TASTE.md")
     }
 
     // MARK: - AI Response Pipeline
@@ -1130,13 +1751,49 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
+        // Hand the in-flight preflight capture to the response task. We clear
+        // the property up front so a stray release-then-press while we're
+        // mid-response doesn't kick the same task around twice.
+        let preflightCaptureTaskForThisResponse = preflightScreenCaptureTask
+        preflightScreenCaptureTask = nil
+
+        // Reset applied-taste transparency state up front for every
+        // request. The chip in the cursor overlay reads these properties
+        // — clearing them here means the previous reply's applied-
+        // principles list disappears the moment the user holds push-to-
+        // talk again, so the chip never displays stale info while a new
+        // request is in flight.
+        lastAppliedPrinciples = []
+        lastAppliedSourceWasTeam = false
+        teamOriginPrincipleIds = []
+        inFlightTasteContextBlock = nil
+        // Hide the chip immediately on a new request and cancel any
+        // pending fade — otherwise a fade-out scheduled by the previous
+        // reply could fire mid-stream and yank the new chip away.
+        isShowingAppliedPrinciplesChip = false
+        appliedPrinciplesChipHideTask?.cancel()
+        appliedPrinciplesChipHideTask = nil
+
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Prefer the preflight capture (started on key-down so it
+                // overlaps with speaking). If for any reason it failed or
+                // wasn't kicked off, fall back to capturing inline so the
+                // pipeline still works.
+                let screenCaptures: [CompanionScreenCapture]
+                if let preflightCaptureTaskForThisResponse {
+                    do {
+                        screenCaptures = try await preflightCaptureTaskForThisResponse.value
+                    } catch {
+                        print("⚠️ Preflight screenshot failed (\(error)); recapturing inline")
+                        screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    }
+                } else {
+                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -1159,21 +1816,101 @@ final class CompanionManager: ObservableObject {
                 // profile) this is a no-op and the base prompt is used.
                 let composedSystemPrompt = composeVoiceSystemPromptWithTaste()
 
+                // Sentence-streamed TTS: as Claude streams the reply, dispatch
+                // each completed sentence to ElevenLabs in parallel and play
+                // them back in order via the chained playback queue. The
+                // first sentence begins playing while Claude is still
+                // generating later ones, which is the single biggest
+                // perceived-latency win in the response pipeline.
+                // When a teammate persona is active, their bundle voice
+                // takes precedence over the user's own selectedVoiceID —
+                // the whole point of switching personas is to hear them
+                // speak in their voice. Falls back to the user's voice
+                // (or the bundled default) when persona is .me / .team.
+                let effectiveTTSVoiceID = activeTeammateBundle?.voiceId ?? selectedVoiceID
+                let streamingResponseState = StreamingResponseState(
+                    ttsClient: elevenLabsTTSClient,
+                    overrideVoiceID: effectiveTTSVoiceID
+                )
+                streamingResponseState.beginNewChain()
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: composedSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    onTextChunk: { accumulatedStreamedText in
+                        streamingResponseState.handleStreamedText(accumulatedStreamedText)
                     }
                 )
 
                 guard !Task.isCancelled else { return }
 
+                // Strip the trailing [USED:...] tag FIRST so the existing
+                // [POINT:...] parser (which anchors to end-of-string) still
+                // matches correctly. The taste-context block tells Claude
+                // to put [USED:...] AFTER any [POINT:...] tag, so the order
+                // is:
+                //   <reply text> <[POINT:...]?> <[USED:...]>
+                // We unwrap the inner [POINT:...] from the cleaned text
+                // below, after the USED tag has been removed.
+                let usedTagParseResult = TastePromptBuilder.parseUsedTag(from: fullResponseText)
+                let responseTextWithoutUsedTag = usedTagParseResult.cleanText
+                let usedShortLabels = usedTagParseResult.usedShortLabels
+
                 // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutUsedTag)
                 let spokenText = parseResult.spokenText
+
+                // Resolve [USED:...] short labels back into TastePrinciple
+                // objects via the cached TasteContextBlock mapping. Only
+                // populated when there were principles to inject — empty
+                // profiles leave inFlightTasteContextBlock nil and the
+                // chip never appears.
+                if let cachedTasteContextBlock = inFlightTasteContextBlock {
+                    var resolvedPrinciples: [TastePrinciple] = []
+                    var resolvedTeamOriginIds: Set<String> = []
+                    for shortLabel in usedShortLabels {
+                        // Tolerant to Claude making up a label that doesn't
+                        // exist (e.g. [USED:P99]) — silently skip the bad
+                        // label, keep the rest. Better than dropping the
+                        // whole list because of one stray.
+                        guard let resolvedPrinciple = cachedTasteContextBlock.principlesByShortLabel[shortLabel] else {
+                            print("⚠️ Apply transparency: ignoring unknown short label \"\(shortLabel)\"")
+                            continue
+                        }
+                        resolvedPrinciples.append(resolvedPrinciple)
+                        if cachedTasteContextBlock.teamShortLabels.contains(shortLabel) {
+                            resolvedTeamOriginIds.insert(resolvedPrinciple.id)
+                        }
+                    }
+                    lastAppliedPrinciples = resolvedPrinciples
+                    teamOriginPrincipleIds = resolvedTeamOriginIds
+                    lastAppliedSourceWasTeam = !resolvedTeamOriginIds.isEmpty
+                    print("✦ Apply transparency: resolved \(resolvedPrinciples.count) principle(s) from [USED:\(usedShortLabels.joined(separator: ","))]")
+                }
+                // Clear the cached context block so a stale mapping can't
+                // bleed into the next request's USED resolution.
+                inFlightTasteContextBlock = nil
+
+                // Reveal the AppliedPrinciplesChip when Claude actually
+                // leaned on at least one principle. Unlike the old
+                // Apply-mode behaviour we don't show an empty-state chip
+                // on every reply — that would be noise on the now-default
+                // ask flow when the user hasn't taught Sticky anything
+                // yet, or when their question simply didn't intersect
+                // with their taste.
+                if !lastAppliedPrinciples.isEmpty {
+                    isShowingAppliedPrinciplesChip = true
+                    scheduleAppliedPrinciplesChipFadeOut()
+                }
+
+                // Dispatch any spoken text that wasn't sent during streaming
+                // (e.g. a final clause without trailing punctuation, or text
+                // held back when "[POINT:" appeared). For most multi-sentence
+                // responses this is a no-op because every sentence already
+                // went out during streaming.
+                streamingResponseState.dispatchAnyTrailingText(of: spokenText)
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -1246,18 +1983,15 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
+                // Sentences were already enqueued during streaming + via the
+                // trailing-text dispatch above. Audio is fetching and will
+                // start playing as the first segment arrives. Set
+                // voiceState=.responding briefly so the dictation observer
+                // doesn't yank it back to idle/processing during the
+                // transition (the trailing block immediately flips it to
+                // .idle, mirroring the prior speakText path).
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText, overrideVoiceID: selectedVoiceID)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
+                    voiceState = .responding
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
@@ -1274,7 +2008,34 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
+    /// Schedules the AppliedPrinciplesChip to fade out roughly when the
+    /// response bubble would have. We wait for the TTS chain to drain
+    /// (so the chip stays up while Sticky is still speaking) then hold
+    /// for a few extra seconds so the user has time to read the matched
+    /// principles. Cancelled by the next request so a stale fade-out
+    /// can't yank the new chip away.
+    private func scheduleAppliedPrinciplesChipFadeOut() {
+        appliedPrinciplesChipHideTask?.cancel()
+        appliedPrinciplesChipHideTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Wait for TTS to finish so the chip persists alongside the
+            // entire spoken reply, not just until the first sentence
+            // begins. `isProducingAudio` covers in-flight chained
+            // sentences, mirroring scheduleTransientHideIfNeeded above.
+            while self.elevenLabsTTSClient.isProducingAudio {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            // Hold for ~6 seconds after speech ends — same window the
+            // CompanionResponseOverlay uses for the (currently dormant)
+            // response bubble fade. Long enough to read 2-3 principles.
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self.isShowingAppliedPrinciplesChip = false
+        }
+    }
+
+    /// If the cursor is in transient mode (user toggled "Show Sticky" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
@@ -1283,8 +2044,11 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            // Wait for the entire TTS chain to drain — `isProducingAudio`
+            // covers in-flight chained sentences, not just the currently
+            // playing one. Without this the overlay would fade out during
+            // the brief gap between sentence-streamed segments.
+            while elevenLabsTTSClient.isProducingAudio {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -1313,6 +2077,200 @@ final class CompanionManager: ObservableObject {
         fallbackSpeechSynthesizer = synthesizer
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
+    }
+
+    // MARK: - Streaming Response Dispatcher
+
+    /// Drives sentence-by-sentence TTS dispatch as Claude's reply streams in.
+    ///
+    /// Each call to `handleStreamedText` looks at what's been received so
+    /// far, finds completed sentences past the dispatch cursor, and fires
+    /// an ElevenLabs fetch for each one in parallel. The fetches finish in
+    /// arbitrary order, but the per-sentence enqueue is chained so audio
+    /// always plays back in the original order — matching what the user
+    /// would hear if Claude had returned all the text at once.
+    ///
+    /// The whole point: the first sentence's audio starts playing while
+    /// Claude is still generating the rest of the response, which cuts
+    /// 1.5–3 seconds of perceived latency on multi-sentence answers.
+    @MainActor
+    final class StreamingResponseState {
+        private weak var ttsClient: ElevenLabsTTSClient?
+        private let overrideVoiceID: String?
+
+        /// Number of Characters of `accumulatedText` we've already dispatched
+        /// to TTS. Each new chunk only sees text past this cursor.
+        private var dispatchedCharacterCount: Int = 0
+
+        /// Goes true the first time we observe EITHER a "[POINT:" or
+        /// "[USED:" tag start in the stream. Once set, no further streaming
+        /// dispatch happens — both tags are un-spoken markers (POINT drives
+        /// the cursor flight, USED drives the Apply-transparency chip)
+        /// and neither should reach ElevenLabs. Anything spoken before
+        /// the tag has already been dispatched.
+        private var hasSeenPointTagStart: Bool = false
+
+        /// Epoch returned by `ElevenLabsTTSClient.resetPlaybackChain`. Each
+        /// enqueue passes this so a stale fetch from the previous response
+        /// (the user pressed PTT again) can't slip into the new chain.
+        private var playbackChainEpoch: Int = 0
+
+        /// Tail of the serialized enqueue chain. Each sentence's enqueue
+        /// Task awaits the previous one so audio segments arrive in the
+        /// player's queue in the same order they came out of Claude, even
+        /// when the underlying ElevenLabs fetches finish out of order.
+        private var previousEnqueueTask: Task<Void, Never> = Task {}
+
+        init(ttsClient: ElevenLabsTTSClient, overrideVoiceID: String?) {
+            self.ttsClient = ttsClient
+            self.overrideVoiceID = overrideVoiceID
+        }
+
+        /// Resets the playback queue and remembers the new epoch. Must be
+        /// called once before streaming begins.
+        func beginNewChain() {
+            guard let ttsClient else { return }
+            playbackChainEpoch = ttsClient.resetPlaybackChain(onFirstPlaybackStart: { })
+            dispatchedCharacterCount = 0
+            hasSeenPointTagStart = false
+            previousEnqueueTask = Task {}
+        }
+
+        /// Called on each Claude SSE delta with the FULL accumulated reply.
+        /// Finds sentence boundaries past the dispatch cursor and ships each
+        /// completed sentence off to ElevenLabs.
+        func handleStreamedText(_ accumulatedStreamedText: String) {
+            guard !hasSeenPointTagStart else { return }
+
+            let dispatchCursorIndex = accumulatedStreamedText.index(
+                accumulatedStreamedText.startIndex,
+                offsetBy: min(dispatchedCharacterCount, accumulatedStreamedText.count)
+            )
+            let pendingText = String(accumulatedStreamedText[dispatchCursorIndex...])
+
+            // If either "[POINT:" or "[USED:" appears in the new text,
+            // dispatch the spoken portion (everything before the earliest
+            // tag) immediately and stop streaming further dispatches —
+            // both tags are un-spoken markers and neither should reach
+            // ElevenLabs. We pick whichever tag opens earliest so we
+            // don't miss the cutoff when Claude emits BOTH tags
+            // back-to-back at the end of the response.
+            let pointTagStartRange = pendingText.range(of: "[POINT:")
+            let usedTagStartRange = pendingText.range(of: "[USED:")
+            let earliestTagStartRange: Range<String.Index>?
+            switch (pointTagStartRange, usedTagStartRange) {
+            case (nil, nil):
+                earliestTagStartRange = nil
+            case (let pointRange?, nil):
+                earliestTagStartRange = pointRange
+            case (nil, let usedRange?):
+                earliestTagStartRange = usedRange
+            case (let pointRange?, let usedRange?):
+                earliestTagStartRange = pointRange.lowerBound < usedRange.lowerBound
+                    ? pointRange
+                    : usedRange
+            }
+            if let earliestTagStartRange {
+                let spokenPortion = pendingText[..<earliestTagStartRange.lowerBound]
+                let trimmedSpokenPortion = String(spokenPortion).trimmingCharacters(in: .whitespacesAndNewlines)
+                let charactersConsumed = pendingText.distance(
+                    from: pendingText.startIndex,
+                    to: earliestTagStartRange.lowerBound
+                )
+                dispatchedCharacterCount += charactersConsumed
+                hasSeenPointTagStart = true
+                if !trimmedSpokenPortion.isEmpty {
+                    enqueueSpeechSegment(trimmedSpokenPortion)
+                }
+                return
+            }
+
+            // No tag yet — dispatch everything up to the latest sentence
+            // boundary in the pending text. We dispatch as much as possible
+            // per chunk so multi-sentence chunks aren't artificially split
+            // across multiple ElevenLabs round-trips.
+            guard let latestSentenceEndIndex = Self.indexAfterLatestSentenceBoundary(in: pendingText) else {
+                return
+            }
+            let segmentToDispatch = String(pendingText[..<latestSentenceEndIndex])
+            dispatchedCharacterCount += segmentToDispatch.count
+            enqueueSpeechSegment(segmentToDispatch)
+        }
+
+        /// Called once Claude's stream is fully complete. Dispatches any
+        /// remaining un-spoken text — typically a final fragment without
+        /// trailing punctuation, or all of `cleanSpokenText` if the response
+        /// happened to be a single short clause with no period.
+        func dispatchAnyTrailingText(of cleanSpokenText: String) {
+            let alreadyDispatchedCount = min(dispatchedCharacterCount, cleanSpokenText.count)
+            let trailingStartIndex = cleanSpokenText.index(
+                cleanSpokenText.startIndex,
+                offsetBy: alreadyDispatchedCount
+            )
+            let trailingText = String(cleanSpokenText[trailingStartIndex...])
+            let trimmedTrailingText = trailingText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedTrailingText.isEmpty else { return }
+            dispatchedCharacterCount = cleanSpokenText.count
+            enqueueSpeechSegment(trimmedTrailingText)
+        }
+
+        private func enqueueSpeechSegment(_ speechSegment: String) {
+            guard let ttsClient else { return }
+            let trimmedSpeechSegment = speechSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedSpeechSegment.isEmpty else { return }
+
+            let voiceIDForFetch = overrideVoiceID
+            let epochForEnqueue = playbackChainEpoch
+
+            // Kick off the ElevenLabs fetch right now so multiple sentences'
+            // audio is fetched in parallel.
+            let audioFetchTask = Task<Data, Error> { @MainActor [weak ttsClient] in
+                guard let ttsClient else {
+                    throw CancellationError()
+                }
+                return try await ttsClient.fetchAudioData(trimmedSpeechSegment, overrideVoiceID: voiceIDForFetch)
+            }
+
+            // Serialize the enqueue behind the prior segment so playback
+            // order matches Claude's output order.
+            let priorEnqueueTask = previousEnqueueTask
+            previousEnqueueTask = Task { @MainActor [weak ttsClient] in
+                _ = await priorEnqueueTask.value
+                do {
+                    let audioData = try await audioFetchTask.value
+                    ttsClient?.enqueueAudioData(audioData, forEpoch: epochForEnqueue)
+                } catch {
+                    print("⚠️ TTS sentence fetch failed (segment dropped): \(error)")
+                }
+            }
+        }
+
+        /// Scans a string for the rightmost ".", "!", or "?" that's followed
+        /// by whitespace, and returns the String.Index just past that
+        /// trailing whitespace. Returning the position past the whitespace
+        /// (rather than at the punctuation) means the next dispatched
+        /// segment doesn't start with a stray space.
+        ///
+        /// Returns nil if no completed sentence boundary is present yet.
+        private static func indexAfterLatestSentenceBoundary(in text: String) -> String.Index? {
+            var latestBoundaryEndIndex: String.Index? = nil
+            var currentIndex = text.startIndex
+            while currentIndex < text.endIndex {
+                let nextIndex = text.index(after: currentIndex)
+                let currentCharacter = text[currentIndex]
+                let isSentenceEndingPunctuation = currentCharacter == "."
+                    || currentCharacter == "!"
+                    || currentCharacter == "?"
+                if isSentenceEndingPunctuation
+                    && nextIndex < text.endIndex
+                    && text[nextIndex].isWhitespace {
+                    // Boundary ends just past the trailing whitespace
+                    latestBoundaryEndIndex = text.index(after: nextIndex)
+                }
+                currentIndex = nextIndex
+            }
+            return latestBoundaryEndIndex
+        }
     }
 
     // MARK: - Point Tag Parsing
@@ -1399,7 +2357,7 @@ final class CompanionManager: ObservableObject {
         }
 
         // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
+        // Sticky flies to something interesting on screen and comments on it
         let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
         onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
             forTimes: [NSValue(time: demoTriggerTime)],
@@ -1498,7 +2456,7 @@ final class CompanionManager: ObservableObject {
     // MARK: - Onboarding Demo Interaction
 
     private static let onboardingDemoSystemPrompt = """
-    you're clicky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
+    you're sticky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
 
     make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
 

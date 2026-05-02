@@ -130,6 +130,33 @@ enum TasteProfileStore {
         return addedCount
     }
 
+    /// Removes the principle with the given `id` from the personal profile
+    /// and persists the updated profile to disk. Used by the Library
+    /// window when the user taps the trash icon on a row. Silently
+    /// no-ops if no principle with that id is present (so a double-tap
+    /// or a stale UI state doesn't error out).
+    static func deletePrinciple(id principleIdToDelete: String) throws {
+        var profile = try loadProfile()
+
+        let initialPrincipleCount = profile.principles.count
+        profile.principles.removeAll { existingPrinciple in
+            existingPrinciple.id == principleIdToDelete
+        }
+
+        // No-op early return — nothing to write if the id wasn't there.
+        guard profile.principles.count != initialPrincipleCount else { return }
+
+        try saveProfile(profile)
+    }
+
+    /// Wholesale replaces the personal profile on disk with the given one,
+    /// overwriting whatever was there. Used by the Import flow when the
+    /// caller has already merged imported principles into the existing
+    /// profile and just needs the result persisted.
+    static func replacePersonalProfile(_ replacementProfile: TasteProfile) throws {
+        try saveProfile(replacementProfile)
+    }
+
     /// Where the personal profile file lives on disk. Useful for logging so
     /// the user can find it during the demo.
     static func profileFileLocation() -> String {

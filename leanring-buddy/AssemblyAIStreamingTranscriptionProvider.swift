@@ -21,6 +21,13 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     /// AssemblyAI streaming token. The real API key never leaves the server.
     private static let tokenProxyURL = "https://clicky-proxy.reubanramsden.workers.dev/transcribe-token"
 
+    /// AssemblyAI tokens currently expire after 480s (8 minutes). We treat
+    /// them as fresh enough to use up to this many seconds before that
+    /// expiry — gives plenty of margin for the websocket open + speaking
+    /// time before the token would actually expire mid-session.
+    private static let tokenRefreshLeadTimeSeconds: TimeInterval = 60
+    private static let tokenLifetimeSeconds: TimeInterval = 480
+
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
 
@@ -33,15 +40,24 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     /// a few rapid reconnections to the same host.
     private let sharedWebSocketURLSession = URLSession(configuration: .default)
 
+    /// Cached short-lived token. Populated by `prewarmCredentialsIfNeeded`
+    /// at app start and refreshed after each push-to-talk session ends, so
+    /// the next press uses an already-fetched token instead of paying the
+    /// 100-200ms HTTP round-trip to the worker. Guarded by `tokenCacheLock`
+    /// because both background prewarm tasks and the streaming-session
+    /// open path can read/write it concurrently.
+    private let tokenCacheLock = NSLock()
+    private var cachedTemporaryToken: (token: String, fetchedAt: Date)?
+    private var inFlightTokenFetchTask: Task<String, Error>?
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        // Fetch a fresh temporary token from the proxy before each session
-        let temporaryToken = try await fetchTemporaryToken()
-        print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
+        let temporaryToken = try await fetchTemporaryTokenUsingCacheIfFresh()
+        print("🎙️ AssemblyAI: using temporary token (\(temporaryToken.prefix(20))...)")
 
         let session = AssemblyAIStreamingTranscriptionSession(
             apiKey: nil,
@@ -55,6 +71,70 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
         try await session.open()
         return session
+    }
+
+    /// Pre-fetches a token in the background so the next streaming session
+    /// open is instant (no HTTP round-trip). Safe to call repeatedly — if
+    /// the cached token is still fresh, this is a no-op; if a fetch is
+    /// already in flight, this returns immediately and lets it complete.
+    func prewarmCredentialsIfNeeded() {
+        if hasFreshCachedToken() { return }
+        Task { [weak self] in
+            do {
+                _ = try await self?.fetchTemporaryTokenUsingCacheIfFresh()
+            } catch {
+                print("⚠️ AssemblyAI token prewarm failed: \(error)")
+            }
+        }
+    }
+
+    /// Returns the cached token if it's fresh enough to use, otherwise
+    /// fetches a new one (or joins an in-flight fetch). Multiple concurrent
+    /// callers share a single underlying HTTP request via `inFlightTokenFetchTask`.
+    private func fetchTemporaryTokenUsingCacheIfFresh() async throws -> String {
+        // Fast path: a fresh token is already cached.
+        tokenCacheLock.lock()
+        if let cachedToken = cachedTemporaryToken,
+           Date().timeIntervalSince(cachedToken.fetchedAt)
+            < (Self.tokenLifetimeSeconds - Self.tokenRefreshLeadTimeSeconds) {
+            tokenCacheLock.unlock()
+            return cachedToken.token
+        }
+        // Coalesce concurrent callers onto a single in-flight fetch.
+        if let inFlightTokenFetchTask {
+            tokenCacheLock.unlock()
+            return try await inFlightTokenFetchTask.value
+        }
+        let freshFetchTask = Task<String, Error> { [weak self] in
+            guard let self else {
+                throw AssemblyAIStreamingTranscriptionProviderError(message: "provider deallocated")
+            }
+            return try await self.fetchTemporaryToken()
+        }
+        inFlightTokenFetchTask = freshFetchTask
+        tokenCacheLock.unlock()
+
+        do {
+            let freshToken = try await freshFetchTask.value
+            tokenCacheLock.lock()
+            cachedTemporaryToken = (token: freshToken, fetchedAt: Date())
+            inFlightTokenFetchTask = nil
+            tokenCacheLock.unlock()
+            return freshToken
+        } catch {
+            tokenCacheLock.lock()
+            inFlightTokenFetchTask = nil
+            tokenCacheLock.unlock()
+            throw error
+        }
+    }
+
+    private func hasFreshCachedToken() -> Bool {
+        tokenCacheLock.lock()
+        defer { tokenCacheLock.unlock() }
+        guard let cachedToken = cachedTemporaryToken else { return false }
+        return Date().timeIntervalSince(cachedToken.fetchedAt)
+            < (Self.tokenLifetimeSeconds - Self.tokenRefreshLeadTimeSeconds)
     }
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
@@ -110,9 +190,14 @@ private final class AssemblyAIStreamingTranscriptionSession: NSObject, BuddyStre
 
     private static let websocketBaseURLString = "wss://streaming.assemblyai.com/v3/ws"
     private static let targetSampleRate = 16_000.0
-    private static let explicitFinalTranscriptGracePeriodSeconds = 1.4
+    // Time we'll wait after ForceEndpoint for AssemblyAI to deliver a formatted
+    // end_of_turn message before giving up and submitting the latest available
+    // (unformatted) transcript. Lower = snappier perceived latency at release.
+    // 0.5s is enough for u3-rt-pro under normal network conditions; the
+    // unformatted fallback is fine for natural-speech voice queries.
+    private static let explicitFinalTranscriptGracePeriodSeconds = 0.5
 
-    let finalTranscriptFallbackDelaySeconds: TimeInterval = 2.8
+    let finalTranscriptFallbackDelaySeconds: TimeInterval = 1.5
 
     private let apiKey: String?
     private let temporaryToken: String?

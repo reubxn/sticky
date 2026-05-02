@@ -81,7 +81,10 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
+            // 1024px max dim + JPEG 0.6 keeps screenshots small enough that
+            // upload + base64 inflation doesn't dominate the response path.
+            // Claude vision still reads UI elements clearly at this size.
+            let maxDimension = 1024
             let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
             if display.width >= display.height {
                 configuration.width = maxDimension
@@ -97,7 +100,7 @@ enum CompanionScreenCaptureUtility {
             )
 
             guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
-                    .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+                    .representation(using: .jpeg, properties: [.compressionFactor: 0.6]) else {
                 continue
             }
 

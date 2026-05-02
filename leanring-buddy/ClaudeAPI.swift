@@ -143,7 +143,19 @@ class ClaudeAPI {
             "model": model,
             "max_tokens": 1024,
             "stream": true,
-            "system": systemPrompt,
+            // Send the system prompt as a cacheable content block. The
+            // companion prompt is constant within a mode/scope, so flagging
+            // it `ephemeral` lets Anthropic cache the tokenized version
+            // server-side and re-use it across calls — typically saves
+            // 100-200ms of TTFT on every call after the first within the
+            // 5-minute cache window.
+            "system": [
+                [
+                    "type": "text",
+                    "text": systemPrompt,
+                    "cache_control": ["type": "ephemeral"]
+                ]
+            ],
             "messages": messages
         ]
 
@@ -253,7 +265,13 @@ class ClaudeAPI {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 256,
-            "system": systemPrompt,
+            "system": [
+                [
+                    "type": "text",
+                    "text": systemPrompt,
+                    "cache_control": ["type": "ephemeral"]
+                ]
+            ],
             "messages": messages
         ]
 
