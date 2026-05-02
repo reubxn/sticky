@@ -2,7 +2,9 @@
 //  AppBundleConfiguration.swift
 //  leanring-buddy
 //
-//  Shared helper for reading runtime configuration from the built app bundle.
+//  Shared helper for reading runtime configuration from the built app bundle,
+//  with a fallback to a local secrets.plist in Application Support so API keys
+//  can stay out of git and out of the shipped binary during development.
 //
 
 import Foundation
@@ -16,13 +18,45 @@ enum AppBundleConfiguration {
             }
         }
 
-        guard let resourceInfoPath = Bundle.main.path(forResource: "Info", ofType: "plist"),
-              let resourceInfo = NSDictionary(contentsOfFile: resourceInfoPath),
-              let value = resourceInfo[key] as? String else {
+        if let resourceInfoPath = Bundle.main.path(forResource: "Info", ofType: "plist"),
+           let resourceInfo = NSDictionary(contentsOfFile: resourceInfoPath),
+           let value = resourceInfo[key] as? String {
+            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedValue.isEmpty {
+                return trimmedValue
+            }
+        }
+
+        // Application Support fallback — keys live outside the repo and
+        // outside the app bundle, so they never get committed or shipped.
+        if let value = applicationSupportSecrets()?[key] as? String {
+            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedValue.isEmpty {
+                return trimmedValue
+            }
+        }
+
+        return nil
+    }
+
+    /// Cached read of `~/Library/Application Support/com.learning-buddy.clicky/secrets.plist`.
+    /// First lookup hits disk; subsequent calls return the cached dictionary.
+    private static let cachedApplicationSupportSecrets: NSDictionary? = {
+        guard let applicationSupportDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
             return nil
         }
 
-        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedValue.isEmpty ? nil : trimmedValue
+        let secretsFileURL = applicationSupportDirectory
+            .appendingPathComponent("com.learning-buddy.clicky", isDirectory: true)
+            .appendingPathComponent("secrets.plist")
+
+        return NSDictionary(contentsOf: secretsFileURL)
+    }()
+
+    private static func applicationSupportSecrets() -> NSDictionary? {
+        cachedApplicationSupportSecrets
     }
 }

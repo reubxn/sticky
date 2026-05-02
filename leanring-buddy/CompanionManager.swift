@@ -26,6 +26,12 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
+    /// Live audio level of the AI's TTS playback, normalized to roughly
+    /// 0...1. Drives the edge-glow aurora during the `.responding`
+    /// state so the glow reacts to the AI's voice the way it reacts to
+    /// the user's mic during `.listening`. Sourced from the polled
+    /// `averagePower` of the ElevenLabs `AVAudioPlayer`.
+    @Published private(set) var currentTTSPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
@@ -70,14 +76,14 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static let workerBaseURL = "https://clicky-proxy.reubanramsden.workers.dev"
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+        return ElevenLabsTTSClient()
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -91,6 +97,11 @@ final class CompanionManager: ObservableObject {
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var ttsPowerCancellable: AnyCancellable?
+
+    /// Retained so the system voice actually finishes speaking — a local
+    /// NSSpeechSynthesizer gets deallocated before it ever utters a word.
+    private var fallbackSpeechSynthesizer: NSSpeechSynthesizer?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -110,42 +121,83 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
-    /// Sphere mode controls whether push-to-talk uses Claude assistant mode
-    /// or routes into the local Taste Engine.
-    @Published var sphereMode: SphereMode = {
-        let rawMode = UserDefaults.standard.string(forKey: "sphereMode") ?? SphereMode.assistant.rawValue
-        return SphereMode(rawValue: rawMode) ?? .assistant
-    }()
-
-    @Published private(set) var tasteEngineStatusText: String = "Local engine not checked"
-
-    let tasteEngineBaseURLString: String = AppBundleConfiguration.stringValue(forKey: "TasteEngineBaseURL")
-        ?? "http://localhost:3000"
-
-    private lazy var tasteEngineAPIClient: TasteEngineAPIClient? = {
-        do {
-            return try TasteEngineAPIClient(baseURLString: tasteEngineBaseURLString)
-        } catch {
-            tasteEngineStatusText = "Invalid local engine URL"
-            print("⚠️ Taste Engine configuration error: \(error)")
-            return nil
-        }
-    }()
-
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
     }
 
-    func setSphereMode(_ mode: SphereMode) {
-        sphereMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: "sphereMode")
-        overlayWindowManager.updateCompanionMode(companionManager: self)
+    /// The ElevenLabs voice ID used for spoken responses. nil means
+    /// "use the default bundled with the app" (read from secrets.plist
+    /// inside ElevenLabsTTSClient). Persisted to UserDefaults so the
+    /// user's chosen voice survives restarts.
+    @Published var selectedVoiceID: String? = UserDefaults.standard.string(forKey: "selectedElevenLabsVoiceID")
 
-        if mode.usesTasteEngine {
-            refreshTasteEngineStatus()
+    func setSelectedVoiceID(_ voiceID: String?) {
+        selectedVoiceID = voiceID
+        if let voiceID {
+            UserDefaults.standard.set(voiceID, forKey: "selectedElevenLabsVoiceID")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "selectedElevenLabsVoiceID")
         }
+    }
+
+    // MARK: - Voice Preview
+
+    /// The voice ID that's currently playing a preview clip in the panel,
+    /// or nil if no preview is playing. Sentinel `defaultVoicePreviewSentinel`
+    /// means the bundled default voice is being previewed (so the picker
+    /// UI can show a stop icon on the Default row even when no override
+    /// voice ID is set). Read by the panel to swap play ↔ stop icons.
+    @Published private(set) var previewingVoiceID: String? = nil
+
+    /// Sentinel used in `previewingVoiceID` to represent the bundled
+    /// default voice (no override). Distinct from nil, which means
+    /// "no preview is currently playing".
+    static let defaultVoicePreviewSentinel: String = "__sticky_default_voice__"
+
+    private var voicePreviewTask: Task<Void, Never>?
+
+    /// Plays a short "Hey, I'm Sticky!" preview through the given voice
+    /// so the user can test it in the panel dropdown before committing.
+    /// Cancels any in-flight preview first so rapid clicking through the
+    /// list doesn't stack up overlapping playback. Does NOT change the
+    /// persisted `selectedVoiceID` — selection is a separate action.
+    func previewVoice(_ voiceID: String?) {
+        voicePreviewTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+
+        voicePreviewTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.previewingVoiceID = voiceID ?? Self.defaultVoicePreviewSentinel
+            do {
+                try await self.elevenLabsTTSClient.speakText(
+                    "Hey, I'm Sticky!",
+                    overrideVoiceID: voiceID
+                )
+                // speakText returns once playback starts — poll until it
+                // actually finishes so the panel UI keeps the stop icon
+                // visible for the full duration of the clip.
+                while self.elevenLabsTTSClient.isPlaying {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    if Task.isCancelled { return }
+                }
+            } catch {
+                print("⚠️ Voice preview error: \(error)")
+            }
+            if !Task.isCancelled {
+                self.previewingVoiceID = nil
+            }
+        }
+    }
+
+    /// Cancels any in-flight preview clip immediately. Called when the
+    /// user taps the stop icon on a row that's actively previewing.
+    func stopVoicePreview() {
+        voicePreviewTask?.cancel()
+        voicePreviewTask = nil
+        elevenLabsTTSClient.stopPlayback()
+        previewingVoiceID = nil
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -154,6 +206,82 @@ final class CompanionManager: ObservableObject {
     @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
         ? true
         : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+
+    // MARK: - Reverse Clicky: Taste Modes
+
+    /// Which taste mode the app is in. .ask is the default Clicky behaviour.
+    /// .teach captures Loom-style sessions for taste extraction. .apply prepends
+    /// the saved taste profile to the system prompt for every voice question.
+    /// Persisted to UserDefaults so the user's mode survives restarts.
+    @Published var tasteMode: TasteMode = {
+        if let rawTasteMode = UserDefaults.standard.string(forKey: "tasteMode"),
+           let storedTasteMode = TasteMode(rawValue: rawTasteMode) {
+            return storedTasteMode
+        }
+        return .ask
+    }()
+
+    func setTasteMode(_ newTasteMode: TasteMode) {
+        tasteMode = newTasteMode
+        UserDefaults.standard.set(newTasteMode.rawValue, forKey: "tasteMode")
+    }
+
+    /// Personal vs. team scope for taste injection. Personal uses just the
+    /// user's own principles; Team also unions in the shared team-profile.json
+    /// (the boss/employee demo). Persisted to UserDefaults.
+    @Published var tasteScope: TasteScope = {
+        if let rawTasteScope = UserDefaults.standard.string(forKey: "tasteScope"),
+           let storedTasteScope = TasteScope(rawValue: rawTasteScope) {
+            return storedTasteScope
+        }
+        return .personal
+    }()
+
+    func setTasteScope(_ newTasteScope: TasteScope) {
+        tasteScope = newTasteScope
+        UserDefaults.standard.set(newTasteScope.rawValue, forKey: "tasteScope")
+    }
+
+    /// Current state of the in-progress teach session, if any. Independent
+    /// of voiceState — the teach session has its own dictation pipeline.
+    @Published private(set) var teachSessionState: TeachSessionState = .idle
+
+    /// Seconds elapsed since the current teach session started. Drives the
+    /// "Teaching — 0:42" label in the panel.
+    @Published private(set) var teachSessionElapsedSeconds: Int = 0
+
+    /// In-memory frame buffer for the current teach session. Each entry is a
+    /// JPEG screenshot of the cursor screen taken during the session, paired
+    /// with the seconds elapsed since session start. Cleared between sessions.
+    private var teachSessionFrames: [(data: Data, timestamp: TimeInterval)] = []
+    private var teachSessionStartedAt: Date?
+    private var teachSessionScreenshotTimer: Timer?
+    private var teachSessionElapsedTimer: Timer?
+    /// Watchdog that resets the panel state to .idle if the dictation
+    /// callback never fires after the user clicks Stop. Protects against
+    /// the AssemblyAI websocket dying mid-session and leaving the UI hung.
+    private var teachSessionTranscriptWatchdog: Task<Void, Never>?
+
+    /// Most recent teach session result, for debugging.
+    @Published private(set) var lastTeachSessionResult: TeachSessionResult?
+
+    /// Ambiguous moments waiting for the user to resolve via the review-card
+    /// stack. Each one becomes a card with a frame thumbnail and 4 options.
+    /// When this is non-empty, the panel shows the review UI; when the user
+    /// finishes (or skips/ends), it goes back to empty.
+    @Published private(set) var pendingAmbiguousMoments: [AmbiguousMoment] = []
+
+    /// The frames the analyzer actually used, kept in sync with the order
+    /// Claude saw them. `AmbiguousMoment.frameIndex` indexes into this array.
+    /// Cleared when the review queue is empty so we don't hold a few MB of
+    /// JPEG data after every session.
+    @Published private(set) var pendingReviewFrames: [(data: Data, timestamp: TimeInterval)] = []
+
+    /// Most recent count of confident principles auto-saved from a finished
+    /// teach session. Drives the small "Saved N principle(s)" toast in the
+    /// panel so the user gets feedback even when the session has no
+    /// ambiguous moments to review.
+    @Published private(set) var lastTeachSessionSavedPrincipleCount: Int = 0
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
@@ -210,13 +338,11 @@ final class CompanionManager: ObservableObject {
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
+        bindTTSPowerLevel()
         bindShortcutTransitions()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
-        if sphereMode.usesTasteEngine {
-            refreshTasteEngineStatus()
-        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -322,17 +448,343 @@ final class CompanionManager: ObservableObject {
         detectedElementBubbleText = nil
     }
 
+    // MARK: - Teach Session
+
+    /// Maximum length of a teach session before we auto-stop it. Keeps the
+    /// frame count and transcript size manageable for the analyzer call.
+    private static let teachSessionMaxLengthSeconds: Int = 5 * 60
+
+    /// Interval between automatic screenshots during a teach session.
+    private static let teachSessionScreenshotIntervalSeconds: TimeInterval = 4.0
+
+    /// How long to wait for a final transcript after the user clicks Stop
+    /// before giving up and resetting state. Bigger than the AssemblyAI
+    /// fallback delay so we don't race the dictation manager.
+    private static let teachSessionTranscriptTimeoutSeconds: TimeInterval = 6.0
+
+    /// Begins a Reverse Clicky teach session: opens continuous dictation,
+    /// starts a periodic screenshot timer, and starts the elapsed-time clock.
+    /// Idempotent — does nothing if a session is already running.
+    func startTeachSession() {
+        guard teachSessionState == .idle else { return }
+
+        // Don't tangle teach sessions with an in-flight push-to-talk response.
+        // Cancel any ongoing AI work so the mic is free.
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        elevenLabsTTSClient.stopPlayback()
+
+        teachSessionFrames.removeAll()
+        teachSessionStartedAt = Date()
+        teachSessionElapsedSeconds = 0
+        teachSessionState = .recording
+
+        // Clear the previous session's "Saved N principles" toast and any
+        // leftover review queue so the panel only shows the current session
+        // once we're done analyzing.
+        lastTeachSessionSavedPrincipleCount = 0
+        pendingAmbiguousMoments.removeAll()
+        pendingReviewFrames.removeAll()
+
+        // Capture an initial frame at t=0 immediately, then on every tick.
+        Task { @MainActor [weak self] in
+            await self?.captureTeachSessionFrame()
+        }
+
+        teachSessionScreenshotTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.teachSessionScreenshotIntervalSeconds,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.captureTeachSessionFrame()
+            }
+        }
+
+        teachSessionElapsedTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tickTeachSessionElapsedClock()
+            }
+        }
+
+        Task { [weak self] in
+            await self?.buddyDictationManager.startTeachSession { [weak self] finalTranscript in
+                Task { @MainActor [weak self] in
+                    self?.handleTeachSessionFinalTranscript(finalTranscript)
+                }
+            }
+        }
+
+        print("🎓 Teach session started")
+    }
+
+    /// Stops the current teach session, kicks off analysis with whatever
+    /// transcript and frames we collected, and arms a watchdog so the UI
+    /// resets even if the dictation manager never delivers a transcript.
+    func stopTeachSession() {
+        guard teachSessionState == .recording else { return }
+
+        teachSessionScreenshotTimer?.invalidate()
+        teachSessionScreenshotTimer = nil
+        teachSessionElapsedTimer?.invalidate()
+        teachSessionElapsedTimer = nil
+        teachSessionState = .analyzing
+
+        buddyDictationManager.stopTeachSession()
+
+        teachSessionTranscriptWatchdog?.cancel()
+        teachSessionTranscriptWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                for: .seconds(Self.teachSessionTranscriptTimeoutSeconds)
+            )
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            guard self.teachSessionState == .analyzing else { return }
+            print("⚠️ Teach session: transcript watchdog fired — resetting state")
+            self.resetTeachSessionState()
+        }
+
+        print("🎓 Teach session stopping — frames captured: \(teachSessionFrames.count)")
+    }
+
+    private func tickTeachSessionElapsedClock() {
+        guard teachSessionState == .recording else { return }
+        guard let startedAt = teachSessionStartedAt else { return }
+
+        let elapsedSeconds = Int(Date().timeIntervalSince(startedAt))
+        teachSessionElapsedSeconds = elapsedSeconds
+
+        // Hard cap so the user doesn't accidentally leave a session running
+        // forever and overwhelm the analyzer with hundreds of frames.
+        if elapsedSeconds >= Self.teachSessionMaxLengthSeconds {
+            print("🎓 Teach session: hit max length, auto-stopping")
+            stopTeachSession()
+        }
+    }
+
+    private func captureTeachSessionFrame() async {
+        guard teachSessionState == .recording else { return }
+        guard let startedAt = teachSessionStartedAt else { return }
+
+        do {
+            let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+            // Prefer the cursor screen so the frame timeline tracks the user's
+            // active workspace. Fall back to the first screen if no cursor
+            // screen was identified for some reason.
+            let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen })
+                ?? screenCaptures.first
+            guard let frameCapture = cursorScreenCapture else { return }
+
+            let elapsedSecondsAtCapture = Date().timeIntervalSince(startedAt)
+            teachSessionFrames.append((
+                data: frameCapture.imageData,
+                timestamp: elapsedSecondsAtCapture
+            ))
+        } catch {
+            print("⚠️ Teach session screenshot failed: \(error)")
+        }
+    }
+
+    private func handleTeachSessionFinalTranscript(_ finalTranscript: String) {
+        teachSessionTranscriptWatchdog?.cancel()
+        teachSessionTranscriptWatchdog = nil
+
+        let trimmedTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedTranscript.isEmpty else {
+            print("⚠️ Teach session: empty transcript — nothing to analyze")
+            resetTeachSessionState()
+            return
+        }
+
+        guard !teachSessionFrames.isEmpty else {
+            print("⚠️ Teach session: no frames captured — nothing to analyze")
+            resetTeachSessionState()
+            return
+        }
+
+        print("🎓 Teach session transcript: \(trimmedTranscript)")
+        print("🎓 Teach session frames: \(teachSessionFrames.count)")
+
+        let capturedFrames = teachSessionFrames
+        teachSessionFrames.removeAll()
+
+        let analyzerClaudeAPI = claudeAPI
+
+        Task { @MainActor [weak self] in
+            do {
+                let analysis = try await SessionAnalyzer.analyzeTeachSession(
+                    transcript: trimmedTranscript,
+                    frames: capturedFrames,
+                    claudeAPI: analyzerClaudeAPI
+                )
+                self?.lastTeachSessionResult = analysis.result
+                Self.printTeachSessionResultForDebugging(analysis.result)
+
+                // Confident principles auto-save to the central mind on disk.
+                let savedCount = self?.persistConfidentPrinciplesFromTeachSession(analysis.result) ?? 0
+                self?.lastTeachSessionSavedPrincipleCount = savedCount
+
+                // Ambiguous moments queue up as review cards. We hold onto
+                // the analyzer's selected frames so each card can render a
+                // thumbnail of the moment in question. Both queues are
+                // cleared together when the user finishes (or ends) review.
+                self?.pendingAmbiguousMoments = analysis.result.ambiguous
+                self?.pendingReviewFrames = analysis.result.ambiguous.isEmpty
+                    ? []
+                    : analysis.selectedFrames
+
+                self?.resetTeachSessionState()
+            } catch {
+                print("⚠️ Teach session analysis failed: \(error)")
+                self?.resetTeachSessionState()
+            }
+        }
+    }
+
+    /// Appends every confident principle from the analyzer result to the
+    /// user's personal taste profile on disk. Logs the count saved and the
+    /// file location so the user can find it during the demo. Errors are
+    /// caught and logged — a write failure shouldn't break the panel.
+    /// Returns the number of principles actually written (after dedup).
+    @discardableResult
+    private func persistConfidentPrinciplesFromTeachSession(_ result: TeachSessionResult) -> Int {
+        guard !result.confident.isEmpty else {
+            print("🧠 Teach session: no confident principles to save")
+            return 0
+        }
+
+        do {
+            let savedCount = try TasteProfileStore.appendApprovedPrinciples(result.confident)
+            print("🧠 Teach session: saved \(savedCount) principle(s) to \(TasteProfileStore.profileFileLocation())")
+            return savedCount
+        } catch {
+            print("⚠️ Teach session: failed to save principles: \(error)")
+            return 0
+        }
+    }
+
+    // MARK: - Teach Session Review Actions
+
+    /// Picks one of the four candidate principles for the current ambiguous
+    /// moment, persists it to the central mind, and advances the queue. If
+    /// the queue is now empty, the panel will collapse the review UI.
+    func approveOption(optionIndex: Int) {
+        guard let currentMoment = pendingAmbiguousMoments.first else { return }
+        guard optionIndex >= 0 else { return }
+        guard optionIndex < currentMoment.principleByOption.count else { return }
+
+        var chosenPrinciple = currentMoment.principleByOption[optionIndex]
+        // Stamp the principle as approved at the moment the user picks it,
+        // and freshen the timestamps so the on-disk profile shows when it
+        // landed (not when Claude generated it).
+        chosenPrinciple.approved = true
+        let approvalDate = Date()
+        chosenPrinciple.createdAt = approvalDate
+        chosenPrinciple.updatedAt = approvalDate
+
+        do {
+            try TasteProfileStore.appendApprovedPrinciples([chosenPrinciple])
+            print("🧠 Review: approved principle — \(chosenPrinciple.statement)")
+        } catch {
+            print("⚠️ Review: failed to save approved principle: \(error)")
+        }
+
+        advanceReviewQueue()
+    }
+
+    /// Skips the current ambiguous moment without saving any principle.
+    /// Used when the user doesn't want any of the suggested options and
+    /// doesn't feel like typing a custom one.
+    func skipCurrentReviewMoment() {
+        guard !pendingAmbiguousMoments.isEmpty else { return }
+        print("🧠 Review: skipped a moment")
+        advanceReviewQueue()
+    }
+
+    /// Ends the review entirely, dropping any remaining ambiguous moments.
+    /// Anything already approved before this is kept.
+    func endReview() {
+        let remainingMomentCount = pendingAmbiguousMoments.count
+        if remainingMomentCount > 0 {
+            print("🧠 Review: ended with \(remainingMomentCount) moment(s) remaining")
+        }
+        pendingAmbiguousMoments.removeAll()
+        pendingReviewFrames.removeAll()
+    }
+
+    private func advanceReviewQueue() {
+        guard !pendingAmbiguousMoments.isEmpty else { return }
+        pendingAmbiguousMoments.removeFirst()
+
+        // Drop the heavy frame buffer once we're done with all moments —
+        // no point holding onto JPEG data we won't render again.
+        if pendingAmbiguousMoments.isEmpty {
+            pendingReviewFrames.removeAll()
+        }
+    }
+
+    /// Looks up the JPEG data for a given frame index in the current review
+    /// queue. Returns nil if the index is out of range — the review card
+    /// view should handle that gracefully (no thumbnail).
+    func reviewFrameData(at frameIndex: Int) -> Data? {
+        guard frameIndex >= 0 && frameIndex < pendingReviewFrames.count else { return nil }
+        return pendingReviewFrames[frameIndex].data
+    }
+
+    private func resetTeachSessionState() {
+        teachSessionScreenshotTimer?.invalidate()
+        teachSessionScreenshotTimer = nil
+        teachSessionElapsedTimer?.invalidate()
+        teachSessionElapsedTimer = nil
+        teachSessionTranscriptWatchdog?.cancel()
+        teachSessionTranscriptWatchdog = nil
+        teachSessionStartedAt = nil
+        teachSessionElapsedSeconds = 0
+        teachSessionFrames.removeAll()
+        teachSessionState = .idle
+    }
+
+    /// Pretty-prints the analyzer output to the Xcode console. Item #2 will
+    /// replace this with a real review-card surface in the panel.
+    private static func printTeachSessionResultForDebugging(_ result: TeachSessionResult) {
+        print("🎓 Teach session result")
+        print("   Confident principles: \(result.confident.count)")
+        for confidentPrinciple in result.confident {
+            print("     • [\(confidentPrinciple.domain.rawValue)] \(confidentPrinciple.statement) (conf=\(String(format: "%.2f", confidentPrinciple.confidence)))")
+        }
+        print("   Ambiguous moments: \(result.ambiguous.count)")
+        for ambiguousMoment in result.ambiguous {
+            print("     ? frame \(ambiguousMoment.frameIndex): \(ambiguousMoment.question)")
+            for (optionIndex, optionLabel) in ambiguousMoment.options.enumerated() {
+                print("         \(optionIndex + 1). \(optionLabel)")
+            }
+        }
+    }
+
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
+        // Tear down any in-progress teach session so its timers don't keep
+        // firing after the app shuts down.
+        teachSessionScreenshotTimer?.invalidate()
+        teachSessionScreenshotTimer = nil
+        teachSessionElapsedTimer?.invalidate()
+        teachSessionElapsedTimer = nil
+        teachSessionTranscriptWatchdog?.cancel()
+        teachSessionTranscriptWatchdog = nil
+
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
+        ttsPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
     }
@@ -462,6 +914,19 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    /// Mirror the TTS client's published audio level onto the manager so
+    /// the overlay's edge-glow can react to the AI's voice the same way
+    /// it reacts to the user's mic. Touching `elevenLabsTTSClient` here
+    /// triggers its lazy init — that's intentional, we want the
+    /// publisher live before the first response arrives.
+    private func bindTTSPowerLevel() {
+        ttsPowerCancellable = elevenLabsTTSClient.$currentPowerLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] powerLevel in
+                self?.currentTTSPowerLevel = powerLevel
+            }
+    }
+
     private func bindVoiceStateObservation() {
         voiceStateCancellable = buddyDictationManager.$isRecordingFromKeyboardShortcut
             .combineLatest(
@@ -556,7 +1021,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.submitTranscriptForCurrentSphereMode(transcript: finalTranscript)
+                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
             }
@@ -594,7 +1059,7 @@ final class CompanionManager: ObservableObject {
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    you have a small blue parallelogram cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
@@ -611,28 +1076,50 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    /// Builds the system prompt for the existing voice flow with the user's
+    /// saved taste prepended as judgment context. Honors the active scope —
+    /// personal-only or personal ∪ team. Falls back to the unmodified base
+    /// prompt if the profile is empty or fails to load — Sticky should
+    /// never break because of a taste-file issue.
+    private func composeVoiceSystemPromptWithTaste() -> String {
+        let basePrompt = Self.companionVoiceResponseSystemPrompt
+
+        let loadedPersonalProfile: TasteProfile
+        do {
+            loadedPersonalProfile = try TasteProfileStore.loadProfile()
+        } catch {
+            print("⚠️ Couldn't load personal taste profile, using base prompt: \(error)")
+            return basePrompt
+        }
+
+        // Team profile is best-effort. If it's missing or malformed we just
+        // run with personal-only — no need to fail the whole prompt build.
+        let loadedTeamProfile: TeamTasteProfile? = (tasteScope == .team)
+            ? TeamTasteProfileStore.loadTeamProfile()
+            : nil
+
+        let tasteContextBlock = TastePromptBuilder.tasteContextBlock(
+            personalProfile: loadedPersonalProfile,
+            teamProfile: loadedTeamProfile,
+            scope: tasteScope
+        )
+        guard !tasteContextBlock.isEmpty else {
+            return basePrompt
+        }
+
+        let approvedPersonalCount = loadedPersonalProfile.principles.filter { $0.approved }.count
+        let approvedTeamCount = loadedTeamProfile?.principles.filter { $0.approved }.count ?? 0
+        switch tasteScope {
+        case .personal:
+            print("🧠 Applying \(approvedPersonalCount) personal taste principle(s) to voice prompt")
+        case .team:
+            print("🧠 Applying taste — \(approvedPersonalCount) personal + \(approvedTeamCount) team principle(s)")
+        }
+
+        return tasteContextBlock + "\n\n" + basePrompt
+    }
+
     // MARK: - AI Response Pipeline
-
-    private func submitTranscriptForCurrentSphereMode(transcript: String) {
-        switch sphereMode {
-        case .assistant:
-            sendTranscriptToClaudeWithScreenshot(transcript: transcript)
-        case .observation, .deployment:
-            sendTranscriptToTasteEngine(transcript: transcript, sphereMode: sphereMode)
-        }
-    }
-
-    func refreshTasteEngineStatus() {
-        guard let tasteEngineAPIClient else { return }
-
-        tasteEngineStatusText = "Checking local engine"
-        Task {
-            let isReachable = await tasteEngineAPIClient.checkStatus()
-            await MainActor.run {
-                self.tasteEngineStatusText = isReachable ? "Local engine online" : "Local engine unavailable"
-            }
-        }
-    }
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
@@ -666,9 +1153,15 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // Pull the user's saved taste from disk and prepend it to
+                // the system prompt so every voice answer is grounded in
+                // what the user has taught Sticky. On first launch (empty
+                // profile) this is a no-op and the base prompt is used.
+                let composedSystemPrompt = composeVoiceSystemPromptWithTaste()
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: composedSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -757,7 +1250,7 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
+                        try await elevenLabsTTSClient.speakText(spokenText, overrideVoiceID: selectedVoiceID)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
@@ -779,136 +1272,6 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
-    }
-
-    private func sendTranscriptToTasteEngine(transcript: String, sphereMode: SphereMode) {
-        currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
-
-        currentResponseTask = Task {
-            voiceState = .processing
-
-            do {
-                guard let tasteEngineAPIClient else {
-                    throw TasteEngineAPIClient.TasteEngineAPIClientError.invalidBaseURL(tasteEngineBaseURLString)
-                }
-
-                let tasteEngineResponse: TasteEngineAPIResponse
-                var targetScreenCapture: CompanionScreenCapture?
-
-                switch sphereMode {
-                case .assistant:
-                    return
-                case .observation:
-                    let observationContext = TasteCommandParser.observationContext(from: transcript)
-                    let observationRequest = TasteEngineObservationRequest(
-                        transcript: transcript,
-                        context: observationContext,
-                        mode: sphereMode.rawValue
-                    )
-                    tasteEngineResponse = try await tasteEngineAPIClient.observe(request: observationRequest)
-                case .deployment:
-                    let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-                    guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures.first else {
-                        throw NSError(
-                            domain: "TasteEngine",
-                            code: -1,
-                            userInfo: [NSLocalizedDescriptionKey: "No cursor-screen screenshot available"]
-                        )
-                    }
-
-                    targetScreenCapture = cursorScreenCapture
-                    let screenshotDataURL = "data:image/jpeg;base64,\(cursorScreenCapture.imageData.base64EncodedString())"
-                    let recommendationRequest = TasteEngineRecommendationRequest(
-                        transcript: transcript,
-                        prompt: transcript,
-                        screenshotDataURL: screenshotDataURL,
-                        screenshot: screenshotDataURL,
-                        mode: sphereMode.rawValue
-                    )
-                    tasteEngineResponse = try await tasteEngineAPIClient.recommend(request: recommendationRequest)
-                }
-
-                guard !Task.isCancelled else { return }
-
-                let spokenText = Self.conciseTasteEngineSummary(from: tasteEngineResponse.spokenSummary)
-
-                if let pointTarget = tasteEngineResponse.pointTarget,
-                   let screenCapture = targetScreenCapture {
-                    voiceState = .idle
-                    applyTasteEnginePointTarget(pointTarget, screenCapture: screenCapture, fallbackBubbleText: spokenText)
-                }
-
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ Taste Engine TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
-                }
-            } catch is CancellationError {
-                // User spoke again — response was interrupted.
-            } catch {
-                tasteEngineStatusText = "Local engine error"
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Taste Engine response error: \(error)")
-                speakCreditsErrorFallback()
-            }
-
-            if !Task.isCancelled {
-                voiceState = .idle
-                scheduleTransientHideIfNeeded()
-            }
-        }
-    }
-
-    private func applyTasteEnginePointTarget(
-        _ pointTarget: TasteEnginePointTarget,
-        screenCapture: CompanionScreenCapture,
-        fallbackBubbleText: String
-    ) {
-        let screenshotWidth = CGFloat(screenCapture.screenshotWidthInPixels)
-        let screenshotHeight = CGFloat(screenCapture.screenshotHeightInPixels)
-        let displayWidth = CGFloat(screenCapture.displayWidthInPoints)
-        let displayHeight = CGFloat(screenCapture.displayHeightInPoints)
-        let displayFrame = screenCapture.displayFrame
-
-        let clampedX = max(0, min(CGFloat(pointTarget.x), screenshotWidth))
-        let clampedY = max(0, min(CGFloat(pointTarget.y), screenshotHeight))
-        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-        let appKitY = displayHeight - displayLocalY
-
-        detectedElementBubbleText = pointTarget.label ?? fallbackBubbleText
-        detectedElementScreenLocation = CGPoint(
-            x: displayLocalX + displayFrame.origin.x,
-            y: appKitY + displayFrame.origin.y
-        )
-        detectedElementDisplayFrame = displayFrame
-        ClickyAnalytics.trackElementPointed(elementLabel: pointTarget.label)
-    }
-
-    private static func conciseTasteEngineSummary(from responseSummary: String) -> String {
-        let trimmedSummary = responseSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSummary.isEmpty else { return "done." }
-
-        let sentenceTerminators = CharacterSet(charactersIn: ".!?")
-        if let firstTerminatorRange = trimmedSummary.rangeOfCharacter(from: sentenceTerminators) {
-            let firstSentence = String(trimmedSummary[...firstTerminatorRange.lowerBound])
-            if firstSentence.count <= 180 {
-                return firstSentence
-            }
-        }
-
-        if trimmedSummary.count <= 180 {
-            return trimmedSummary
-        }
-
-        let cutoffIndex = trimmedSummary.index(trimmedSummary.startIndex, offsetBy: 177)
-        return String(trimmedSummary[..<cutoffIndex]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
@@ -947,6 +1310,7 @@ final class CompanionManager: ObservableObject {
     private func speakCreditsErrorFallback() {
         let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
         let synthesizer = NSSpeechSynthesizer()
+        fallbackSpeechSynthesizer = synthesizer
         synthesizer.startSpeaking(utterance)
         voiceState = .responding
     }

@@ -71,33 +71,37 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// Draws the clicky triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
+    /// Draws the clicky logo (right-tilted parallelogram) as a menu bar
+    /// icon. Same geometry as the `Parallelogram` SwiftUI shape used for
+    /// the in-app pointer cursor so the menu bar icon and the pointer match.
+    /// "Tilted right" = top edge shifted right of the bottom edge.
     private func makeClickyMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+        // Bounding box of the parallelogram inside the icon — leave a little
+        // padding around the edges so the menu bar doesn't clip the shape.
+        let parallelogramWidth = iconSize * 0.78
+        let parallelogramHeight = iconSize * 0.78
+        let originX = (iconSize - parallelogramWidth) / 2
+        let originY = (iconSize - parallelogramHeight) / 2
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
+        // Same skew fraction as `Parallelogram.skewFraction` default (0.35).
+        let skew = parallelogramWidth * 0.35
 
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
-        }
+        // AppKit y-axis is bottom-up, so "top" here = larger y. The shape
+        // leans right (top edge shifted right of the bottom edge).
+        let bottomLeft = CGPoint(x: originX, y: originY)
+        let topLeft = CGPoint(x: originX + skew, y: originY + parallelogramHeight)
+        let topRight = CGPoint(x: originX + parallelogramWidth, y: originY + parallelogramHeight)
+        let bottomRight = CGPoint(x: originX + parallelogramWidth - skew, y: originY)
 
         let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
+        path.move(to: bottomLeft)
+        path.line(to: topLeft)
+        path.line(to: topRight)
+        path.line(to: bottomRight)
         path.close()
 
         NSColor.black.setFill()
@@ -148,9 +152,41 @@ final class MenuBarPanelManager: NSObject {
             .frame(width: panelWidth)
 
         let hostingView = NSHostingView(rootView: companionPanelView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear
+
+        // The visual-effect view IS the panel's content view. This is the
+        // standard AppKit pattern for translucent dropdowns and is what
+        // makes the desktop blur reliably visible — wrapping the blur
+        // inside a SwiftUI `.background` modifier sometimes leaves the
+        // surrounding panel surface opaque depending on layer compositing.
+        // Rounded corners are applied via a CALayer mask on the visual
+        // effect view itself so the system shadow follows the rounded
+        // alpha when `hasShadow = true`.
+        let visualEffectView = NSVisualEffectView()
+        visualEffectView.material = .menu
+        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.state = .active
+        visualEffectView.isEmphasized = true
+        visualEffectView.wantsLayer = true
+        visualEffectView.layer?.cornerRadius = 12
+        visualEffectView.layer?.cornerCurve = .continuous
+        visualEffectView.layer?.masksToBounds = true
+        visualEffectView.layer?.borderWidth = 0.5
+        visualEffectView.layer?.borderColor = NSColor.separatorColor.cgColor
+        visualEffectView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+
+        // Pin the SwiftUI hosting view to the visual-effect view's bounds
+        // so it tracks resizes correctly when the panel height adjusts to
+        // its content fitting size.
+        visualEffectView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: visualEffectView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: visualEffectView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor)
+        ])
 
         let menuBarPanel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
@@ -163,7 +199,10 @@ final class MenuBarPanelManager: NSObject {
         menuBarPanel.level = .floating
         menuBarPanel.isOpaque = false
         menuBarPanel.backgroundColor = .clear
-        menuBarPanel.hasShadow = false
+        // Let AppKit render the native dropdown shadow (matching Apple's
+        // own menu-bar dropdowns). The shadow follows the rounded-rect
+        // alpha of the NSVisualEffectView content automatically.
+        menuBarPanel.hasShadow = true
         menuBarPanel.hidesOnDeactivate = false
         menuBarPanel.isExcludedFromWindowsMenu = true
         menuBarPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -171,7 +210,7 @@ final class MenuBarPanelManager: NSObject {
         menuBarPanel.titleVisibility = .hidden
         menuBarPanel.titlebarAppearsTransparent = true
 
-        menuBarPanel.contentView = hostingView
+        menuBarPanel.contentView = visualEffectView
         panel = menuBarPanel
     }
 
