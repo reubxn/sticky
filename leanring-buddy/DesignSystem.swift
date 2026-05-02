@@ -1222,6 +1222,36 @@ extension View {
     }
 }
 
+// MARK: - Interactive Press Style
+//
+// A lightweight ButtonStyle that adds a satisfying "press" micro-animation
+// to any button without changing its visual chrome. Scales the label down
+// on press and snaps back via a spring on release. Use this for chip-style
+// controls (segmented pills, dropdown triggers) where the surrounding
+// visuals don't need a full button treatment but should still respond
+// tactilely to clicks.
+
+struct InteractivePressStyle: ButtonStyle {
+    /// How far down to scale the label while pressed. 0.94 is gentle —
+    /// noticeable but not theatrical. Use a smaller number (0.88-0.92)
+    /// for big buttons that should feel weighty.
+    var pressScale: CGFloat = 0.94
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressScale : 1.0)
+            // Spring response on release gives a little playful overshoot;
+            // the press itself uses a faster ease-out so the down-state
+            // feels immediate, not laggy.
+            .animation(
+                configuration.isPressed
+                    ? .easeOut(duration: 0.08)
+                    : .spring(response: 0.32, dampingFraction: 0.62),
+                value: configuration.isPressed
+            )
+    }
+}
+
 // MARK: - Buddy Composer Visual Style
 
 enum BuddyComposerVisualStyle {

@@ -273,16 +273,18 @@ struct BlueCursorView: View {
 
     /// Picks the color of the glow based on whose turn it is in the
     /// conversation. The user's voice (listening / processing /
-    /// teach-recording) glows in the user color; Sticky's voice
-    /// (responding) glows in Sticky's voice color, which tracks the
-    /// selected ElevenLabs voice so the picker orb, the cursor, and
-    /// the response halo all match.
+    /// teach-recording) always glows in the fixed user color (blue) so
+    /// the speaking-side identity is stable across persona switches.
+    /// The persona's reply (responding) glows in the active persona's
+    /// accent color — the same hex shown on its spoke in the shift+cmd
+    /// wheel — so swapping persona on the wheel and seeing the reply
+    /// glow are visually consistent.
     private var edgeGlowColor: Color {
         switch edgeGlowMode {
         case .respondingWithAI:
-            return companionManager.stickyVoiceColor
+            return companionManager.personaReplyEdgeGlowColor
         case .listeningToUser, .processingThinking, .teachRecording:
-            return CompanionManager.userVoiceColor
+            return companionManager.userVoiceColor
         }
     }
 
@@ -385,10 +387,11 @@ struct BlueCursorView: View {
                 Text(navigationBubbleText)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 8)
+                    .padding(.leading, 14)  // extra room on the left for the tail
+                    .padding(.trailing, 8)
                     .padding(.vertical, 4)
                     .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        ChatBubbleShape(cornerRadius: 8)
                             .fill(companionManager.stickyVoiceColor)
                             .shadow(
                                 color: companionManager.stickyVoiceColor.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
@@ -1527,6 +1530,49 @@ private struct MysticalOrbView: View {
                 pulseScale = 1.15
             }
         }
+    }
+}
+
+/// Rounded-rect speech bubble with a small triangular tail on its left edge,
+/// used by the navigation pointer bubble so the "over here!" callout reads
+/// as if it's coming out of the persona avatar/orb sitting to the bubble's
+/// upper-left. The tail is pinned near the top of the left edge — the bubble
+/// is positioned at `cursorPosition.x + 10, cursorPosition.y + 18`, which
+/// places the orb above-and-to-the-left, so the tail naturally points back
+/// at it.
+private struct ChatBubbleShape: Shape {
+    var cornerRadius: CGFloat = 8
+    /// How far down the left edge the tail's center sits, measured from the
+    /// top of the bubble. ~12pt keeps the tail aligned with the first line
+    /// of text in a small (11pt) speech bubble.
+    var tailCenterFromTop: CGFloat = 12
+    var tailWidth: CGFloat = 8
+    var tailHeight: CGFloat = 7
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        let bubbleRect = CGRect(
+            x: rect.minX + tailHeight,
+            y: rect.minY,
+            width: rect.width - tailHeight,
+            height: rect.height
+        )
+
+        path.addRoundedRect(in: bubbleRect, cornerSize: CGSize(width: cornerRadius, height: cornerRadius))
+
+        // Triangular tail — points left, attached to the bubble's left edge.
+        let tailTop = max(rect.minY + cornerRadius, rect.minY + tailCenterFromTop - tailWidth / 2)
+        let tailBottom = min(rect.maxY - cornerRadius, tailTop + tailWidth)
+        let tailTipX = rect.minX
+        let tailBaseX = bubbleRect.minX + 0.5  // overlap by half a point so the seam disappears
+
+        path.move(to: CGPoint(x: tailBaseX, y: tailTop))
+        path.addLine(to: CGPoint(x: tailTipX, y: (tailTop + tailBottom) / 2))
+        path.addLine(to: CGPoint(x: tailBaseX, y: tailBottom))
+        path.closeSubpath()
+
+        return path
     }
 }
 

@@ -47,12 +47,30 @@ enum PersonaStore {
     /// returned array (clockwise from 12 o'clock).
     static let availableTeammates: [PersonaBundle] = {
         let bundlesFromMarkdown = PersonaTasteFileStore.loadAllAvailableBundles()
+        let allBundles: [PersonaBundle]
         if !bundlesFromMarkdown.isEmpty {
             print("📄 PersonaStore: loaded \(bundlesFromMarkdown.count) bundle(s) from TASTE.md")
-            return bundlesFromMarkdown
+            allBundles = bundlesFromMarkdown
+        } else {
+            print("⚠️ PersonaStore: no TASTE.md files reachable — falling back to baked-in Swift bundles")
+            allBundles = [reubanBundle, leonardBundle, magdalenaBundle]
         }
-        print("⚠️ PersonaStore: no TASTE.md files reachable — falling back to baked-in Swift bundles")
-        return [reubanBundle, leonardBundle, magdalenaBundle]
+        // Drop the local user from the wheel's teammate list — `.me` already
+        // represents them, so showing them again as a teammate spoke would be
+        // a duplicate face.
+        return allBundles.filter { $0.id != myPersonaId }
+    }()
+
+    /// The local user's bundle (for the demo, Reuban). Looked up out of the
+    /// raw teammate bundles before they're filtered out, so `.me` can borrow
+    /// the user's real avatar / accent color even though they're hidden from
+    /// the wheel as a separate spoke.
+    static let myOwnBundle: PersonaBundle? = {
+        let bundlesFromMarkdown = PersonaTasteFileStore.loadAllAvailableBundles()
+        let pool = bundlesFromMarkdown.isEmpty
+            ? [reubanBundle, leonardBundle, magdalenaBundle]
+            : bundlesFromMarkdown
+        return pool.first(where: { $0.id == myPersonaId })
     }()
 
     /// Returns the teammate bundle for the given id, or nil if the id
@@ -82,12 +100,19 @@ enum PersonaStore {
     /// wheel. Selecting this translates to `PersonaSelection.me` and the
     /// existing personal-only code path runs (using the user's own
     /// selectedVoiceID and saved TasteProfile from disk).
+    ///
+    /// When the local user has a real persona bundle on disk (for the
+    /// demo, Reuban), borrow that bundle's avatar + accent color so the
+    /// cursor / menu bar / glow all show the user's actual face instead
+    /// of a generic `person.fill` glyph. Falls back to the SF Symbol if
+    /// the user's bundle can't be loaded (fresh install, missing assets).
     static let mePseudoPersona: PersonaBundle = PersonaBundle(
         id: "__me__",
         displayName: "Me",
         role: "Your taste",
-        avatar: .systemSymbol(name: "person.fill", hexColor: "#3B82F6"),
-        accentColorHex: "#3B82F6",
+        avatar: myOwnBundle?.avatar
+            ?? .systemSymbol(name: "person.fill", hexColor: "#3B82F6"),
+        accentColorHex: myOwnBundle?.accentColorHex ?? "#3B82F6",
         soul: "",
         voiceId: "",
         taste: TasteProfile(userId: "local-user", principles: [], updatedAt: Date())

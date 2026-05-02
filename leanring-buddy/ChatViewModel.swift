@@ -99,6 +99,13 @@ final class ChatViewModel: ObservableObject {
     /// before the previous response finishes streaming.
     private var currentSendTask: Task<Void, Never>?
 
+    /// Stable id for the currently-active chat session. Each finalized
+    /// assistant message overwrites the same on-disk file under this
+    /// id, so the Dashboard's Chats tab shows one growing entry per
+    /// chat — not a new entry per message. Reset on `startNewChat`
+    /// so the next conversation starts a separate archive file.
+    private var activeChatHistorySessionId: String = UUID().uuidString
+
     /// Picks up the latest model selection from UserDefaults. Called by
     /// the chat window whenever it's shown so swapping Sonnet ↔ Opus in
     /// the menu bar panel takes effect on the next chat send without
@@ -119,6 +126,9 @@ final class ChatViewModel: ObservableObject {
         messages.removeAll()
         lastErrorMessage = nil
         isResponding = false
+        // Mint a new id so the next chat archives to a fresh file
+        // instead of overwriting the just-finished session.
+        activeChatHistorySessionId = UUID().uuidString
     }
 
     /// Sends the current `draftMessage`. Captures a screenshot, appends
@@ -218,6 +228,30 @@ final class ChatViewModel: ObservableObject {
     private func finalizeAssistantMessage(id: UUID) {
         guard let messageIndex = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[messageIndex].isStreaming = false
+        // Archive (or update) the session on disk so the Dashboard's
+        // Chats tab + the mini panel's recent-activity feed can show
+        // it. Overwrites the same file each time the chat grows.
+        archiveCurrentChatSessionToDisk()
+    }
+
+    /// Snapshots the current message list to the dashboard chat
+    /// history store under the stable `activeChatHistorySessionId`.
+    /// Called after each finalized assistant message so the archive
+    /// stays current, and called from the disk-backed recent-activity
+    /// feed in the mini panel.
+    private func archiveCurrentChatSessionToDisk() {
+        let archivableMessages: [DashboardChatMessage] = messages.map { message in
+            DashboardChatMessage(
+                id: message.id.uuidString,
+                role: message.role == .user ? "user" : "assistant",
+                text: message.text,
+                createdAt: message.createdAt
+            )
+        }
+        DashboardChatHistoryStore.recordSession(
+            sessionId: activeChatHistorySessionId,
+            messages: archivableMessages
+        )
     }
 
     private func removeAssistantMessage(id: UUID) {

@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 extension Notification.Name {
@@ -38,13 +39,20 @@ final class MenuBarPanelManager: NSObject {
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
 
+    /// Combine subscription that re-renders the menu bar icon whenever
+    /// the user picks a new persona. The status-item button is
+    /// re-imaged in place so the icon swap is instant — no animation,
+    /// because the system menu bar doesn't run cross-fades on its
+    /// items.
+    private var personaSelectionSubscription: AnyCancellable?
+
     /// Lazily created the first time the user taps "View Library". Kept
     /// alive across opens so the window's frame and scroll position
     /// survive being closed.
     private var tasteLibraryWindowController: TasteLibraryWindowController?
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 320
+    private let panelWidth: CGFloat = 380
     private let panelHeight: CGFloat = 380
 
     init(companionManager: CompanionManager) {
@@ -60,6 +68,18 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        // Re-render the menu bar icon whenever the active persona
+        // changes, so the avatar in the status bar always reflects who
+        // Sticky is "wearing" right now. `dropFirst` skips the initial
+        // emission so we don't redundantly re-image the icon we just
+        // set up in `createStatusItem`.
+        personaSelectionSubscription = companionManager.$personaSelection
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshMenuBarIcon()
+            }
     }
 
     deinit {
@@ -72,6 +92,15 @@ final class MenuBarPanelManager: NSObject {
     }
 
     // MARK: - Auxiliary Windows
+
+    /// Opens (or toggles) the floating chat window. Hides the menu bar
+    /// panel afterwards for the same reason as `openTasteLibraryWindow` —
+    /// otherwise the new window can appear behind the still-visible
+    /// menu bar panel and the click looks like it did nothing.
+    func openChatWindow() {
+        ChatWindowController.shared.toggleChatWindow()
+        hidePanel()
+    }
 
     /// Opens the "Sticky's Memory" library window, lazily creating it on
     /// first invocation. Hides the menu bar panel afterwards so the
@@ -87,6 +116,21 @@ final class MenuBarPanelManager: NSObject {
         hidePanel()
     }
 
+    /// Opens the full Sticky Dashboard window. If `focusedPersonaId`
+    /// is non-nil, the dashboard's Tastes tab opens directly to that
+    /// persona's detail view (used by the mini panel's read-only
+    /// persona rows). Hides the mini panel after for the same reason
+    /// as `openTasteLibraryWindow` and `openChatWindow` — otherwise
+    /// the new window appears behind the still-visible panel.
+    func openDashboardWindow(focusedPersonaId: String?) {
+        if let focusedPersonaId {
+            DashboardWindowController.shared.openShowingPersona(personaId: focusedPersonaId)
+        } else {
+            DashboardWindowController.shared.toggleDashboardWindow(initialSection: nil)
+        }
+        hidePanel()
+    }
+
     // MARK: - Status Item
 
     private func createStatusItem() {
@@ -94,10 +138,121 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeStickyMenuBarIcon()
-        button.image?.isTemplate = true
+        button.image = makeMenuBarIcon()
+        // Persona photos must NOT be rendered as templates (otherwise
+        // macOS converts the whole image to a single tinted silhouette),
+        // but the fallback flat-orb glyph should be a template so it
+        // tints to match light/dark menu bars. The factory returns the
+        // right `isTemplate` setting on the image itself.
         button.action = #selector(statusItemClicked)
         button.target = self
+    }
+
+    /// Picks the right menu-bar artwork: the currently active persona's
+    /// circular avatar with a white outline ring when one is available
+    /// (so the menu bar shows who Sticky is "wearing" right now), or
+    /// the flat sticky orb glyph as a fallback.
+    private func makeMenuBarIcon() -> NSImage {
+        if let avatarIcon = makeSelectedPersonaAvatarMenuBarIcon() {
+            return avatarIcon
+        }
+        let fallback = makeStickyMenuBarIcon()
+        fallback.isTemplate = true
+        return fallback
+    }
+
+    /// Re-renders and re-installs the status-item icon. Called from the
+    /// persona-selection subscription so the menu bar reflects the
+    /// active persona instantly when the user picks a new one.
+    private func refreshMenuBarIcon() {
+        guard let button = statusItem?.button else { return }
+        button.image = makeMenuBarIcon()
+    }
+
+    /// Renders the currently selected persona's avatar as a circular
+    /// menu-bar icon with a white outline ring. Returns nil when the
+    /// active persona doesn't have a `.imageFile` avatar resolvable on
+    /// disk (e.g. a symbol-based persona, or a fresh install before
+    /// the local user picks a photo) — the caller falls back to the
+    /// flat orb glyph in that case.
+    ///
+    /// The outline ring sits *inside* the icon's bounding box (so it
+    /// doesn't get clipped by the menu bar) and overlays the photo's
+    /// edge — gives the avatar a cut-out, sticker-like look against
+    /// both light and dark menu bars.
+    private func makeSelectedPersonaAvatarMenuBarIcon() -> NSImage? {
+        let activePersona = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
+        guard let bundle = activePersona,
+              case .imageFile(let filename) = bundle.avatar,
+              let sourceImage = PersonaImageLoader.bundledOrDiskImage(forFilename: filename)
+        else { return nil }
+
+        // The menu bar standardizes square icons at 22pt; we render at
+        // that size so the outline ring has room without the photo
+        // looking shrunken. The status item adapts its width
+        // automatically.
+        let iconSize: CGFloat = 22
+        // Width of the white outline. Sized for retina — at 1x it's
+        // still a crisp single hairline thanks to the inset.
+        let ringWidth: CGFloat = 1.5
+
+        let circularImage = NSImage(size: NSSize(width: iconSize, height: iconSize))
+        circularImage.lockFocus()
+
+        // Inset the photo's circle by half the ring width on every side
+        // so the ring sits inside the bounding box (not clipped at the
+        // edges). Same inset for the clip path and the stroke.
+        let inset = ringWidth / 2
+        let photoCircleRect = NSRect(
+            x: inset,
+            y: inset,
+            width: iconSize - ringWidth,
+            height: iconSize - ringWidth
+        )
+
+        // ── 1. Clip to the circle and draw the photo (scaledToFill) ──
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(ovalIn: photoCircleRect).addClip()
+
+        let sourceSize = sourceImage.size
+        let sourceAspect = sourceSize.width / sourceSize.height
+        var drawRect = photoCircleRect
+        if sourceAspect > 1 {
+            // wider than tall — crop the sides
+            let scaledWidth = photoCircleRect.height * sourceAspect
+            drawRect = NSRect(
+                x: photoCircleRect.midX - scaledWidth / 2,
+                y: photoCircleRect.minY,
+                width: scaledWidth,
+                height: photoCircleRect.height
+            )
+        } else if sourceAspect < 1 {
+            // taller than wide — crop top/bottom
+            let scaledHeight = photoCircleRect.width / sourceAspect
+            drawRect = NSRect(
+                x: photoCircleRect.minX,
+                y: photoCircleRect.midY - scaledHeight / 2,
+                width: photoCircleRect.width,
+                height: scaledHeight
+            )
+        }
+        sourceImage.draw(in: drawRect)
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        // ── 2. Stroke the white outline ring on top ──
+        // The ring is drawn after the clip is released so it sits on top
+        // of the photo's edge. NSColor.white renders correctly on both
+        // light and dark menu bars (the ring isn't a template).
+        let ringPath = NSBezierPath(ovalIn: photoCircleRect)
+        ringPath.lineWidth = ringWidth
+        NSColor.white.setStroke()
+        ringPath.stroke()
+
+        circularImage.unlockFocus()
+        // Photos + the white ring must render in their literal colors —
+        // not as a tinted template — so isTemplate stays false.
+        circularImage.isTemplate = false
+        return circularImage
     }
 
     /// Draws the sticky logo (a solid orb with a flat-cut bottom so it
@@ -380,74 +535,37 @@ final class WarmDropdownBackgroundView: NSView {
     private func setupLayers() {
         wantsLayer = true
         layer = CALayer()
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = 16
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        // Faint warm border — same idea as Apple's separatorColor stroke
-        // but tinted amber so it reads as part of the warm aesthetic
-        // rather than fighting it.
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor(red: 1.0, green: 0.66, blue: 0.32, alpha: 0.22).cgColor
+        // Hairline border in the brand neutral so the paper card reads
+        // as a printed object cut from a sheet, not a glassy panel.
+        layer?.borderWidth = 1.0
+        layer?.borderColor = NSColor(red: 0.87, green: 0.86, blue: 0.83, alpha: 1.0).cgColor
 
-        // Vertical gradient: near-black at the top, vibrant red through
-        // the upper-middle band, warm rust through the lower-middle, and
-        // a soft pink-peach at the very bottom — matching the riso-print
-        // reference. CAGradientLayer's coordinate system is flipped from
-        // view space (y=0 is bottom), so the bottom-of-visible color is
-        // first in the array.
+        // Flat paper fill — the brand "paper" hue. No gradient, no
+        // riso-print drama. Visual interest comes from the content
+        // (gradient hero tile, ink wordmark) rather than the surface.
         gradientLayer.colors = [
-            // Soft pink-peach — visual bottom of the dropdown.
-            NSColor(red: 0.97, green: 0.74, blue: 0.74, alpha: 1.0).cgColor,
-            // Warm rust transition.
-            NSColor(red: 0.92, green: 0.40, blue: 0.30, alpha: 1.0).cgColor,
-            // Vibrant red through the middle — the dominant band.
-            NSColor(red: 0.86, green: 0.18, blue: 0.10, alpha: 1.0).cgColor,
-            // Burnt walnut transition.
-            NSColor(red: 0.30, green: 0.07, blue: 0.04, alpha: 1.0).cgColor,
-            // Near-black — visual top of the dropdown.
-            NSColor(red: 0.06, green: 0.02, blue: 0.02, alpha: 1.0).cgColor
+            NSColor(red: 0.957, green: 0.949, blue: 0.929, alpha: 1.0).cgColor,
+            NSColor(red: 0.957, green: 0.949, blue: 0.929, alpha: 1.0).cgColor
         ]
-        gradientLayer.locations = [0.0, 0.18, 0.45, 0.78, 1.0]
+        gradientLayer.locations = [0.0, 1.0]
         gradientLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
         gradientLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
         layer?.addSublayer(gradientLayer)
 
-        // Soft warm radial bloom anchored to the bottom-right. Adds a hint
-        // of asymmetry so the dropdown doesn't feel like a flat strip.
-        // Pulled back from the previous design — the new gradient does
-        // most of the warmth on its own.
-        glowLayer.type = .radial
-        glowLayer.colors = [
-            NSColor(red: 1.0, green: 0.78, blue: 0.55, alpha: 0.30).cgColor,
-            NSColor(red: 1.0, green: 0.60, blue: 0.30, alpha: 0.0).cgColor
-        ]
-        glowLayer.locations = [0.0, 1.0]
-        glowLayer.startPoint = CGPoint(x: 0.85, y: 0.0)   // bottom-right
-        glowLayer.endPoint = CGPoint(x: 1.5, y: 0.85)
+        // Glow / column / grain layers are kept in the hierarchy but
+        // rendered fully transparent. The brand surface is intentionally
+        // flat — texture-free — so the editorial cards on top carry the
+        // visual weight.
+        glowLayer.opacity = 0.0
         layer?.addSublayer(glowLayer)
 
-        // Subtle vertical bars — gives the dropdown the riso "column"
-        // texture without literally drawing a stack of gradient pillars.
-        // Tiles a small pattern image of darker vertical strips with
-        // feathered edges, blended via multiply at low opacity so it
-        // reads as a hint of structure rather than a comb.
-        columnLayer.backgroundColor = NSColor(
-            patternImage: Self.cachedColumnPatternImage
-        ).cgColor
-        columnLayer.opacity = 0.18
-        columnLayer.compositingFilter = "multiplyBlendMode"
+        columnLayer.opacity = 0.0
         layer?.addSublayer(columnLayer)
 
-        // Paper grain — the most distinctive visual element. A 200×200
-        // tile of fine random dots (mix of light and dark, varying
-        // alpha) tiled across the whole surface and blended via overlay
-        // so it darkens shadows and lifts highlights, reading as
-        // genuine paper texture rather than uniform noise.
-        grainLayer.backgroundColor = NSColor(
-            patternImage: Self.cachedGrainPatternImage
-        ).cgColor
-        grainLayer.opacity = 0.55
-        grainLayer.compositingFilter = "overlayBlendMode"
+        grainLayer.opacity = 0.0
         layer?.addSublayer(grainLayer)
     }
 
