@@ -2,1192 +2,166 @@
 //  CompanionPanelView.swift
 //  leanring-buddy
 //
-//  The SwiftUI content hosted inside the menu bar panel. Shows the companion
-//  voice status, push-to-talk shortcut, and quick settings. Designed to feel
-//  like Loom's recording panel — dark, rounded, minimal, and special.
+//  Editorial-style menu bar panel using the ElevenLabs brand system.
+//  Paper background, white cards on paper, black-pill primary CTA, and
+//  a hero header that pairs the wordmark with a colored status pill.
+//
+//  The panel re-uses Clicky's existing AppKit chrome (NSPanel +
+//  WarmDropdownBackgroundView) — the background view paints a flat
+//  paper surface with a hairline border, and this SwiftUI content sits
+//  on top of it.
 //
 
 import AVFoundation
 import SwiftUI
 
-// MARK: - Warm Dropdown Palette
-
-/// Warm, painterly color palette used throughout the dropdown to match
-/// the walnut→rust gradient + amber glow background. These colors are
-/// deliberately *not* tied to the system appearance: the dropdown is
-/// always rendered in the warm aesthetic regardless of light/dark mode.
+// MARK: - Legacy Warm Palette Shim
+//
+// Older components (TeachSessionResultCard, etc.) still reference
+// `WarmPalette.*` tokens from the panel's previous warm-rust design.
+// Rather than rewrite each of those views in the same pass, we remap
+// every old token onto the ElevenLabs brand palette so the visual
+// language stays consistent across the panel.
+//
+// Future cleanup: replace direct WarmPalette references in those files
+// with ElevenLabsBrand.* tokens and delete this shim.
 enum WarmPalette {
-    /// Soft cream — primary headline text on the warm surface.
-    static let textPrimary = Color(red: 1.00, green: 0.94, blue: 0.86)
-    /// Warm peach — body / secondary copy.
-    static let textSecondary = Color(red: 0.93, green: 0.78, blue: 0.59)
-    /// Muted faded peach — tertiary captions, status text, icon tints.
-    static let textTertiary = Color(red: 0.78, green: 0.58, blue: 0.40)
-    /// Amber accent — buttons, selected pills, focus states.
-    static let accent = Color(red: 1.00, green: 0.62, blue: 0.18)
-    /// Slight cream overlay — used as subtle row / chip fills on the
-    /// gradient. `Color.primary.opacity` would resolve to the system
-    /// label color which would break the warm look in light mode.
-    static let surfaceTint = Color(red: 1.00, green: 0.94, blue: 0.86).opacity(0.10)
-    /// Stronger cream overlay — used for selected state in segmented
-    /// pickers (Sonnet/Opus, Personal/Team) so the chosen pill stands
-    /// out clearly against the warm gradient.
-    static let surfaceTintStrong = Color(red: 1.00, green: 0.94, blue: 0.86).opacity(0.18)
-    /// Faint amber hairline — dividers, button outlines.
-    static let separator = Color(red: 1.00, green: 0.66, blue: 0.32).opacity(0.22)
-    /// Status dot color when "good" — keeps a green hue but warmed
-    /// toward lime so it doesn't clash with the rust background.
-    static let statusGood = Color(red: 0.62, green: 0.86, blue: 0.40)
-    /// Status dot / row icon color when warning attention is needed.
-    static let warning = Color(red: 1.00, green: 0.74, blue: 0.20)
+    static let textPrimary    = ElevenLabsBrand.Colors.ink
+    static let textSecondary  = ElevenLabsBrand.Colors.inkSecondary
+    static let textTertiary   = ElevenLabsBrand.Colors.inkTertiary
+    static let accent         = ElevenLabsBrand.Colors.inkPure
+    static let surfaceTint    = ElevenLabsBrand.Colors.paperRecessed
+    static let surfaceTintStrong = ElevenLabsBrand.Colors.card
+    static let separator      = ElevenLabsBrand.Colors.hairline
+    static let statusGood     = ElevenLabsBrand.Colors.ink
+    static let warning        = ElevenLabsBrand.Colors.gradientCoral
 }
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+
     @State private var emailInput: String = ""
-    /// Whether the custom voice picker popover is open. Anchored to the
-    /// trigger button in `voicePickerRow`.
-    @State private var isVoicePickerOpen: Bool = false
+
+    /// Drives the breathing animation on the status dot when Sticky is
+    /// actively listening / processing / responding. Toggles continuously
+    /// while `isVoiceActive` is true.
+    @State private var isStatusDotPulsing: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            panelHeader
-            Rectangle()
-                .fill(WarmPalette.separator)
-                .frame(height: 0.5)
-                .padding(.horizontal, 16)
-
-            permissionsCopySection
-                .padding(.top, 16)
-                .padding(.horizontal, 16)
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
-
-                voicePickerRow
-                    .padding(.horizontal, 16)
-
-                // Scope picker — Personal vs Team taste. Always visible
-                // because every voice question now has the saved taste
-                // profile prepended to the system prompt; the user picks
-                // here whether that means just their own principles or
-                // their personal principles unioned with the team's.
-                tasteScopePickerRow
-                    .padding(.horizontal, 16)
-
-                personaPickerRow
-                    .padding(.horizontal, 16)
-
-                teachSessionControlRow
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-
-                if let pendingTeachSessionReview = companionManager.pendingTeachSessionResult {
-                    TeachSessionResultCard(
-                        companionManager: companionManager,
-                        pendingReview: pendingTeachSessionReview
-                    )
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                } else if !companionManager.pendingAmbiguousMoments.isEmpty {
-                    ReviewCardStack(companionManager: companionManager)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                } else if companionManager.lastTeachSessionSavedPrincipleCount > 0
-                    && companionManager.teachSessionState == .idle {
-                    teachSessionSavedSummary
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
-            }
+            heroHeader
 
             if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
+                permissionsContent
+            } else if !companionManager.hasCompletedOnboarding {
+                onboardingContent
+            } else {
+                mainContent
             }
-
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Sticky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showStickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            // "View Library" row — gated on onboarding+permissions so we
-            // don't tempt the user into the library before they've granted
-            // microphone/screen-recording (the library is empty anyway).
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                tasteLibraryRow
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-            }
-
-            Spacer()
-                .frame(height: 12)
-
-            Rectangle()
-                .fill(WarmPalette.separator)
-                .frame(height: 0.5)
-                .padding(.horizontal, 16)
 
             footerSection
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
         }
-        .frame(width: 320)
+        .frame(width: 380)
         .background(panelBackground)
+        // Smoothly animate top-level state transitions — the panel
+        // re-flowing between permissions / onboarding / main content
+        // and the four-card settings grid resizing as selections change.
+        .animation(.easeInOut(duration: 0.22), value: companionManager.allPermissionsGranted)
+        .animation(.easeInOut(duration: 0.22), value: companionManager.hasCompletedOnboarding)
+        .animation(.easeInOut(duration: 0.22), value: companionManager.teachSessionState)
     }
 
-    // MARK: - Header
-
-    private var panelHeader: some View {
-        HStack {
-            HStack(spacing: 8) {
-                // Animated status dot
-                Circle()
-                    .fill(statusDotColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: statusDotColor.opacity(0.6), radius: 4)
-
-                Text("Sticky")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
-            }
-
-            Spacer()
-
-            Text(statusText)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(WarmPalette.textTertiary)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-    }
-
-    // MARK: - Permissions Copy
-
-    @ViewBuilder
-    private var permissionsCopySection: some View {
-        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text(modeAwareTopInstructionCopy)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Drop your email to get started.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-                Text("If I keep building this, I'll keep you in the loop.")
-                    .font(.system(size: 11))
-                    .foregroundColor(WarmPalette.textTertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Sticky.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.hasCompletedOnboarding {
-            // Permissions were revoked after onboarding — tell user to re-grant
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Permissions needed")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(WarmPalette.textSecondary)
-
-                Text("Some permissions were revoked. Grant all four below to keep using Sticky.")
-                    .font(.system(size: 11))
-                    .foregroundColor(WarmPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Welcome to Sticky.")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(WarmPalette.textSecondary)
-
-                Text("Grant the permissions below to get started. Nothing runs in the background — Sticky only captures the screen when you press the hotkey.")
-                    .font(.system(size: 11))
-                    .foregroundColor(WarmPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    // MARK: - Email + Start Button
-
-    @ViewBuilder
-    private var startButton: some View {
-        if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            if !companionManager.hasSubmittedEmail {
-                VStack(spacing: 8) {
-                    TextField("Enter your email", text: $emailInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(WarmPalette.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(WarmPalette.surfaceTint)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .stroke(WarmPalette.separator, lineWidth: 0.5)
-                        )
-
-                    Button(action: {
-                        companionManager.submitEmail(emailInput)
-                    }) {
-                        Text("Submit")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(Color.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                    .fill(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                          ? WarmPalette.accent.opacity(0.4)
-                                          : WarmPalette.accent)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .disabled(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            } else {
-                Button(action: {
-                    companionManager.triggerOnboarding()
-                }) {
-                    Text("Start")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(Color.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                .fill(WarmPalette.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-    }
-
-    // MARK: - Permissions
-
-    private var settingsSection: some View {
-        VStack(spacing: 2) {
-            Text("Permissions")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(WarmPalette.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 6)
-
-            microphonePermissionRow
-
-            accessibilityPermissionRow
-
-            screenRecordingPermissionRow
-
-            if companionManager.hasScreenRecordingPermission {
-                screenContentPermissionRow
-            }
-
-        }
-    }
-
-    private var accessibilityPermissionRow: some View {
-        let isGranted = companionManager.hasAccessibilityPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "hand.raised")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
-                    .frame(width: 16)
-
-                Text("Accessibility")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(WarmPalette.statusGood)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.statusGood)
-                }
-            } else {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
-                        // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
-                    }) {
-                        Text("Grant")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(Color.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(WarmPalette.accent)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-
-                    Button(action: {
-                        // Reveals the app in Finder so the user can drag it into
-                        // the Accessibility list if it doesn't appear automatically
-                        // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
-                    }) {
-                        Text("Find App")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(WarmPalette.textSecondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .stroke(WarmPalette.separator, lineWidth: 0.8)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                }
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var screenRecordingPermissionRow: some View {
-        let isGranted = companionManager.hasScreenRecordingPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "rectangle.dashed.badge.record")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
-                    .frame(width: 16)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Screen Recording")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(WarmPalette.textSecondary)
-
-                    Text(isGranted
-                         ? "Only takes a screenshot when you use the hotkey"
-                         : "Quit and reopen after granting")
-                        .font(.system(size: 10))
-                        .foregroundColor(WarmPalette.textTertiary)
-                }
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(WarmPalette.statusGood)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.statusGood)
-                }
-            } else {
-                Button(action: {
-                    // Triggers the native macOS screen recording prompt on first
-                    // attempt (auto-adds app to the list), then opens System Settings
-                    // on subsequent attempts.
-                    WindowPositionManager.requestScreenRecordingPermission()
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(WarmPalette.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var screenContentPermissionRow: some View {
-        let isGranted = companionManager.hasScreenContentPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "eye")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
-                    .frame(width: 16)
-
-                Text("Screen Content")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(WarmPalette.statusGood)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.statusGood)
-                }
-            } else {
-                Button(action: {
-                    companionManager.requestScreenContentPermission()
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(WarmPalette.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var microphonePermissionRow: some View {
-        let isGranted = companionManager.hasMicrophonePermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
-                    .frame(width: 16)
-
-                Text("Microphone")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(WarmPalette.statusGood)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.statusGood)
-                }
-            } else {
-                Button(action: {
-                    // Triggers the native macOS microphone permission dialog on
-                    // first attempt. If already denied, opens System Settings.
-                    let status = AVCaptureDevice.authorizationStatus(for: .audio)
-                    if status == .notDetermined {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-                    } else {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(WarmPalette.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func permissionRow(
-        label: String,
-        iconName: String,
-        isGranted: Bool,
-        settingsURL: String
-    ) -> some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: iconName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? WarmPalette.textTertiary : WarmPalette.warning)
-                    .frame(width: 16)
-
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(WarmPalette.statusGood)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.statusGood)
-                }
-            } else {
-                Button(action: {
-                    if let url = URL(string: settingsURL) {
-                        NSWorkspace.shared.open(url)
-                    }
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(WarmPalette.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-
-
-    // MARK: - Show Sticky Cursor Toggle
-
-    private var showStickyCursorToggleRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(WarmPalette.textTertiary)
-                    .frame(width: 16)
-
-                Text("Show Sticky")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(WarmPalette.accent)
-            .scaleEffect(0.8)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var speechToTextProviderRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.badge.waveform")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(WarmPalette.textTertiary)
-                    .frame(width: 16)
-
-                Text("Speech to Text")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(WarmPalette.textSecondary)
-            }
-
-            Spacer()
-
-            Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(WarmPalette.textTertiary)
-        }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Model Picker
-
-    private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                // Haiku first because it's the new default — fastest TTFT,
-                // most appropriate for short voice replies. Sonnet/Opus are
-                // there for users who want higher-quality answers at the
-                // cost of a noticeable latency bump.
-                modelOptionButton(label: "Haiku", modelID: "claude-haiku-4-5-20251001")
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(WarmPalette.surfaceTint.opacity(0.6))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(WarmPalette.separator, lineWidth: 0.5)
-            )
-        }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Voice Picker
-
-    /// Lets the user pick which ElevenLabs voice Sticky uses for spoken
-    /// replies. Tapping the trigger opens a Mac-style popover listing the
-    /// free default voices; each row has a play button that previews the
-    /// voice with a "Hey, I'm Sticky!" clip so the user can test before
-    /// committing. Tapping the row body commits the selection. "Default"
-    /// leaves selection unset, falling back to the bundled
-    /// `ELEVENLABS_VOICE_ID` from secrets.plist.
-    private var voicePickerRow: some View {
-        let voices = ElevenLabsTTSClient.freeVoices
-        let selectedVoice = voices.first { $0.id == companionManager.selectedVoiceID }
-        let triggerLabel = selectedVoice?.displayName ?? "Default"
-
-        return HStack {
-            Text("Voice")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
-
-            Button(action: {
-                isVoicePickerOpen.toggle()
-                if isVoicePickerOpen {
-                    // Warm the disk cache the first time the dropdown
-                    // opens so subsequent play taps are instant.
-                    companionManager.prefetchAllVoicePreviewsIfNeeded()
-                }
-            }) {
-                HStack(spacing: 4) {
-                    Text(triggerLabel)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(WarmPalette.textPrimary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(WarmPalette.textTertiary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(WarmPalette.surfaceTint.opacity(0.6))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(WarmPalette.separator, lineWidth: 0.5)
-                )
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-            .macDropdown(isPresented: $isVoicePickerOpen, width: 320, arrowEdge: .top) {
-                // Cap height so the 22-row list scrolls instead of pushing
-                // the popover taller than the screen on smaller displays.
-                ScrollView(.vertical, showsIndicators: true) {
-                    voicePickerPopover(voices: voices)
-                }
-                .frame(maxHeight: 360)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    /// Body of the voice picker popover. Default row at the top, then the
-    /// alphabetized list of free voices. Each row has a colored orb
-    /// hand-mapped to that voice and a play/stop button to preview
-    /// without committing.
-    @ViewBuilder
-    private func voicePickerPopover(voices: [ElevenLabsFreeVoice]) -> some View {
-        DropdownSection("Sticky's voice", showsBottomDivider: true) {
-            VoicePickerOrbRow(
-                title: "Default",
-                subtitle: "Bundled with Sticky",
-                orbColor: CompanionManager.stickyDefaultVoiceColor,
-                isSelected: companionManager.selectedVoiceID == nil,
-                isPreviewing: companionManager.previewingVoiceID == CompanionManager.defaultVoicePreviewSentinel,
-                onSelect: {
-                    companionManager.setSelectedVoiceID(nil)
-                    isVoicePickerOpen = false
-                },
-                onPreviewToggle: {
-                    if companionManager.previewingVoiceID == CompanionManager.defaultVoicePreviewSentinel {
-                        companionManager.stopVoicePreview()
-                    } else {
-                        companionManager.previewVoice(nil)
-                    }
-                }
-            )
-        }
-
-        DropdownSection(showsBottomDivider: false) {
-            ForEach(voices) { voice in
-                VoicePickerOrbRow(
-                    title: voice.displayName,
-                    subtitle: voice.descriptor,
-                    orbColor: Self.orbColor(forVoiceID: voice.id),
-                    isSelected: companionManager.selectedVoiceID == voice.id,
-                    isPreviewing: companionManager.previewingVoiceID == voice.id,
-                    onSelect: {
-                        companionManager.setSelectedVoiceID(voice.id)
-                        isVoicePickerOpen = false
-                    },
-                    onPreviewToggle: {
-                        if companionManager.previewingVoiceID == voice.id {
-                            companionManager.stopVoicePreview()
-                        } else {
-                            companionManager.previewVoice(voice.id)
-                        }
-                    }
-                )
-            }
-        }
-    }
-
-    /// Voice picker orbs reuse the same palette as Sticky's overlay
-    /// chrome so the color you preview here matches what you see in the
-    /// overlay when Sticky talks back. Lives on `CompanionManager`.
-    private static func orbColor(forVoiceID voiceID: String) -> Color {
-        return CompanionManager.voiceColor(forVoiceID: voiceID)
-    }
-
-    // MARK: - Reverse Clicky: Persona Picker
+    // MARK: - Hero Header
     //
-    // Surface for the active persona ("who Sticky is wearing right now")
-    // plus a discoverability hint about the hold-shift-cmd radial wheel.
-    // Tapping the row also opens a flat list as a fallback for users who
-    // can't or won't learn the hotkey gesture.
+    // App wordmark on the left, status pill on the right. The wordmark
+    // is a custom "Sticky" mark — a small filled pause-bars glyph paired
+    // with the app name in tight, ink-weight type. The status pill uses
+    // a coral dot that breathes while Sticky is active.
 
-    private var personaPickerRow: some View {
-        let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
-            ?? PersonaStore.mePseudoPersona
-
-        return HStack(spacing: 10) {
-            Text("Wearing")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
-
-            // Native SwiftUI Menu — works reliably inside the non-
-            // activating menu-bar NSPanel where the previous custom
-            // .popover wasn't getting a chance to display. The trigger
-            // label keeps the warm chip aesthetic; the dropdown itself
-            // renders as a system menu so the user can always pick a
-            // persona without learning the ⇧⌘ wheel hotkey.
-            Menu {
-                ForEach(PersonaStore.allWheelPersonas, id: \.id) { persona in
-                    personaMenuItem(persona: persona)
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    PersonaAvatarView(
-                        avatar: activePersonaBundle.avatar,
-                        diameter: 22
-                    )
-                    Text(activePersonaBundle.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(WarmPalette.textPrimary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(WarmPalette.textTertiary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(WarmPalette.surfaceTint.opacity(0.6))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(WarmPalette.separator, lineWidth: 0.5)
-                )
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .pointerCursor()
-            .nativeTooltip("hold ⇧⌘ to summon the persona wheel around your cursor")
-        }
-        .padding(.vertical, 4)
-    }
-
-    /// One row inside the persona menu. Native Menu items don't render
-    /// multi-line labels or thumbnails, so the role appears as an em-
-    /// dashed suffix and the active selection gets a leading checkmark
-    /// (using the standard `Label(_:systemImage:)` pattern macOS menus
-    /// expect for "currently selected").
-    private func personaMenuItem(persona: PersonaBundle) -> some View {
-        let isCurrentlyActive = (PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)?.id ?? "") == persona.id
-
-        let menuLabel: String = {
-            if let role = persona.role, !role.isEmpty {
-                return "\(persona.displayName) — \(role)"
-            }
-            return persona.displayName
-        }()
-
-        return Button(action: {
-            companionManager.setPersonaSelection(PersonaStore.selectionForWheelPersona(persona))
-        }) {
-            if isCurrentlyActive {
-                Label(menuLabel, systemImage: "checkmark")
-            } else {
-                Text(menuLabel)
-            }
-        }
-    }
-
-    // MARK: - Reverse Clicky: Mode-Aware Copy
-
-    /// Top-of-panel push-to-talk instruction. Hold-to-talk is the same
-    /// for ask and teach (teach has its own dedicated button below the
-    /// scope picker), so we keep this copy single-track.
-    private var modeAwareTopInstructionCopy: String {
-        return "Hold Control+Option to talk."
-    }
-
-    // MARK: - Reverse Clicky: Taste Scope Picker
-
-    private var tasteScopePickerRow: some View {
-        HStack {
-            Text("Scope")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                tasteScopeOptionButton(scope: .personal, label: "Personal")
-                tasteScopeOptionButton(scope: .team, label: "Team")
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(WarmPalette.surfaceTint.opacity(0.6))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(WarmPalette.separator, lineWidth: 0.5)
-            )
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func tasteScopeOptionButton(scope: TasteScope, label: String) -> some View {
-        let isSelected = companionManager.tasteScope == scope
-        return Button(action: {
-            companionManager.setTasteScope(scope)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? WarmPalette.textPrimary : WarmPalette.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? WarmPalette.surfaceTintStrong : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
-    // MARK: - Reverse Clicky: Teach Session Controls
-
-    @ViewBuilder
-    private var teachSessionControlRow: some View {
-        switch companionManager.teachSessionState {
-        case .idle:
-            teachSessionStartButton
-        case .recording:
-            teachSessionRecordingControls
-        case .analyzing:
-            teachSessionAnalyzingRow
-        }
-    }
-
-    // MARK: - Reverse Clicky: Taste Library
-
-    /// "View Library" row that opens the Sticky Memory window. Styled
-    /// like `teachSessionStartButton` so the two sit comfortably together
-    /// at the bottom of the panel — same warm cream tint, same medium
-    /// corner radius, same icon-then-label layout.
-    private var tasteLibraryRow: some View {
-        Button(action: {
-            // The menu bar panel is the only place this button lives, so
-            // we route through `MenuBarPanelManager.shared` to open the
-            // window. If the manager hasn't been wired yet (shouldn't
-            // happen at runtime), the no-op is the safe fallback.
-            MenuBarPanelManager.shared?.openTasteLibraryWindow(
-                companionManager: companionManager
-            )
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "books.vertical")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
-                Text("View Library")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(WarmPalette.surfaceTint)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(WarmPalette.separator, lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-        .nativeTooltip("See every principle Sticky has learned")
-    }
-
-    private var teachSessionStartButton: some View {
-        Button(action: {
-            companionManager.startTeachSession()
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "circle.inset.filled")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Color(NSColor.systemRed))
-                Text("Start Teach Session")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(WarmPalette.surfaceTint)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(WarmPalette.separator, lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
-    private var teachSessionRecordingControls: some View {
-        Button(action: {
-            companionManager.stopTeachSession()
-        }) {
-            HStack(spacing: 8) {
-                // Square stop glyph instead of a red dot — the start button
-                // already uses a red dot ("begin recording"), so reusing the
-                // same affordance for "stop" was visually ambiguous. The
-                // SF Symbol stop.fill reads unambiguously as a stop control.
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
-
-                Text("Stop")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(WarmPalette.textPrimary)
+    private var heroHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: ElevenLabsBrand.Spacing.sm) {
+                stickyAppWordmark
 
                 Spacer()
 
-                // Elapsed duration is the most important live signal during a
-                // teach session — bumped to primary text + monospaced semibold
-                // so it carries the weight it deserves instead of fading into
-                // the panel as tertiary metadata.
-                Text(formatTeachSessionElapsed(companionManager.teachSessionElapsedSeconds))
-                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                    .foregroundColor(WarmPalette.textPrimary)
+                statusPill
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(Color(NSColor.systemRed).opacity(0.12))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(Color(NSColor.systemRed).opacity(0.4), lineWidth: 0.5)
-            )
+            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+            .padding(.top, ElevenLabsBrand.Spacing.md)
+            .padding(.bottom, ElevenLabsBrand.Spacing.sm)
+
+            Rectangle()
+                .fill(ElevenLabsBrand.Colors.hairline)
+                .frame(height: 1)
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
     }
 
-    private var teachSessionAnalyzingRow: some View {
+    /// The app's own brand mark — the flat-bottomed orb glyph used in
+    /// the menu bar, paired with the "Sticky" wordmark. Same silhouette
+    /// as `makeStickyMenuBarIcon` in MenuBarPanelManager so the in-panel
+    /// brand reads as the same identity the user clicked from the
+    /// status bar.
+    private var stickyAppWordmark: some View {
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.7)
+            StickyOrbGlyph(size: 18, color: ElevenLabsBrand.Colors.inkPure)
 
-            Text("Reviewing your decisions…")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
+            Text("Sticky")
+                .font(.system(size: 16, weight: .bold))
+                .tracking(-0.4)
+                .foregroundColor(ElevenLabsBrand.Colors.inkPure)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(WarmPalette.surfaceTint.opacity(0.6))
-        )
     }
 
-    private func formatTeachSessionElapsed(_ elapsedSeconds: Int) -> String {
-        let minutes = elapsedSeconds / 60
-        let seconds = elapsedSeconds % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-
-    /// Subtle confirmation toast shown after a teach session if at least one
-    /// confident principle was auto-saved. Stays until the next teach session
-    /// starts. Hidden during recording/analysing so it doesn't compete with
-    /// the live controls.
-    private var teachSessionSavedSummary: some View {
-        let savedCount = companionManager.lastTeachSessionSavedPrincipleCount
-        let principleNoun = savedCount == 1 ? "principle" : "principles"
-
-        return HStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(WarmPalette.statusGood)
-
-            Text("Saved \(savedCount) new \(principleNoun) to your taste")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(WarmPalette.textSecondary)
-
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(WarmPalette.statusGood.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .stroke(WarmPalette.statusGood.opacity(0.3), lineWidth: 0.5)
-        )
-    }
-
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? WarmPalette.textPrimary : WarmPalette.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? WarmPalette.surfaceTintStrong : Color.clear)
+    /// Status pill — paper card with a colored dot + label. The dot
+    /// gently breathes (opacity oscillation) while voice is active so
+    /// "I'm listening to you" is unmissable without being noisy.
+    private var statusPill: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusPillColor)
+                .frame(width: 6, height: 6)
+                .scaleEffect(isStatusDotPulsing && isVoiceActive ? 1.25 : 1.0)
+                .opacity(isStatusDotPulsing && isVoiceActive ? 0.65 : 1.0)
+                .animation(
+                    isVoiceActive
+                        ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+                        : .easeOut(duration: 0.2),
+                    value: isStatusDotPulsing
                 )
+
+            Text(statusText)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 0.18), value: statusText)
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
-    // MARK: - Footer
-
-    private var footerSection: some View {
-        HStack {
-            Button(action: {
-                NSApp.terminate(nil)
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "power")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Quit Sticky")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundColor(WarmPalette.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(ElevenLabsBrand.Colors.card))
+        .overlay(Capsule().stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1))
+        .onAppear { isStatusDotPulsing = true }
+        .onChange(of: isVoiceActive) { _ in
+            // Re-trigger the breathing loop when activity flips on/off.
+            isStatusDotPulsing.toggle()
         }
     }
 
-    // MARK: - Visual Helpers
-
-    private var panelBackground: some View {
-        // The actual translucent material, rounded mask, and hairline
-        // border are owned by the panel's `NSVisualEffectView` content
-        // view in `MenuBarPanelManager`. The SwiftUI background is
-        // therefore fully transparent so it doesn't paint anything on
-        // top of the AppKit material.
-        Color.clear
-    }
-
-    private var statusDotColor: Color {
-        if !companionManager.isOverlayVisible {
-            return WarmPalette.textTertiary
-        }
+    private var isVoiceActive: Bool {
+        guard companionManager.isOverlayVisible else { return false }
         switch companionManager.voiceState {
-        case .idle:
-            return WarmPalette.statusGood
-        case .listening:
-            return WarmPalette.accent
-        case .processing, .responding:
-            return WarmPalette.accent
+        case .listening, .processing, .responding: return true
+        case .idle: return false
         }
+    }
+
+    private var statusPillColor: Color {
+        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+            return ElevenLabsBrand.Colors.gradientCoral
+        }
+        return isVoiceActive
+            ? ElevenLabsBrand.Colors.gradientCoral
+            : ElevenLabsBrand.Colors.ink
     }
 
     private var statusText: String {
@@ -1198,155 +172,697 @@ struct CompanionPanelView: View {
             return "Ready"
         }
         switch companionManager.voiceState {
-        case .idle:
-            return "Active"
-        case .listening:
-            return "Listening"
-        case .processing:
-            return "Processing"
-        case .responding:
-            return "Responding"
+        case .idle:       return "Active"
+        case .listening:  return "Listening"
+        case .processing: return "Processing"
+        case .responding: return "Responding"
         }
     }
 
-}
+    // MARK: - Main Content (onboarded + permissions granted)
 
-// MARK: - Voice Picker Orb Row
+    private var mainContent: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
+            instructionEyebrow
 
-/// One row inside the voice picker popover. Renders a colored gradient
-/// orb on the leading edge so each voice has its own visual identity,
-/// the title and descriptor in the middle, an optional checkmark when
-/// the voice is currently selected, and a play/stop button for
-/// previewing without committing the selection.
-///
-/// Mirrors the layout/hover behavior of `DropdownRow` from the design
-/// system, but `DropdownRow`'s leading slot is an SF Symbol in a tinted
-/// circle — not the orb-style well we want here — so we don't reuse it.
-private struct VoicePickerOrbRow: View {
-    let title: String
-    let subtitle: String
-    let orbColor: Color
-    let isSelected: Bool
-    let isPreviewing: Bool
-    let onSelect: () -> Void
-    let onPreviewToggle: () -> Void
+            settingsGrid
 
-    @State private var isHovering = false
+            primaryActionRow
 
-    var body: some View {
-        // Intentionally NOT wrapped in a Button. SwiftUI doesn't route
-        // taps reliably between a parent `Button` and a child `Button`
-        // — the parent ends up capturing the play button's tap, which
-        // would commit the selection and dismiss the popover whenever
-        // the user just wanted to preview. Using `.onTapGesture` on the
-        // row + a real `Button` for the play control lets the inner
-        // button consume its own taps cleanly.
-        HStack(spacing: 10) {
-            voiceOrb
+            // Pending review surfaces (teach result card / review stack /
+            // saved summary) live below the action area so they don't push
+            // the primary controls around.
+            if let pendingTeachSessionReview = companionManager.pendingTeachSessionResult {
+                TeachSessionResultCard(
+                    companionManager: companionManager,
+                    pendingReview: pendingTeachSessionReview
+                )
+            } else if !companionManager.pendingAmbiguousMoments.isEmpty {
+                ReviewCardStack(companionManager: companionManager)
+            } else if companionManager.lastTeachSessionSavedPrincipleCount > 0
+                && companionManager.teachSessionState == .idle {
+                teachSessionSavedSummary
+            }
+
+            openChatLink
+
+            tasteLibraryLink
+
+            openDashboardLink
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.top, ElevenLabsBrand.Spacing.md)
+        .padding(.bottom, ElevenLabsBrand.Spacing.sm)
+    }
+
+    // MARK: - Dashboard Link
+
+    /// Opens the full Sticky Dashboard window — sidebar with Tastes,
+    /// Team, Profile, Recordings, Chats, Settings. The mini panel is
+    /// the quick HUD; the dashboard is where you actually manage
+    /// your taste, your team, and your profile.
+    private var openDashboardLink: some View {
+        Button(action: {
+            MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Open dashboard")
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundColor(ElevenLabsBrand.Colors.ink)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+        .pointerCursor()
+        .nativeTooltip("Personas, team, profile, recordings, chats, settings")
+    }
+
+    /// Eyebrow + bold instruction line. Uses SF Symbol glyphs for the
+    /// Control and Option modifier keys so the shortcut reads at a
+    /// glance the way it appears on the user's keyboard.
+    private var instructionEyebrow: some View {
+        let headline = Text("Hold ")
+            + Text(Image(systemName: "control"))
+            + Text(" + ")
+            + Text(Image(systemName: "option"))
+            + Text("\nto ask anything.")
+
+        return VStack(alignment: .leading, spacing: 4) {
+            ElevenLabsEyebrow("PUSH TO TALK")
+            headline
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 18))
+                .tracking(-0.3)
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Settings Grid
+    //
+    // Persona is the only setting that lives in the panel body. It
+    // doubles as the scope control: picking Me runs personal mode,
+    // picking Team runs pooled-team mode, picking a teammate borrows
+    // their lens entirely. A separate Personal/Team toggle would just
+    // duplicate state that CompanionManager already derives from the
+    // persona selection (see setPersonaSelection). Model lives in the
+    // footer as a discreet selector.
+
+    private var settingsGrid: some View {
+        VStack(spacing: ElevenLabsBrand.Spacing.sm) {
+            personaControl
+        }
+    }
+
+    /// Persona picker rendered as a standard dropdown. The trigger row
+    /// shows the active persona's avatar + name on the leading edge and
+    /// a chevron on the trailing edge. Tapping opens a native Menu with
+    /// Me + Team at the top and a Teammates section below — the persona
+    /// IS the scope, so no separate Personal/Team toggle is needed.
+    private var personaControl: some View {
+        let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
+            ?? PersonaStore.mePseudoPersona
+        let teammates = PersonaStore.availableTeammates
+
+        return HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+            Text("PERSONA")
+                .font(ElevenLabsBrand.Typography.eyebrow)
+                .tracking(0.4)
+                .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+
+            Spacer()
+
+            Menu {
+                personaMenuButton(persona: PersonaStore.mePseudoPersona)
+                personaMenuButton(persona: PersonaStore.teamPseudoPersona)
+                if !teammates.isEmpty {
+                    Divider()
+                    Section("Teammates") {
+                        ForEach(teammates, id: \.id) { teammate in
+                            personaMenuButton(persona: teammate)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    PersonaAvatarView(
+                        avatar: activePersonaBundle.avatar,
+                        diameter: 20
+                    )
+                    Text(activePersonaBundle.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerCursor()
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .fill(ElevenLabsBrand.Colors.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+        )
+    }
+
+    /// One row in the persona menu. Shows display name + role; selecting
+    /// it commits the persona via CompanionManager (which also keeps
+    /// tasteScope in sync for .me / .team).
+    @ViewBuilder
+    private func personaMenuButton(persona: PersonaBundle) -> some View {
+        Button(action: {
+            companionManager.setPersonaSelection(
+                PersonaStore.selectionForWheelPersona(persona)
+            )
+        }) {
+            if let role = persona.role, !role.isEmpty {
+                Text("\(persona.displayName) — \(role)")
+            } else {
+                Text(persona.displayName)
+            }
+        }
+    }
+
+    // MARK: - Primary Action Row
+    //
+    // Single black pill — the brand CTA — for Start/Stop/Analyzing.
+    // Replaces the previous full-width tinted button.
+
+    @ViewBuilder
+    private var primaryActionRow: some View {
+        switch companionManager.teachSessionState {
+        case .idle:
+            teachSessionStartButton
+        case .recording:
+            teachSessionRecordingButton
+        case .analyzing:
+            teachSessionAnalyzingPill
+        }
+    }
+
+    private var teachSessionStartButton: some View {
+        Button(action: {
+            companionManager.startTeachSession()
+        }) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(ElevenLabsBrand.Colors.gradientCoral)
+                    .frame(width: 8, height: 8)
+                Text("Start Teach Session")
+            }
+        }
+        .elevenLabsPrimaryButtonStyle()
+    }
+
+    private var teachSessionRecordingButton: some View {
+        Button(action: {
+            companionManager.stopTeachSession()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .bold))
+                Text("Stop")
+                Spacer()
+                Text(formatTeachSessionElapsed(companionManager.teachSessionElapsedSeconds))
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+            }
+            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        }
+        .elevenLabsPrimaryButtonStyle()
+    }
+
+    private var teachSessionAnalyzingPill: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.7)
+            Text("Reviewing your decisions…")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            Spacer()
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .fill(ElevenLabsBrand.Colors.paperRecessed)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+        )
+    }
+
+    private func formatTeachSessionElapsed(_ elapsedSeconds: Int) -> String {
+        let minutes = elapsedSeconds / 60
+        let seconds = elapsedSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    // MARK: - Saved summary
+
+    /// Subtle confirmation toast after a teach session if at least one
+    /// confident principle was auto-saved. Stays until the next teach
+    /// session starts.
+    private var teachSessionSavedSummary: some View {
+        let savedCount = companionManager.lastTeachSessionSavedPrincipleCount
+        let principleNoun = savedCount == 1 ? "principle" : "principles"
+
+        return HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+            Text("Saved \(savedCount) new \(principleNoun)")
+                .font(ElevenLabsBrand.Typography.bodyStrong)
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+            Spacer()
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .fill(ElevenLabsBrand.Colors.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Chat Link
+
+    /// Opens the floating chat window. Styled as a discreet text link to
+    /// match `tasteLibraryLink` so the two secondary destinations sit
+    /// quietly above the footer without competing with the primary CTA.
+    private var openChatLink: some View {
+        Button(action: {
+            MenuBarPanelManager.shared?.openChatWindow()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Open chat")
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundColor(ElevenLabsBrand.Colors.ink)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+        .pointerCursor()
+        .nativeTooltip("Chat with Sticky in a floating window")
+    }
+
+    // MARK: - Library Link
+
+    /// Demoted from a full-width tinted button to a discreet text link
+    /// sitting just above the footer. The library is a reference, not a
+    /// frequent destination — it shouldn't compete with the primary CTA.
+    private var tasteLibraryLink: some View {
+        Button(action: {
+            MenuBarPanelManager.shared?.openTasteLibraryWindow(
+                companionManager: companionManager
+            )
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("View memory library")
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundColor(ElevenLabsBrand.Colors.ink)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+        .pointerCursor()
+        .nativeTooltip("See every principle Sticky has learned")
+    }
+
+    // MARK: - Onboarding (permissions granted, email not yet submitted)
+
+    @ViewBuilder
+    private var onboardingContent: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                ElevenLabsEyebrow("ALMOST READY")
+                if !companionManager.hasSubmittedEmail {
+                    Text("Drop your email\nto get started.")
+                        .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                        .tracking(-0.3)
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("If I keep building this, I'll keep you in the loop.")
+                        .font(ElevenLabsBrand.Typography.body)
+                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                } else {
+                    Text("You're all set.\nHit Start to meet Sticky.")
+                        .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                        .tracking(-0.3)
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if !companionManager.hasSubmittedEmail {
+                emailInputCard
+
+                Button(action: {
+                    companionManager.submitEmail(emailInput)
+                }) {
+                    Text("Submit")
+                }
+                .elevenLabsPrimaryButtonStyle()
+                .disabled(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .opacity(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1.0)
+            } else {
+                Button(action: {
+                    companionManager.triggerOnboarding()
+                }) {
+                    Text("Start")
+                }
+                .elevenLabsPrimaryButtonStyle()
+            }
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.top, ElevenLabsBrand.Spacing.md)
+        .padding(.bottom, ElevenLabsBrand.Spacing.sm)
+    }
+
+    private var emailInputCard: some View {
+        TextField("you@email.com", text: $emailInput)
+            .textFieldStyle(.plain)
+            .font(ElevenLabsBrand.Typography.body)
+            .foregroundColor(ElevenLabsBrand.Colors.ink)
+            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+            .padding(.vertical, ElevenLabsBrand.Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .fill(ElevenLabsBrand.Colors.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+            )
+    }
+
+    // MARK: - Permissions
+
+    @ViewBuilder
+    private var permissionsContent: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                ElevenLabsEyebrow(
+                    companionManager.hasCompletedOnboarding
+                        ? "PERMISSIONS REVOKED"
+                        : "WELCOME"
+                )
+                Text(
+                    companionManager.hasCompletedOnboarding
+                        ? "Re-grant access\nto keep using Sticky."
+                        : "Grant access to\nmeet Sticky."
+                )
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                .tracking(-0.3)
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Text("Nothing runs in the background. Sticky only captures the screen when you press the hotkey.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
+
+            VStack(spacing: ElevenLabsBrand.Spacing.xs) {
+                permissionCard(
+                    label: "Microphone",
+                    iconSymbol: "mic",
+                    isGranted: companionManager.hasMicrophonePermission,
+                    onGrant: requestMicrophonePermission
+                )
+                permissionCard(
+                    label: "Accessibility",
+                    iconSymbol: "hand.raised",
+                    isGranted: companionManager.hasAccessibilityPermission,
+                    onGrant: { _ = WindowPositionManager.requestAccessibilityPermission() }
+                )
+                permissionCard(
+                    label: "Screen Recording",
+                    iconSymbol: "rectangle.dashed.badge.record",
+                    isGranted: companionManager.hasScreenRecordingPermission,
+                    helperText: companionManager.hasScreenRecordingPermission
+                        ? nil
+                        : "Quit and reopen after granting",
+                    onGrant: { _ = WindowPositionManager.requestScreenRecordingPermission() }
+                )
+                if companionManager.hasScreenRecordingPermission {
+                    permissionCard(
+                        label: "Screen Content",
+                        iconSymbol: "eye",
+                        isGranted: companionManager.hasScreenContentPermission,
+                        onGrant: { companionManager.requestScreenContentPermission() }
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.top, ElevenLabsBrand.Spacing.md)
+        .padding(.bottom, ElevenLabsBrand.Spacing.sm)
+    }
+
+    /// One permission item rendered as a paper card. Granted state shows
+    /// an ink check; ungranted state shows a black-pill Grant button on
+    /// the trailing edge.
+    private func permissionCard(
+        label: String,
+        iconSymbol: String,
+        isGranted: Bool,
+        helperText: String? = nil,
+        onGrant: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+            Image(systemName: iconSymbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(
+                    isGranted
+                        ? ElevenLabsBrand.Colors.ink
+                        : ElevenLabsBrand.Colors.gradientCoral
+                )
+                .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.primary)
-
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                Text(label)
+                    .font(ElevenLabsBrand.Typography.bodyStrong)
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                if let helperText, !helperText.isEmpty {
+                    Text(helperText)
+                        .font(ElevenLabsBrand.Typography.caption)
+                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                }
             }
 
-            Spacer(minLength: 8)
+            Spacer()
 
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(WarmPalette.accent)
+            if isGranted {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    .transition(.scale.combined(with: .opacity))
+            } else {
+                Button(action: onGrant) {
+                    Text("Grant")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.onAccent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(ElevenLabsBrand.Colors.inkPure))
+                }
+                .buttonStyle(InteractivePressStyle(pressScale: 0.92))
+                .pointerCursor()
             }
-
-            previewButton
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+        .padding(.vertical, ElevenLabsBrand.Spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isHovering ? WarmPalette.surfaceTint : .clear)
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .fill(ElevenLabsBrand.Colors.card)
         )
-        .padding(.horizontal, 6)
-        // Hit area for "select this voice" — the play button sits on
-        // top of this and intercepts its own tap area before it reaches
-        // the gesture.
-        .contentShape(Rectangle())
-        .onTapGesture { onSelect() }
-        .pointerCursor()
-        .onHover { hovering in isHovering = hovering }
+        .overlay(
+            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+        )
     }
 
-    /// Glossy gradient orb that gives each voice its own visual identity.
-    /// A radial highlight in the upper-left + a hairline white edge sells
-    /// the "physical sphere" feel against the dark menu material. Sized
-    /// to 28pt so it lines up with `DropdownRow`'s standard icon-well
-    /// slot — keeps the row height consistent with other panel sections.
-    private var voiceOrb: some View {
-        ZStack {
-            // Soft outer glow — only visible against the translucent
-            // dark menu material; on light backgrounds it fades to
-            // nearly nothing, which is fine.
-            Circle()
-                .fill(orbColor.opacity(0.32))
-                .frame(width: 30, height: 30)
-                .blur(radius: 4)
-
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            orbColor.opacity(1.0),
-                            orbColor.opacity(0.78),
-                            orbColor.opacity(0.62)
-                        ],
-                        center: UnitPoint(x: 0.32, y: 0.28),
-                        startRadius: 1,
-                        endRadius: 16
-                    )
-                )
-                .frame(width: 22, height: 22)
-                .overlay(
-                    // Specular highlight + hairline edge sell the orb as
-                    // a physical sphere instead of a flat disc.
-                    Circle()
-                        .stroke(Color.white.opacity(0.22), lineWidth: 0.6)
-                )
-                .overlay(
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.35), .clear],
-                                startPoint: .topLeading,
-                                endPoint: .center
-                            )
-                        )
-                        .frame(width: 9, height: 6)
-                        .offset(x: -3.5, y: -4)
-                        .blur(radius: 1)
-                )
+    private func requestMicrophonePermission() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        if status == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        } else {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(url)
+            }
         }
-        .frame(width: 28, height: 28)
     }
 
-    private var previewButton: some View {
-        Button(action: onPreviewToggle) {
-            Image(systemName: isPreviewing ? "stop.fill" : "play.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 22, height: 22)
-                .background(
-                    Circle()
-                        .fill(isPreviewing ? Color(NSColor.systemRed) : WarmPalette.accent)
-                )
+    // MARK: - Footer
+
+    private var footerSection: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(ElevenLabsBrand.Colors.hairline)
+                .frame(height: 1)
+
+            HStack(spacing: ElevenLabsBrand.Spacing.md) {
+                modelFooterMenu
+
+                Spacer()
+
+                Button(action: {
+                    NSApp.terminate(nil)
+                }) {
+                    Text("Quit Sticky")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+            .padding(.vertical, 10)
         }
-        .buttonStyle(.plain)
+    }
+
+    /// Compact model picker living in the footer. Power users can switch
+    /// between Haiku / Sonnet / Opus, but the control no longer competes
+    /// for attention with persona / scope / the primary CTA. Renders as
+    /// a discreet text+chevron menu trigger styled like "Quit Sticky".
+    private var modelFooterMenu: some View {
+        let modelDisplayName: String = {
+            switch companionManager.selectedModel {
+            case "claude-haiku-4-5-20251001": return "Haiku"
+            case "claude-sonnet-4-6":         return "Sonnet"
+            case "claude-opus-4-6":           return "Opus"
+            default:                          return "Model"
+            }
+        }()
+
+        return Menu {
+            Button("Haiku — fastest")  { companionManager.setSelectedModel("claude-haiku-4-5-20251001") }
+            Button("Sonnet — balanced") { companionManager.setSelectedModel("claude-sonnet-4-6") }
+            Button("Opus — smartest")  { companionManager.setSelectedModel("claude-opus-4-6") }
+        } label: {
+            HStack(spacing: 4) {
+                Text("Model: \(modelDisplayName)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
         .pointerCursor()
-        .nativeTooltip(isPreviewing ? "Stop preview" : "Preview voice")
+        .nativeTooltip("Switch the Claude model that powers Sticky")
+    }
+
+    // MARK: - Visual Helpers
+
+    private var panelBackground: some View {
+        // The actual rounded mask, paper fill, and hairline border are
+        // owned by `WarmDropdownBackgroundView` (now a paper surface).
+        // SwiftUI background is fully transparent so it doesn't paint
+        // anything on top of the AppKit layer.
+        Color.clear
     }
 }
 
+// MARK: - Sticky Orb Glyph
+//
+// SwiftUI rendering of the same flat-bottomed orb silhouette used in
+// the menu bar (`makeStickyMenuBarIcon` in MenuBarPanelManager): a
+// circle with its lower portion cut by a horizontal chord, so the
+// glyph reads as "an orb sitting on a surface". Implemented as a
+// `Shape` so it scales cleanly and respects the parent's color.
+
+struct StickyOrbShape: Shape {
+    /// Fraction of the orb's radius that the flat base sits below
+    /// center. ~0.65 leaves most of the sphere visible while still
+    /// clearly reading as flat-bottomed. Matches the menu-bar glyph.
+    var chordOffsetFraction: CGFloat = 0.65
+
+    func path(in rect: CGRect) -> Path {
+        // The orb fills 85% of the bounding box on the shorter axis so
+        // the antialiased edge isn't clipped and there's a hint of
+        // breathing room around the glyph.
+        let orbDiameter = min(rect.width, rect.height) * 0.92
+        let radius = orbDiameter / 2
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+
+        let chordOffset = radius * chordOffsetFraction
+        let halfChord = sqrt(max(0, radius * radius - chordOffset * chordOffset))
+
+        // SwiftUI uses y-down coordinates, so "below center" = larger y.
+        let chordY = center.y + chordOffset
+        let leftChordEnd = CGPoint(x: center.x - halfChord, y: chordY)
+        let rightChordEnd = CGPoint(x: center.x + halfChord, y: chordY)
+
+        // Angle (in SwiftUI's y-down convention) from the center to
+        // the right chord endpoint. Mirroring across the y-axis gives
+        // the left chord endpoint angle.
+        let rightAngle = Angle(radians: atan2(chordY - center.y, halfChord))
+        let leftAngle = Angle(degrees: 180 - rightAngle.degrees)
+
+        var path = Path()
+        path.move(to: rightChordEnd)
+        // Trace the arc the long way around — over the top of the
+        // circle — to reach the left chord endpoint. With y-down
+        // coordinates, that's `clockwise: true` in SwiftUI's API.
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: rightAngle,
+            endAngle: leftAngle,
+            clockwise: true
+        )
+        path.addLine(to: leftChordEnd)
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Convenience view wrapping `StickyOrbShape` with a fixed size + fill
+/// color. Use this as the brand mark inside SwiftUI views (panel
+/// header, onboarding hero, etc.).
+struct StickyOrbGlyph: View {
+    var size: CGFloat = 16
+    var color: Color = .black
+
+    var body: some View {
+        StickyOrbShape()
+            .fill(color)
+            .frame(width: size, height: size)
+    }
+}

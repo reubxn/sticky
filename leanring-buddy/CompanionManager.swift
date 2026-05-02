@@ -177,10 +177,17 @@ final class CompanionManager: ObservableObject {
 
     /// Color used everywhere "you" are visually represented — the bottom
     /// edge glow when you hold push-to-talk, the all-edges halo while a
-    /// teach session is recording, etc. Fixed for now (matches today's
-    /// blue cursor); a future preference could let the user pick their
-    /// own hue.
-    static let userVoiceColor: Color = DS.Colors.overlayCursorBlue
+    /// teach session is recording, etc. Always the cursor blue: the user's
+    /// own voice is a fixed identity in the UI, regardless of which
+    /// persona they're currently talking *to*. The persona's accent only
+    /// shows up on the reply side (`stickyVoiceColor`) so the bottom
+    /// (user) and top (persona) edges read as two distinct identities
+    /// during a back-and-forth.
+    static let defaultUserVoiceColor: Color = DS.Colors.overlayCursorBlue
+
+    var userVoiceColor: Color {
+        return Self.defaultUserVoiceColor
+    }
 
     /// Color used everywhere Sticky is visually represented — the cursor
     /// itself, the response speech bubbles, the top edge glow while Sticky
@@ -197,6 +204,21 @@ final class CompanionManager: ObservableObject {
             return teammate.accentColor
         }
         return Self.voiceColor(forVoiceID: selectedVoiceID)
+    }
+
+    /// Color used specifically for the *top* edge glow when the persona
+    /// is replying. Always sourced from the active persona's accent
+    /// color — the same hex shown on that persona's spoke in the
+    /// shift+cmd wheel — so switching persona on the wheel and seeing
+    /// the reply glow are visually consistent. Distinct from
+    /// `stickyVoiceColor` (cursor / bubble) so changing the persona
+    /// doesn't recolor the cursor itself; only the reply-side edge
+    /// glow shifts to identify *which persona* is talking.
+    var personaReplyEdgeGlowColor: Color {
+        if let activePersona = PersonaStore.wheelPersonaForSelection(personaSelection) {
+            return activePersona.accentColor
+        }
+        return stickyVoiceColor
     }
 
     /// Default Sticky color used when no voice override is selected (i.e.
@@ -419,6 +441,15 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var personaSelection: PersonaSelection = {
         if let rawValue = UserDefaults.standard.string(forKey: "personaSelection"),
            let storedSelection = PersonaSelection.fromPersistenceKey(rawValue) {
+            // If the stored selection points at a teammate that no longer
+            // exists in the wheel (e.g. Reuban — who is now folded into
+            // `.me` — or a teammate that's been removed since the
+            // preference was written), fall back to `.me` so the user
+            // doesn't end up with an inert persona on launch.
+            if case .teammate(let id) = storedSelection,
+               PersonaStore.teammate(withId: id) == nil {
+                return .me
+            }
             return storedSelection
         }
         return .me
@@ -431,8 +462,23 @@ final class CompanionManager: ObservableObject {
     /// tasteScope alone — the teammate's bundle replaces both scope and
     /// taste anyway.
     func setPersonaSelection(_ newSelection: PersonaSelection) {
+        let isActuallyChangingPersona = (newSelection != personaSelection)
+
         personaSelection = newSelection
         UserDefaults.standard.set(newSelection.persistenceKey, forKey: "personaSelection")
+
+        // Switching personas should feel like starting a fresh conversation
+        // with a different person — the new persona should NOT see what the
+        // previous one just said. Wipe the rolling voice conversation
+        // history (and cancel any in-flight response from the old persona)
+        // so the next push-to-talk press starts the new persona on a blank
+        // slate.
+        if isActuallyChangingPersona {
+            conversationHistory.removeAll()
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            print("🧠 Persona changed → cleared conversation history")
+        }
 
         switch newSelection {
         case .me:
@@ -461,9 +507,19 @@ final class CompanionManager: ObservableObject {
 
     /// The avatar Sticky's cursor should render right now, or nil to
     /// keep the default colored orb. Returns the active teammate's
-    /// avatar when one is active; nil for `.me` / `.team`.
+    /// avatar when one is active, and the pseudo-persona's SF Symbol
+    /// avatar (`person.fill` / `person.2.fill`) for `.me` / `.team` so
+    /// every persona selection shows a recognisable face on the cursor
+    /// instead of a generic colored orb.
     var activePersonaAvatar: PersonaAvatar? {
-        return activeTeammateBundle?.avatar
+        switch personaSelection {
+        case .me:
+            return PersonaStore.mePseudoPersona.avatar
+        case .team:
+            return PersonaStore.teamPseudoPersona.avatar
+        case .teammate:
+            return activeTeammateBundle?.avatar
+        }
     }
 
     // MARK: - Reverse Clicky: Persona Wheel
