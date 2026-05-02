@@ -274,6 +274,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
+    /// Holds audio frames captured between the audio engine starting and
+    /// the transcription session being adopted. See `startRecognitionSession`
+    /// for why this exists. Recreated per session.
+    private var preSessionAudioBufferStore: PreSessionAudioBufferStore?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
     private var draftTextBeforeCurrentDictation = ""
@@ -298,6 +302,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
+    }
+
+    /// Forwards to the underlying transcription provider so the next
+    /// streaming session opens faster. Cheap and idempotent — the provider
+    /// guards against duplicate fetches when a fresh credential is already
+    /// cached.
+    func prewarmTranscriptionCredentialsIfNeeded() {
+        transcriptionProvider.prewarmCredentialsIfNeeded()
     }
 
     func startPersistentDictationFromMicrophoneButton(
@@ -551,9 +563,67 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
-        print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
+        // 1. Spin up the mic IMMEDIATELY so the user's voice is captured
+        //    from the moment they pressed the key. Audio frames captured
+        //    before the transcription session is open are deposited into
+        //    `preSessionAudioBufferStore`; once the session is ready (step
+        //    3 below), buffered frames are flushed to it in capture order
+        //    and subsequent tap callbacks route directly to the live
+        //    session. This is what removes the "press-and-hold-1.5s-
+        //    before-it-listens" gap that comes from awaiting the
+        //    AssemblyAI websocket handshake before starting the mic.
+        let preSessionAudioBufferStore = PreSessionAudioBufferStore()
+        self.preSessionAudioBufferStore = preSessionAudioBufferStore
 
-        let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
+        let inputNode = audioEngine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] tapAudioBuffer, _ in
+            // The audio tap fires on a CoreAudio background thread. The
+            // buffer-store routes to the live session if adopted, or
+            // makes a defensive copy and queues otherwise (the original
+            // buffer is owned by the audio node and reused after the
+            // closure returns, so we can't hold the original).
+            preSessionAudioBufferStore.routeOrBufferTapAudio(tapAudioBuffer)
+            self?.updateAudioPowerLevel(from: tapAudioBuffer)
+        }
+
+        audioEngine.prepare()
+        try audioEngine.start()
+        print("🎙️ BuddyDictationManager: audio engine running, opening transcription provider \(transcriptionProvider.displayName)")
+
+        // 2. Open the transcription session in parallel with audio capture.
+        //    Tap callbacks fire during this `await` and queue audio frames.
+        //    If the open throws, we have to tear down the audio engine
+        //    ourselves — we already started it above, and the upstream
+        //    catch in `startPushToTalk` doesn't know about that.
+        let activeTranscriptionSession: any BuddyStreamingTranscriptionSession
+        do {
+            activeTranscriptionSession = try await openStreamingSession()
+        } catch {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+            self.preSessionAudioBufferStore = nil
+            throw error
+        }
+
+        self.activeTranscriptionSession = activeTranscriptionSession
+
+        // 3. Atomically flush queued audio onto the session and switch the
+        //    buffer store into live-routing mode. The lock inside
+        //    `adoptLiveSession` is held during the flush so no concurrent
+        //    tap callback can sneak a "live" frame ahead of the buffered
+        //    ones in the session's send queue.
+        preSessionAudioBufferStore.adoptLiveSession(activeTranscriptionSession)
+        print("🎙️ BuddyDictationManager: session ready, audio routing live")
+    }
+
+    /// Wraps the provider's `startStreamingSession` call with the standard
+    /// transcript / final / error callbacks. Pulled out so the caller can
+    /// wrap the `await` in its own do/catch for audio-engine cleanup.
+    private func openStreamingSession() async throws -> any BuddyStreamingTranscriptionSession {
+        try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
@@ -578,21 +648,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 }
             }
         )
-
-        self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
-
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
-            self?.updateAudioPowerLevel(from: buffer)
-        }
-
-        audioEngine.prepare()
-        try audioEngine.start()
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -639,6 +694,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
 
         resetSessionState()
+
+        // Pre-fetch the next session's per-session credential (e.g. the
+        // AssemblyAI temp token) in the background. By the time the user
+        // presses again the token is already cached, shaving 100-200ms off
+        // the press-to-listening latency.
+        transcriptionProvider.prewarmCredentialsIfNeeded()
 
         guard shouldSubmitFinalDraft else { return }
 
@@ -909,5 +970,110 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
 
         return fallback
+    }
+}
+
+// MARK: - Pre-session audio buffer
+
+/// Holds audio frames captured between the audio engine starting and the
+/// transcription session being open. Lets us start the mic immediately on
+/// key-down and overlap audio capture with the websocket handshake instead
+/// of running them serially.
+///
+/// Thread-safe. The audio tap runs on a CoreAudio background thread; the
+/// `adoptLiveSession(_:)` call comes from the main actor when the session
+/// becomes ready. A single `NSLock` mediates between them. The audio tap
+/// is single-threaded per node so concurrent tap callbacks are not a
+/// concern — the only contention is tap-thread vs. main-thread.
+private final class PreSessionAudioBufferStore {
+    private let stateAccessLock = NSLock()
+    private var bufferedAudioFrameCopies: [AVAudioPCMBuffer] = []
+    private var liveTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
+
+    /// Called from the audio tap on a background thread. If a live session
+    /// has been adopted, forwards the buffer directly. Otherwise makes a
+    /// defensive copy of the buffer (the original is owned by the audio
+    /// node and reused after the closure returns) and queues it for later.
+    func routeOrBufferTapAudio(_ tapAudioBuffer: AVAudioPCMBuffer) {
+        stateAccessLock.lock()
+        if let liveTranscriptionSession {
+            stateAccessLock.unlock()
+            liveTranscriptionSession.appendAudioBuffer(tapAudioBuffer)
+            return
+        }
+        // Buffer for later. We must copy because AVAudioNode owns the
+        // buffer storage and may reuse it after this closure returns.
+        if let copiedAudioBuffer = Self.copyAudioBuffer(tapAudioBuffer) {
+            bufferedAudioFrameCopies.append(copiedAudioBuffer)
+        }
+        stateAccessLock.unlock()
+    }
+
+    /// Flushes all buffered audio frames onto `liveSession` in capture
+    /// order, then switches the store into live-routing mode. Subsequent
+    /// `routeOrBufferTapAudio` calls forward directly to the session.
+    /// The lock is held during the flush so concurrent tap callbacks block
+    /// and can't enqueue a "live" frame ahead of the buffered ones.
+    func adoptLiveSession(_ liveSession: any BuddyStreamingTranscriptionSession) {
+        stateAccessLock.lock()
+        defer { stateAccessLock.unlock() }
+        for bufferedAudioFrame in bufferedAudioFrameCopies {
+            liveSession.appendAudioBuffer(bufferedAudioFrame)
+        }
+        bufferedAudioFrameCopies.removeAll()
+        liveTranscriptionSession = liveSession
+    }
+
+    /// Copies an AVAudioPCMBuffer's frame data into a new buffer with the
+    /// same format. Required because the audio tap's buffer is owned and
+    /// reused by AVAudioNode — we can't hold the original past the closure.
+    /// Handles float32, int16, and int32 channel layouts (the only formats
+    /// the macOS mic input is likely to deliver). Returns nil if the
+    /// buffer's underlying storage isn't one of those.
+    private static func copyAudioBuffer(_ originalAudioBuffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copiedBuffer = AVAudioPCMBuffer(
+            pcmFormat: originalAudioBuffer.format,
+            frameCapacity: originalAudioBuffer.frameLength
+        ) else {
+            return nil
+        }
+        copiedBuffer.frameLength = originalAudioBuffer.frameLength
+        let channelCount = Int(originalAudioBuffer.format.channelCount)
+        let frameCount = Int(originalAudioBuffer.frameLength)
+
+        if let sourceFloatChannelData = originalAudioBuffer.floatChannelData,
+           let destinationFloatChannelData = copiedBuffer.floatChannelData {
+            for channelIndex in 0..<channelCount {
+                memcpy(
+                    destinationFloatChannelData[channelIndex],
+                    sourceFloatChannelData[channelIndex],
+                    frameCount * MemoryLayout<Float>.size
+                )
+            }
+            return copiedBuffer
+        }
+        if let sourceInt16ChannelData = originalAudioBuffer.int16ChannelData,
+           let destinationInt16ChannelData = copiedBuffer.int16ChannelData {
+            for channelIndex in 0..<channelCount {
+                memcpy(
+                    destinationInt16ChannelData[channelIndex],
+                    sourceInt16ChannelData[channelIndex],
+                    frameCount * MemoryLayout<Int16>.size
+                )
+            }
+            return copiedBuffer
+        }
+        if let sourceInt32ChannelData = originalAudioBuffer.int32ChannelData,
+           let destinationInt32ChannelData = copiedBuffer.int32ChannelData {
+            for channelIndex in 0..<channelCount {
+                memcpy(
+                    destinationInt32ChannelData[channelIndex],
+                    sourceInt32ChannelData[channelIndex],
+                    frameCount * MemoryLayout<Int32>.size
+                )
+            }
+            return copiedBuffer
+        }
+        return nil
     }
 }

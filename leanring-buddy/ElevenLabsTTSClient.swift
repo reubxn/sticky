@@ -26,7 +26,7 @@ struct ElevenLabsFreeVoice: Identifiable, Equatable {
 }
 
 @MainActor
-final class ElevenLabsTTSClient: ObservableObject {
+final class ElevenLabsTTSClient: NSObject, ObservableObject {
     /// The curated set of free default voices users can pick between in
     /// the menu bar dropdown. Limited to ElevenLabs' free-tier defaults
     /// so any account can use them without buying voice clones.
@@ -77,11 +77,44 @@ final class ElevenLabsTTSClient: ObservableObject {
     /// playback stops so we don't keep the run loop awake unnecessarily.
     private var meteringTimer: Timer?
 
-    init() {
+    // MARK: - Chained playback (for sentence-streamed TTS)
+    //
+    // The companion response pipeline streams Claude's reply sentence-by-
+    // sentence and fires an ElevenLabs fetch per sentence in parallel.
+    // To keep audio playing in order with no gaps, we maintain a queue of
+    // ready-to-play mpeg byte payloads here and chain playback via
+    // AVAudioPlayerDelegate so the next segment kicks in the moment the
+    // previous one finishes.
+
+    /// Queue of audio segments waiting to play. Front is played first.
+    private var pendingAudioDataQueue: [Data] = []
+
+    /// True while the chain driver is actively cycling through queued audio.
+    /// Prevents a duplicate driver from being started when a new segment is
+    /// enqueued mid-playback.
+    private var isPlaybackChainActive: Bool = false
+
+    /// Fires the first time a player from the current chain begins playing.
+    /// The companion uses this to flip `voiceState` to `.responding` at the
+    /// exact moment the user starts hearing audio. Cleared after invocation.
+    private var onFirstPlaybackStarted: (() -> Void)?
+
+    /// Continuations parked on `awaitPlaybackChainComplete()`. Resumed when
+    /// the queue drains or playback is forcibly stopped.
+    private var playbackChainCompletionContinuations: [CheckedContinuation<Void, Never>] = []
+
+    /// Bumped every time `stopPlayback()` runs so any in-flight fetch tasks
+    /// from the previous response can't pollute a new chain. Callers fetch
+    /// the active epoch via `resetPlaybackChain` and pass it back to
+    /// `enqueueAudioData(_:forEpoch:)` — stale enqueues are silently dropped.
+    private var currentPlaybackEpoch: Int = 0
+
+    override init() {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: configuration)
+        super.init()
     }
 
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
@@ -90,6 +123,17 @@ final class ElevenLabsTTSClient: ObservableObject {
     /// per-call without changing the bundled secrets.plist default; pass
     /// nil to fall back to the plist value.
     func speakText(_ text: String, overrideVoiceID: String? = nil) async throws {
+        let audioData = try await fetchAudioData(text, overrideVoiceID: overrideVoiceID)
+        try Task.checkCancellation()
+        try playAudioData(audioData)
+    }
+
+    /// Calls ElevenLabs and returns the raw mpeg audio bytes for the
+    /// given `text`/`overrideVoiceID` without playing them. Used by
+    /// `VoicePreviewCache` to download and persist the per-voice
+    /// "Hey, it's Sticky!" preview clips so subsequent previews play
+    /// instantly from disk and don't burn API quota.
+    func fetchAudioData(_ text: String, overrideVoiceID: String? = nil) async throws -> Data {
         guard let apiKey = AppBundleConfiguration.stringValue(forKey: "ELEVENLABS_API_KEY") else {
             throw NSError(domain: "ElevenLabsTTS", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Missing ELEVENLABS_API_KEY in secrets.plist"])
@@ -138,8 +182,14 @@ final class ElevenLabsTTSClient: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
 
-        try Task.checkCancellation()
+        return data
+    }
 
+    /// Plays already-fetched mpeg audio bytes through the same player +
+    /// metering pipeline as a live `speakText` call. Used by the voice
+    /// preview cache so a cached clip behaves identically (waveform,
+    /// power-level glow, etc.) to a freshly streamed one.
+    func playAudioData(_ data: Data) throws {
         let player = try AVAudioPlayer(data: data)
         // Metering must be enabled before play() — `averagePower` returns
         // -160dB until `updateMeters()` is called against an enabled
@@ -156,12 +206,103 @@ final class ElevenLabsTTSClient: ObservableObject {
         audioPlayer?.isPlaying ?? false
     }
 
-    /// Stops any in-progress playback immediately.
+    /// True while audio is actively playing OR more segments are queued OR
+    /// the chain driver is mid-advance. Used by callers (e.g. transient-
+    /// hide scheduling) that need to wait until the entire response has
+    /// finished, not just the currently-playing segment.
+    var isProducingAudio: Bool {
+        isPlaybackChainActive || isPlaying || !pendingAudioDataQueue.isEmpty
+    }
+
+    /// Stops any in-progress playback immediately. Also drains any queued
+    /// segments and resumes everyone parked on `awaitPlaybackChainComplete`
+    /// so they don't deadlock waiting for a chain that will never advance.
+    /// Bumps `currentPlaybackEpoch` so any in-flight ElevenLabs fetches
+    /// from the previous response can't slip into a new chain.
     func stopPlayback() {
+        currentPlaybackEpoch += 1
+        // Clear the delegate first so a stop() that triggers
+        // audioPlayerDidFinishPlaying doesn't sneak in an extra advance.
+        audioPlayer?.delegate = nil
         audioPlayer?.stop()
         audioPlayer = nil
+        pendingAudioDataQueue.removeAll()
+        isPlaybackChainActive = false
+        onFirstPlaybackStarted = nil
+        let parkedContinuations = playbackChainCompletionContinuations
+        playbackChainCompletionContinuations.removeAll()
+        for continuation in parkedContinuations {
+            continuation.resume()
+        }
         stopMeteringTimer()
         currentPowerLevel = 0
+    }
+
+    /// Resets the chained-playback queue and registers a closure to fire on
+    /// first playback start. Returns the epoch that callers must pass back
+    /// to `enqueueAudioData(_:forEpoch:)` for any audio they want played in
+    /// THIS chain — enqueues from a previous epoch are silently ignored,
+    /// which keeps cancellation clean when the user interrupts mid-response.
+    @discardableResult
+    func resetPlaybackChain(onFirstPlaybackStart: @escaping () -> Void) -> Int {
+        stopPlayback()
+        onFirstPlaybackStarted = onFirstPlaybackStart
+        return currentPlaybackEpoch
+    }
+
+    /// Appends an mpeg audio payload to the chained-playback queue. Starts
+    /// the chain driver if it's idle. Stale enqueues (mismatched epoch) are
+    /// dropped — the previous response's leftover fetches can't bleed into
+    /// the new one.
+    func enqueueAudioData(_ audioData: Data, forEpoch epoch: Int) {
+        guard epoch == currentPlaybackEpoch else { return }
+        pendingAudioDataQueue.append(audioData)
+        if !isPlaybackChainActive {
+            isPlaybackChainActive = true
+            advancePlaybackChain()
+        }
+    }
+
+    /// Awaits the queue draining (audio fully finished playing). Returns
+    /// immediately if nothing is queued and nothing is playing.
+    func awaitPlaybackChainComplete() async {
+        guard isProducingAudio else { return }
+        await withCheckedContinuation { continuation in
+            playbackChainCompletionContinuations.append(continuation)
+        }
+    }
+
+    /// Pops the next queued segment and starts playback. When playback
+    /// finishes (via the AVAudioPlayerDelegate callback) the chain calls
+    /// itself again until the queue is empty.
+    private func advancePlaybackChain() {
+        guard !pendingAudioDataQueue.isEmpty else {
+            isPlaybackChainActive = false
+            let parkedContinuations = playbackChainCompletionContinuations
+            playbackChainCompletionContinuations.removeAll()
+            for continuation in parkedContinuations {
+                continuation.resume()
+            }
+            return
+        }
+        let nextAudioData = pendingAudioDataQueue.removeFirst()
+        do {
+            let player = try AVAudioPlayer(data: nextAudioData)
+            player.isMeteringEnabled = true
+            player.delegate = self
+            self.audioPlayer = player
+            player.play()
+            startMeteringTimer()
+            print("🔊 ElevenLabs TTS: playing chained \(nextAudioData.count / 1024)KB segment (\(pendingAudioDataQueue.count) queued behind it)")
+
+            if let onFirstPlaybackStartedCallback = onFirstPlaybackStarted {
+                onFirstPlaybackStarted = nil
+                onFirstPlaybackStartedCallback()
+            }
+        } catch {
+            print("⚠️ Chained TTS segment failed to play: \(error); skipping")
+            advancePlaybackChain()
+        }
     }
 
     /// Starts the 50Hz metering poll. Safe to call multiple times — any
@@ -214,5 +355,17 @@ final class ElevenLabsTTSClient: ObservableObject {
         // utterance don't make the aurora flicker.
         let smoothedLevel = max(boostedLevel, currentPowerLevel * 0.72)
         currentPowerLevel = smoothedLevel
+    }
+}
+
+extension ElevenLabsTTSClient: AVAudioPlayerDelegate {
+    /// Called by AVFoundation on a private background thread when a queued
+    /// segment finishes playing. We hop to the main actor and let the chain
+    /// driver pop the next segment so audio kicks in with no perceptible
+    /// gap between sentences.
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.advancePlaybackChain()
+        }
     }
 }
