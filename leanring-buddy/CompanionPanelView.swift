@@ -719,10 +719,29 @@ struct CompanionPanelView: View {
     // MARK: - Visual Helpers
 
     private var panelBackground: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(DS.Colors.background)
-            .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 10)
-            .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
+        // Apple's native menu-bar dropdowns use a behind-window blur with
+        // the system "menu" material. Render that through NSVisualEffectView
+        // (SwiftUI's `.ultraThinMaterial` doesn't blur what's behind the
+        // window — only what's behind it within the window). The view is
+        // clipped to a continuous rounded rectangle to match a popover, and
+        // a hairline inner stroke gives the same subtle edge Apple draws.
+        ZStack {
+            MenuBarBlurBackground(material: .menu, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            // Very subtle dark tint so the dark Clicky panel content keeps
+            // its character on top of the blurred desktop. Kept low so the
+            // translucency still reads clearly.
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(DS.Colors.background.opacity(0.35))
+
+            // Hairline border — same idea Apple uses on popovers/menus to
+            // separate the translucent surface from whatever is behind it.
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.18), radius: 3, x: 0, y: 1)
     }
 
     private var statusDotColor: Color {
