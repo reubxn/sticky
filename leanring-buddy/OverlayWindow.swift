@@ -70,6 +70,34 @@ struct Triangle: Shape {
     }
 }
 
+private struct SphereCursorView: View {
+    let flightScale: CGFloat
+
+    var body: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        Color.white.opacity(0.95),
+                        DS.Colors.blue200.opacity(0.9),
+                        DS.Colors.overlayCursorBlue.opacity(0.72),
+                        DS.Colors.blue800.opacity(0.2)
+                    ],
+                    center: UnitPoint(x: 0.34, y: 0.28),
+                    startRadius: 1,
+                    endRadius: 12
+                )
+            )
+            .frame(width: 20, height: 20)
+            .overlay(
+                Circle()
+                    .stroke(Color.white.opacity(0.35), lineWidth: 0.8)
+            )
+            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.7), radius: 10 + (flightScale - 1.0) * 22, x: 0, y: 0)
+            .shadow(color: DS.Colors.blue200.opacity(0.35), radius: 4, x: -1, y: -1)
+    }
+}
+
 // PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
@@ -308,7 +336,7 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && !companionManager.sphereMode.usesTasteEngine && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -321,6 +349,18 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
+
+            SphereCursorView(flightScale: buddyFlightScale)
+                .scaleEffect(buddyFlightScale)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.sphereMode.usesTasteEngine && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .position(cursorPosition)
+                .animation(
+                    buddyNavigationMode == .followingCursor
+                        ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
+                        : nil,
+                    value: cursorPosition
+                )
+                .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
 
             // Blue waveform — replaces the triangle while listening
             BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
@@ -805,6 +845,11 @@ class OverlayWindowManager {
             overlayWindows.append(window)
             window.orderFrontRegardless()
         }
+    }
+
+    func updateCompanionMode(companionManager: CompanionManager) {
+        guard isShowingOverlay() else { return }
+        showOverlay(onScreens: NSScreen.screens, companionManager: companionManager)
     }
 
     func hideOverlay() {

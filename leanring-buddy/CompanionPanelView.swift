@@ -29,7 +29,19 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
+                sphereModePickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 10)
+
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 10)
+
+                tasteEngineStatusRow
                     .padding(.horizontal, 16)
             }
 
@@ -79,6 +91,11 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .onAppear {
+            if companionManager.sphereMode.usesTasteEngine {
+                companionManager.refreshTasteEngineStatus()
+            }
+        }
     }
 
     // MARK: - Header
@@ -597,6 +614,98 @@ struct CompanionPanelView: View {
     }
 
     // MARK: - Model Picker
+
+    private var sphereModePickerRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sphere Mode")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Text(companionManager.sphereMode.shortDescription)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            HStack(spacing: 0) {
+                ForEach(SphereMode.allCases) { sphereMode in
+                    sphereModeOptionButton(sphereMode)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func sphereModeOptionButton(_ sphereMode: SphereMode) -> some View {
+        let isSelected = companionManager.sphereMode == sphereMode
+        return Button(action: {
+            companionManager.setSphereMode(sphereMode)
+        }) {
+            Text(sphereMode.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var tasteEngineStatusRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "circle.grid.2x2.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(companionManager.sphereMode.usesTasteEngine ? DS.Colors.blue400 : DS.Colors.textTertiary)
+                .frame(width: 16)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(companionManager.tasteEngineStatusText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text(companionManager.tasteEngineBaseURLString)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer()
+
+            if companionManager.sphereMode.usesTasteEngine {
+                Button(action: {
+                    companionManager.refreshTasteEngineStatus()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+        .padding(.vertical, 4)
+    }
 
     private var modelPickerRow: some View {
         HStack {

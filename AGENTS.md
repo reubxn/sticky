@@ -14,7 +14,8 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming. Sphere modes can route push-to-talk into a local Taste Engine instead.
+- **Sphere Modes**: Assistant uses the existing Claude flow. Observation posts transcript-derived context to the local Taste Engine. Deployment posts transcript + cursor-screen screenshot data URL for recommendations.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -48,15 +49,17 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
+**Sphere Mode Integration**: `SphereMode` is persisted in UserDefaults and selected from the companion panel. Assistant mode keeps the Claude vision path; observation and deployment modes call the local Taste Engine configured by `TasteEngineBaseURL` in `Info.plist` (default `http://localhost:3000`). Taste modes render the overlay cursor as a soft sphere while preserving waveform, spinner, TTS, and pointing behavior.
+
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1212 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, local Taste Engine routing, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, sphere mode, and cursor visibility. Coordinates push-to-talk → assistant/taste response → TTS → pointing pipelines. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
-| `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
+| `CompanionPanelView.swift` | ~870 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, sphere mode selector, model picker (Sonnet/Opus), local Taste Engine status, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `OverlayWindow.swift` | ~926 | Full-screen transparent overlay hosting the blue cursor/sphere, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
@@ -68,6 +71,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
+| `TasteEngineModels.swift` | ~191 | Codable models for Sphere mode, Taste Engine weighted objects/spheres, observations, recommendations, decisions, and point targets. |
+| `TasteEngineAPIClient.swift` | ~118 | Local Taste Engine API client. Calls `/api/spheres/recommend`, `/api/spheres/observe`, and lightweight status checks against `TasteEngineBaseURL`. |
+| `TasteCommandParser.swift` | ~75 | Minimal transcript parser for observation mode context and keyword extraction. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |

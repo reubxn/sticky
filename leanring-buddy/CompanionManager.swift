@@ -110,10 +110,42 @@ final class CompanionManager: ObservableObject {
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
+    /// Sphere mode controls whether push-to-talk uses Claude assistant mode
+    /// or routes into the local Taste Engine.
+    @Published var sphereMode: SphereMode = {
+        let rawMode = UserDefaults.standard.string(forKey: "sphereMode") ?? SphereMode.assistant.rawValue
+        return SphereMode(rawValue: rawMode) ?? .assistant
+    }()
+
+    @Published private(set) var tasteEngineStatusText: String = "Local engine not checked"
+
+    let tasteEngineBaseURLString: String = AppBundleConfiguration.stringValue(forKey: "TasteEngineBaseURL")
+        ?? "http://localhost:3000"
+
+    private lazy var tasteEngineAPIClient: TasteEngineAPIClient? = {
+        do {
+            return try TasteEngineAPIClient(baseURLString: tasteEngineBaseURLString)
+        } catch {
+            tasteEngineStatusText = "Invalid local engine URL"
+            print("⚠️ Taste Engine configuration error: \(error)")
+            return nil
+        }
+    }()
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    func setSphereMode(_ mode: SphereMode) {
+        sphereMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "sphereMode")
+        overlayWindowManager.updateCompanionMode(companionManager: self)
+
+        if mode.usesTasteEngine {
+            refreshTasteEngineStatus()
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -182,6 +214,9 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+        if sphereMode.usesTasteEngine {
+            refreshTasteEngineStatus()
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -521,7 +556,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.submitTranscriptForCurrentSphereMode(transcript: finalTranscript)
                     }
                 )
             }
@@ -577,6 +612,27 @@ final class CompanionManager: ObservableObject {
     """
 
     // MARK: - AI Response Pipeline
+
+    private func submitTranscriptForCurrentSphereMode(transcript: String) {
+        switch sphereMode {
+        case .assistant:
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+        case .observation, .deployment:
+            sendTranscriptToTasteEngine(transcript: transcript, sphereMode: sphereMode)
+        }
+    }
+
+    func refreshTasteEngineStatus() {
+        guard let tasteEngineAPIClient else { return }
+
+        tasteEngineStatusText = "Checking local engine"
+        Task {
+            let isReachable = await tasteEngineAPIClient.checkStatus()
+            await MainActor.run {
+                self.tasteEngineStatusText = isReachable ? "Local engine online" : "Local engine unavailable"
+            }
+        }
+    }
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
@@ -723,6 +779,136 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    private func sendTranscriptToTasteEngine(transcript: String, sphereMode: SphereMode) {
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+
+        currentResponseTask = Task {
+            voiceState = .processing
+
+            do {
+                guard let tasteEngineAPIClient else {
+                    throw TasteEngineAPIClient.TasteEngineAPIClientError.invalidBaseURL(tasteEngineBaseURLString)
+                }
+
+                let tasteEngineResponse: TasteEngineAPIResponse
+                var targetScreenCapture: CompanionScreenCapture?
+
+                switch sphereMode {
+                case .assistant:
+                    return
+                case .observation:
+                    let observationContext = TasteCommandParser.observationContext(from: transcript)
+                    let observationRequest = TasteEngineObservationRequest(
+                        transcript: transcript,
+                        context: observationContext,
+                        mode: sphereMode.rawValue
+                    )
+                    tasteEngineResponse = try await tasteEngineAPIClient.observe(request: observationRequest)
+                case .deployment:
+                    let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures.first else {
+                        throw NSError(
+                            domain: "TasteEngine",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "No cursor-screen screenshot available"]
+                        )
+                    }
+
+                    targetScreenCapture = cursorScreenCapture
+                    let screenshotDataURL = "data:image/jpeg;base64,\(cursorScreenCapture.imageData.base64EncodedString())"
+                    let recommendationRequest = TasteEngineRecommendationRequest(
+                        transcript: transcript,
+                        prompt: transcript,
+                        screenshotDataURL: screenshotDataURL,
+                        screenshot: screenshotDataURL,
+                        mode: sphereMode.rawValue
+                    )
+                    tasteEngineResponse = try await tasteEngineAPIClient.recommend(request: recommendationRequest)
+                }
+
+                guard !Task.isCancelled else { return }
+
+                let spokenText = Self.conciseTasteEngineSummary(from: tasteEngineResponse.spokenSummary)
+
+                if let pointTarget = tasteEngineResponse.pointTarget,
+                   let screenCapture = targetScreenCapture {
+                    voiceState = .idle
+                    applyTasteEnginePointTarget(pointTarget, screenCapture: screenCapture, fallbackBubbleText: spokenText)
+                }
+
+                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    do {
+                        try await elevenLabsTTSClient.speakText(spokenText)
+                        voiceState = .responding
+                    } catch {
+                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                        print("⚠️ Taste Engine TTS error: \(error)")
+                        speakCreditsErrorFallback()
+                    }
+                }
+            } catch is CancellationError {
+                // User spoke again — response was interrupted.
+            } catch {
+                tasteEngineStatusText = "Local engine error"
+                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                print("⚠️ Taste Engine response error: \(error)")
+                speakCreditsErrorFallback()
+            }
+
+            if !Task.isCancelled {
+                voiceState = .idle
+                scheduleTransientHideIfNeeded()
+            }
+        }
+    }
+
+    private func applyTasteEnginePointTarget(
+        _ pointTarget: TasteEnginePointTarget,
+        screenCapture: CompanionScreenCapture,
+        fallbackBubbleText: String
+    ) {
+        let screenshotWidth = CGFloat(screenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(screenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(screenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(screenCapture.displayHeightInPoints)
+        let displayFrame = screenCapture.displayFrame
+
+        let clampedX = max(0, min(CGFloat(pointTarget.x), screenshotWidth))
+        let clampedY = max(0, min(CGFloat(pointTarget.y), screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        detectedElementBubbleText = pointTarget.label ?? fallbackBubbleText
+        detectedElementScreenLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+        detectedElementDisplayFrame = displayFrame
+        ClickyAnalytics.trackElementPointed(elementLabel: pointTarget.label)
+    }
+
+    private static func conciseTasteEngineSummary(from responseSummary: String) -> String {
+        let trimmedSummary = responseSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSummary.isEmpty else { return "done." }
+
+        let sentenceTerminators = CharacterSet(charactersIn: ".!?")
+        if let firstTerminatorRange = trimmedSummary.rangeOfCharacter(from: sentenceTerminators) {
+            let firstSentence = String(trimmedSummary[...firstTerminatorRange.lowerBound])
+            if firstSentence.count <= 180 {
+                return firstSentence
+            }
+        }
+
+        if trimmedSummary.count <= 180 {
+            return trimmedSummary
+        }
+
+        let cutoffIndex = trimmedSummary.index(trimmedSummary.startIndex, offsetBy: 177)
+        return String(trimmedSummary[..<cutoffIndex]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
