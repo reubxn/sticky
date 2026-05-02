@@ -207,6 +207,10 @@ enum BuddyDictationPermissionProblem {
 private enum BuddyDictationStartSource {
     case microphoneButton
     case keyboardShortcut
+    /// Long-form continuous dictation for Reverse Clicky teach mode. Differs
+    /// from push-to-talk in that the session is started/stopped explicitly via
+    /// a UI button rather than a held key. Reuses the same recognition pipeline.
+    case teachSession
 }
 
 private struct BuddyDictationDraftCallbacks {
@@ -223,6 +227,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     @Published private(set) var isRecordingFromMicrophoneButton = false
     @Published private(set) var isRecordingFromKeyboardShortcut = false
+    @Published private(set) var isRecordingFromTeachSession = false
     @Published private(set) var isKeyboardShortcutSessionActiveOrFinalizing = false
     @Published private(set) var isFinalizingTranscript = false
     @Published private(set) var isPreparingToRecord = false
@@ -237,11 +242,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
     var isDictationInProgress: Bool {
-        isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
+        isPreparingToRecord
+            || isRecordingFromMicrophoneButton
+            || isRecordingFromKeyboardShortcut
+            || isRecordingFromTeachSession
+            || isFinalizingTranscript
     }
 
     var isActivelyRecordingAudio: Bool {
-        isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut
+        isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isRecordingFromTeachSession
     }
 
     var isMicrophoneButtonActivelyRecordingAudio: Bool {
@@ -327,6 +336,31 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func stopPushToTalkFromKeyboardShortcut() {
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
+    }
+
+    /// Starts a long-form continuous dictation session for Reverse Clicky teach
+    /// mode. The microphone stays open until `stopTeachSession()` is called.
+    /// `onFinalTranscript` is invoked once with the complete session transcript
+    /// after the user stops the session. If the user never said anything, the
+    /// callback is still invoked with an empty string so the caller can reset
+    /// any UI state.
+    func startTeachSession(
+        onFinalTranscript: @escaping (String) -> Void
+    ) async {
+        await startPushToTalk(
+            startSource: .teachSession,
+            currentDraftText: "",
+            updateDraftText: { _ in
+                // Teach mode doesn't show partial transcripts — we wait for
+                // the final result on session stop.
+            },
+            submitDraftText: onFinalTranscript,
+            shouldAutomaticallySubmitFinalDraftOnStop: true
+        )
+    }
+
+    func stopTeachSession() {
+        stopPushToTalk(expectedStartSource: .teachSession)
     }
 
     func cancelCurrentDictation(preserveDraftText: Bool = true) {
@@ -432,6 +466,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isFinalizingTranscript = false
         isRecordingFromMicrophoneButton = startSource == .microphoneButton
         isRecordingFromKeyboardShortcut = startSource == .keyboardShortcut
+        isRecordingFromTeachSession = startSource == .teachSession
         isKeyboardShortcutSessionActiveOrFinalizing = startSource == .keyboardShortcut
         currentAudioPowerLevel = 0
         recordedAudioPowerHistory = Array(
@@ -486,6 +521,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
+        isRecordingFromTeachSession = false
         isFinalizingTranscript = true
 
         let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
@@ -589,6 +625,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let finalTranscriptText = latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let currentDraftCallbacks = draftCallbacks
 
+        // Capture the start source before we wipe session state — we need it
+        // below to decide whether an empty transcript should still fire the
+        // submit callback (teach mode requires this so the UI can reset).
+        let sessionStartSource = activeStartSource
+
         if !shouldSubmitFinalDraft && !finalDraftText.isEmpty {
             currentDraftCallbacks?.updateDraftText(finalDraftText)
         }
@@ -600,7 +641,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         resetSessionState()
 
         guard shouldSubmitFinalDraft else { return }
-        guard !finalTranscriptText.isEmpty else { return }
+
+        // Teach sessions always need to know the session ended, even if the
+        // user said nothing — otherwise the panel stays stuck on "analyzing".
+        // Push-to-talk drops empty transcripts to avoid submitting blank chats.
+        let allowEmptyTranscriptCallback = sessionStartSource == .teachSession
+        guard !finalTranscriptText.isEmpty || allowEmptyTranscriptCallback else { return }
 
         currentDraftCallbacks?.submitDraftText(finalDraftText)
     }
@@ -638,6 +684,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isPreparingToRecord = false
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
+        isRecordingFromTeachSession = false
         isKeyboardShortcutSessionActiveOrFinalizing = false
         isFinalizingTranscript = false
         currentAudioPowerLevel = 0
