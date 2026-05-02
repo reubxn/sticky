@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taste Engine — Brand consistency, captured.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FAFAF7;
+  --surface:#FFFFFF;
+  --surface-2:#F4F2EC;
+  --ink:#0F0F0E;
+  --ink-2:#1A1A18;
+  --muted:#6B6B66;
+  --muted-2:#9A9A93;
+  --line:rgba(15,15,14,.08);
+  --line-2:rgba(15,15,14,.04);
+  --accent:#0F0F0E;
+  --signal:#5B6CFF;
+  --warn:#E6A85C;
+  --good:#4A8B6F;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:'Geist',system-ui,sans-serif;
+  font-size:15px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+.serif{font-family:'Instrument Serif',serif;font-weight:400;}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+input,textarea{font-family:inherit;font-size:inherit;color:inherit;}
+a{color:inherit;text-decoration:none;}
+
+/* ───────────────── NAV ───────────────── */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  height:56px;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 28px;
+  background:rgba(250,250,247,.78);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--line);
+}
+.nav-logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:14px;letter-spacing:-.01em;}
+.nav-logo .dot{width:18px;height:18px;border-radius:50%;background:radial-gradient(circle at 32% 30%,#fff 0%,#E0DCFF 30%,#5B6CFF 75%,#0F0F0E 100%);box-shadow:inset 0 0 0 .5px rgba(15,15,14,.2);}
+.nav-links{display:flex;align-items:center;gap:28px;}
+.nav-links a{font-size:13px;color:var(--muted);transition:color .15s;}
+.nav-links a:hover{color:var(--ink);}
+.nav-cta{display:flex;align-items:center;gap:10px;}
+.btn-ghost{font-size:13px;color:var(--muted);padding:8px 0;transition:color .15s;}
+.btn-ghost:hover{color:var(--ink);}
+.btn-primary{
+  background:var(--ink);color:var(--bg);
+  font-size:13px;font-weight:500;
+  padding:8px 16px;border-radius:8px;
+  transition:transform .15s,opacity .15s;
+}
+.btn-primary:hover{transform:translateY(-1px);opacity:.92;}
+
+/* ───────────────── HERO ───────────────── */
+#hero{
+  padding:120px 28px 72px;
+  max-width:1280px;margin:0 auto;
+  display:grid;grid-template-columns:1.05fr 1fr;gap:72px;
+  align-items:center;
+}
+.hero-left{position:relative;}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12px;color:var(--muted);
+  background:var(--surface);
+  border:1px solid var(--line);
+  padding:5px 11px;border-radius:100px;
+  margin-bottom:24px;
+}
+.eyebrow .pulse{width:6px;height:6px;border-radius:50%;background:var(--signal);box-shadow:0 0 0 0 rgba(91,108,255,.5);animation:pulse 2s ease-out infinite;}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(91,108,255,.5);}70%{box-shadow:0 0 0 8px rgba(91,108,255,0);}100%{box-shadow:0 0 0 0 rgba(91,108,255,0);}}
+.hero-h1{
+  font-size:clamp(46px,5.6vw,76px);
+  line-height:1.02;
+  letter-spacing:-.035em;
+  font-weight:500;
+  margin-bottom:22px;
+}
+.hero-h1 .em{font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;color:var(--muted);letter-spacing:-.01em;}
+.hero-sub{
+  font-size:17px;color:var(--muted);
+  max-width:480px;line-height:1.55;
+  margin-bottom:32px;
+}
+.hero-actions{display:flex;gap:10px;align-items:center;}
+.btn-lg{
+  background:var(--ink);color:var(--bg);
+  font-size:14px;font-weight:500;
+  padding:12px 22px;border-radius:10px;
+  transition:transform .15s,opacity .15s;
+  display:inline-flex;align-items:center;gap:8px;
+}
+.btn-lg:hover{transform:translateY(-1px);opacity:.92;}
+.btn-lg .arrow{transition:transform .2s;}
+.btn-lg:hover .arrow{transform:translateX(2px);}
+.btn-lg-ghost{
+  font-size:14px;font-weight:500;color:var(--ink);
+  padding:12px 18px;border-radius:10px;
+  border:1px solid var(--line);
+  background:var(--surface);
+  transition:all .15s;
+}
+.btn-lg-ghost:hover{border-color:var(--ink);}
+
+/* ─── HERO RIGHT: cycling demo carousel ─── */
+.hero-right{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow:0 1px 0 rgba(15,15,14,.02), 0 24px 60px -28px rgba(15,15,14,.18);
+  height:520px;
+}
+.demo-tabs{
+  display:flex;align-items:center;
+  border-bottom:1px solid var(--line);
+  padding:0 6px;height:42px;
+  background:var(--surface-2);
+}
+.demo-tab{
+  font-size:12px;color:var(--muted);
+  padding:6px 12px;margin:0 2px;
+  border-radius:6px;
+  transition:all .2s;
+  position:relative;
+  display:flex;align-items:center;gap:7px;
+}
+.demo-tab .num{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);}
+.demo-tab.active{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line);}
+.demo-tab.active .num{color:var(--signal);}
+.demo-window-status{
+  margin-left:auto;display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--muted-2);
+  font-family:'JetBrains Mono',monospace;
+  padding-right:10px;
+}
+.demo-window-status .live{width:6px;height:6px;border-radius:50%;background:var(--good);}
+
+.demo-stage{position:relative;height:calc(100% - 42px);overflow:hidden;}
+.demo-pane{
+  position:absolute;inset:0;
+  padding:28px;
+  opacity:0;pointer-events:none;
+  transition:opacity .5s ease;
+  display:flex;flex-direction:column;
+}
+.demo-pane.active{opacity:1;pointer-events:auto;}
+
+/* ── pane 1: capture ── */
+.cap-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;}
+.cap-title{font-size:13px;color:var(--muted);}
+.cap-counter{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted-2);}
+.cap-counter .n{color:var(--ink);}
+.cap-sphere{flex:1;position:relative;display:flex;align-items:center;justify-content:center;}
+.cap-sphere canvas{width:100%;height:100%;display:block;}
+.cap-events{
+  position:absolute;left:0;right:0;bottom:0;
+  display:flex;flex-direction:column;gap:6px;
+  pointer-events:none;
+}
+.cap-event{
+  display:flex;align-items:center;gap:10px;
+  font-size:12px;
+  padding:8px 12px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:8px;
+  opacity:0;transform:translateY(10px);
+  animation:capIn .4s ease forwards;
+}
+.cap-event .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.cap-event .src{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.05em;}
+.cap-event .label{flex:1;color:var(--ink-2);}
+.cap-event .ts{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);}
+@keyframes capIn{to{opacity:1;transform:translateY(0);}}
+
+/* ── pane 2: fingerprint ── */
+.fp-pane{padding:24px 28px;}
+.fp-card{
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:22px;
+  height:100%;
+  display:flex;flex-direction:column;
+}
+.fp-card-head{
+  display:flex;justify-content:space-between;align-items:center;
+  padding-bottom:14px;margin-bottom:14px;
+  border-bottom:1px solid var(--line);
+}
+.fp-card-team{font-size:13px;font-weight:500;}
+.fp-card-team .id{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted-2);margin-left:8px;}
+.fp-card-version{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);}
+.fp-quote{
+  font-family:'Instrument Serif',serif;font-style:italic;
+  font-size:18px;line-height:1.45;
+  color:var(--ink);
+  margin-bottom:16px;
+}
+.fp-traits{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;}
+.fp-trait{display:flex;align-items:center;gap:10px;font-size:12px;}
+.fp-trait .name{flex:0 0 96px;color:var(--muted);text-transform:lowercase;letter-spacing:.01em;}
+.fp-trait .bar{flex:1;height:3px;background:rgba(15,15,14,.06);border-radius:99px;overflow:hidden;}
+.fp-trait .fill{height:100%;background:var(--ink);border-radius:99px;width:0;transition:width 1.2s cubic-bezier(.34,1.1,.64,1);}
+.fp-trait .val{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);min-width:28px;text-align:right;}
+.fp-rejects{
+  margin-top:auto;padding-top:14px;border-top:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:5px;
+}
+.fp-rejects .label{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.08em;flex-basis:100%;margin-bottom:6px;}
+.fp-chip{
+  font-size:11px;
+  padding:3px 9px;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:99px;
+  color:var(--muted);
+  text-decoration:line-through;
+  text-decoration-color:rgba(15,15,14,.25);
+}
+
+/* ── pane 3: api ── */
+.api-pane{padding:22px 24px;}
+.api-block{
+  background:#0F0F0E;color:#E8E8E4;
+  border-radius:10px;
+  font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.55;
+  padding:16px 18px;
+  overflow:hidden;
+  flex:1;display:flex;flex-direction:column;gap:14px;
+}
+.api-row{display:flex;flex-direction:column;gap:5px;}
+.api-row .lbl{color:#6B6B66;font-size:10px;letter-spacing:.06em;text-transform:uppercase;}
+.api-row .code{color:#E8E8E4;}
+.api-row .code .key{color:#94A3FF;}
+.api-row .code .str{color:#9DD9A8;}
+.api-row .code .com{color:#6B6B66;}
+.api-divider{border:none;border-top:1px dashed rgba(232,232,228,.12);margin:0;}
+.api-out{display:flex;align-items:center;gap:8px;color:#9DD9A8;font-size:11px;}
+.api-out .check{width:14px;height:14px;border-radius:50%;background:#9DD9A8;color:#0F0F0E;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;}
+
+/* ─── tab progress bar ─── */
+.tab-progress{
+  position:absolute;left:0;right:0;bottom:0;
+  height:1.5px;background:rgba(15,15,14,.04);
+}
+.tab-progress-fill{
+  height:100%;background:var(--ink);
+  width:0;transition:width .15s linear;
+}
+
+/* ───────────────── LOGOS ───────────────── */
+#logos{
+  border-top:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+  padding:42px 28px;
+  background:var(--surface);
+}
+.logos-inner{max-width:1280px;margin:0 auto;display:flex;align-items:center;gap:48px;}
+.logos-label{font-size:12px;color:var(--muted-2);flex-shrink:0;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;text-transform:uppercase;}
+.logos-row{display:flex;align-items:center;gap:48px;flex-wrap:wrap;flex:1;}
+.logo-mark{font-weight:600;font-size:15px;color:var(--muted);letter-spacing:-.01em;opacity:.6;transition:opacity .2s;}
+.logo-mark:hover{opacity:1;}
+.logo-mark .ser{font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;}
+
+/* ───────────────── MODULE SECTIONS ───────────────── */
+.module{padding:120px 28px;max-width:1280px;margin:0 auto;}
+.module-header{display:grid;grid-template-columns:1fr 1.4fr;gap:60px;margin-bottom:56px;align-items:end;}
+.module-tag{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:var(--muted);letter-spacing:.04em;text-transform:uppercase;
+  margin-bottom:18px;
+}
+.module-tag .num{color:var(--ink);font-weight:500;}
+.module-tag .bar{width:24px;height:1px;background:var(--line);}
+.module-h{
+  font-size:clamp(36px,4vw,52px);
+  line-height:1.04;letter-spacing:-.028em;font-weight:500;
+}
+.module-h .em{font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;color:var(--muted);}
+.module-sub{font-size:16px;color:var(--muted);line-height:1.55;max-width:520px;}
+
+/* shared demo container */
+.demo-shell{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow:0 1px 0 rgba(15,15,14,.02), 0 32px 80px -36px rgba(15,15,14,.16);
+}
+.demo-shell-header{
+  height:42px;display:flex;align-items:center;
+  padding:0 16px;border-bottom:1px solid var(--line);
+  background:var(--surface-2);
+}
+.demo-shell-dots{display:flex;gap:6px;margin-right:14px;}
+.demo-shell-dots span{width:10px;height:10px;border-radius:50%;background:rgba(15,15,14,.08);}
+.demo-shell-title{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);}
+.demo-shell-status{margin-left:auto;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted-2);}
+.demo-shell-status .live{width:6px;height:6px;border-radius:50%;background:var(--good);}
+
+/* ── MODULE 1: CAPTURE ── */
+#capture-demo{display:grid;grid-template-columns:340px 1fr;min-height:520px;}
+.cap-side{
+  border-right:1px solid var(--line);
+  padding:24px;
+  display:flex;flex-direction:column;gap:14px;
+  background:var(--surface-2);
+}
+.cap-side-h{font-size:13px;color:var(--muted);margin-bottom:6px;}
+.cap-side-input{
+  display:flex;gap:8px;
+}
+.cap-side-input input{
+  flex:1;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:9px 12px;
+  font-size:13px;
+  outline:none;
+  transition:border-color .15s;
+}
+.cap-side-input input:focus{border-color:var(--ink);}
+.cap-side-input button{
+  background:var(--ink);color:var(--bg);
+  padding:9px 14px;border-radius:8px;
+  font-size:12px;font-weight:500;
+}
+.cap-side-input button:disabled{opacity:.5;cursor:not-allowed;}
+.cap-side-suggestions{display:flex;flex-wrap:wrap;gap:6px;}
+.cap-suggest{
+  font-size:11px;color:var(--muted);
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:99px;
+  padding:5px 10px;
+  transition:all .15s;
+}
+.cap-suggest:hover{border-color:var(--ink);color:var(--ink);}
+.cap-side-divider{border:none;border-top:1px solid var(--line);margin:6px 0;}
+.cap-side-result{
+  display:flex;flex-direction:column;gap:14px;
+  font-size:13px;
+  flex:1;
+  overflow-y:auto;
+  min-height:0;
+}
+.cap-side-empty{font-size:13px;color:var(--muted-2);font-style:italic;padding:20px 0;}
+.cap-result-block{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:14px 16px;
+}
+.cap-result-block .lbl{
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em;
+  margin-bottom:7px;
+}
+.cap-result-block .verdict{font-size:13px;line-height:1.5;}
+.cap-result-block .verdict .pull{color:var(--good);font-weight:500;}
+.cap-result-block .verdict .reject{color:#B05050;font-weight:500;}
+.cap-result-block .why{font-family:'Instrument Serif',serif;font-style:italic;font-size:14px;color:var(--ink-2);line-height:1.55;}
+
+.cap-canvas-side{position:relative;background:var(--bg);}
+.cap-canvas-side canvas{width:100%;height:100%;display:block;}
+.cap-axis-label{
+  position:absolute;font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--muted-2);letter-spacing:.04em;
+}
+
+/* ── MODULE 2: FINGERPRINT ── */
+#fp-demo{display:grid;grid-template-columns:1fr 1fr;min-height:520px;}
+.fp-builder{
+  padding:28px;
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;gap:18px;
+  background:var(--surface-2);
+}
+.fp-builder-h{font-size:13px;color:var(--muted);}
+.fp-slider-row{display:flex;flex-direction:column;gap:6px;}
+.fp-slider-row .top{display:flex;justify-content:space-between;align-items:center;}
+.fp-slider-row .name{font-size:13px;font-weight:500;text-transform:lowercase;}
+.fp-slider-row .val{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);}
+.fp-slider-row input[type=range]{
+  -webkit-appearance:none;appearance:none;
+  width:100%;height:3px;background:rgba(15,15,14,.08);
+  border-radius:99px;outline:none;
+}
+.fp-slider-row input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--ink);cursor:pointer;
+  border:2px solid var(--surface);
+  box-shadow:0 1px 4px rgba(15,15,14,.2);
+}
+.fp-slider-row input[type=range]::-moz-range-thumb{
+  width:14px;height:14px;border-radius:50%;
+  background:var(--ink);cursor:pointer;
+  border:2px solid var(--surface);
+}
+.fp-render{padding:32px;display:flex;align-items:center;justify-content:center;}
+.fp-render-card{
+  width:100%;max-width:380px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:24px;
+  font-family:'JetBrains Mono',monospace;
+  position:relative;
+}
+.fp-render-card::before{
+  content:'';position:absolute;top:14px;right:14px;
+  width:8px;height:8px;border-radius:50%;
+  background:var(--good);
+  box-shadow:0 0 0 0 rgba(74,139,111,.4);
+  animation:pulse 2s ease-out infinite;
+}
+.fp-card-label{font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px;}
+.fp-card-name{font-size:14px;font-weight:500;margin-bottom:18px;}
+.fp-card-name .id{color:var(--muted-2);margin-left:8px;}
+.fp-card-quote{
+  font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;
+  font-size:18px;color:var(--ink);line-height:1.4;
+  padding:14px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  margin-bottom:14px;
+  min-height:78px;
+}
+.fp-card-axes{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;}
+.fp-card-ax{display:flex;align-items:center;gap:10px;font-size:11px;}
+.fp-card-ax .n{flex:0 0 80px;color:var(--muted);}
+.fp-card-ax .b{flex:1;height:2px;background:rgba(15,15,14,.06);border-radius:99px;overflow:hidden;}
+.fp-card-ax .f{height:100%;background:var(--ink);border-radius:99px;transition:width .35s ease;}
+.fp-card-ax .v{font-size:10px;color:var(--muted-2);min-width:24px;text-align:right;}
+.fp-card-foot{font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em;}
+
+/* ── MODULE 3: API ── */
+#api-demo{display:grid;grid-template-columns:1fr 1fr;min-height:520px;}
+.api-input-side{padding:28px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:14px;background:var(--surface-2);}
+.api-input-h{font-size:13px;color:var(--muted);}
+.api-input-area{
+  flex:1;display:flex;flex-direction:column;gap:14px;
+}
+.api-prompt-input{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:14px 16px;
+  font-size:14px;line-height:1.5;
+  resize:none;
+  outline:none;
+  transition:border-color .15s;
+  min-height:90px;
+  font-family:inherit;
+}
+.api-prompt-input:focus{border-color:var(--ink);}
+.api-fp-toggle{
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:12px 16px;
+}
+.api-fp-toggle-left{display:flex;align-items:center;gap:10px;font-size:13px;}
+.api-fp-toggle-left .ic{width:18px;height:18px;border-radius:50%;background:radial-gradient(circle at 32% 30%,#fff 0%,#E0DCFF 30%,#5B6CFF 75%,#0F0F0E 100%);}
+.api-fp-toggle-left .name{font-weight:500;}
+.api-fp-toggle-left .id{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted-2);}
+.toggle{
+  position:relative;width:36px;height:20px;
+  background:rgba(15,15,14,.12);border-radius:99px;
+  transition:background .2s;flex-shrink:0;
+}
+.toggle.on{background:var(--ink);}
+.toggle::after{
+  content:'';position:absolute;top:2px;left:2px;
+  width:16px;height:16px;border-radius:50%;background:var(--surface);
+  transition:transform .2s;
+  box-shadow:0 1px 2px rgba(15,15,14,.18);
+}
+.toggle.on::after{transform:translateX(16px);}
+.api-run{
+  background:var(--ink);color:var(--bg);
+  padding:11px 16px;border-radius:10px;
+  font-size:13px;font-weight:500;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:opacity .15s;
+}
+.api-run:disabled{opacity:.5;cursor:not-allowed;}
+.api-run .spinner{
+  width:12px;height:12px;border:1.5px solid rgba(255,255,255,.3);
+  border-top-color:var(--bg);border-radius:50%;
+  animation:spin .8s linear infinite;
+  display:none;
+}
+.api-run.loading .spinner{display:block;}
+.api-run.loading .label{display:none;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+.api-output-side{padding:28px;display:flex;flex-direction:column;gap:14px;}
+.api-output-h{display:flex;align-items:center;justify-content:space-between;}
+.api-output-h .lbl{font-size:13px;color:var(--muted);}
+.api-output-h .badge{
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  padding:3px 8px;border-radius:99px;
+  border:1px solid var(--line);
+  color:var(--muted);
+  text-transform:uppercase;letter-spacing:.04em;
+}
+.api-output-h .badge.with-fp{border-color:var(--ink);color:var(--ink);background:var(--ink);color:var(--bg);}
+.api-output-result{
+  flex:1;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:18px 20px;
+  font-size:14px;line-height:1.6;
+  white-space:pre-wrap;
+  overflow-y:auto;
+  min-height:200px;
+}
+.api-output-result.empty{display:flex;align-items:center;justify-content:center;color:var(--muted-2);font-style:italic;}
+
+.api-meta{
+  display:flex;gap:14px;flex-wrap:wrap;
+  font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);
+  text-transform:uppercase;letter-spacing:.06em;
+}
+.api-meta span{display:flex;align-items:center;gap:6px;}
+.api-meta .dot{width:5px;height:5px;border-radius:50%;background:var(--muted-2);}
+
+/* ───────────────── COMPARISON ───────────────── */
+#compare{padding:0 28px 120px;max-width:1280px;margin:0 auto;}
+.compare-h{
+  font-size:clamp(28px,3vw,40px);
+  line-height:1.1;letter-spacing:-.025em;font-weight:500;
+  margin-bottom:32px;
+}
+.compare-h .em{font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;color:var(--muted);}
+.compare-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:1px;
+  background:var(--line);
+  border:1px solid var(--line);
+  border-radius:14px;overflow:hidden;
+}
+.compare-side{background:var(--surface);padding:24px 26px;}
+.compare-side.right{background:var(--surface-2);}
+.compare-side .lbl{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em;
+  margin-bottom:12px;
+  display:flex;align-items:center;gap:8px;
+}
+.compare-side .lbl .pill{
+  padding:2px 8px;border-radius:99px;
+  border:1px solid var(--line);
+  color:var(--muted);
+  font-size:9px;
+}
+.compare-side.right .lbl .pill{background:var(--ink);color:var(--bg);border-color:var(--ink);}
+.compare-side p{font-size:14px;line-height:1.65;color:var(--ink-2);}
+
+/* ───────────────── CTA ───────────────── */
+#cta{
+  background:var(--ink);color:#FAFAF7;
+  padding:120px 28px;
+  position:relative;overflow:hidden;
+}
+#cta::before{
+  content:'';position:absolute;
+  top:50%;left:50%;transform:translate(-50%,-50%);
+  width:800px;height:800px;
+  background:radial-gradient(circle,rgba(91,108,255,.18) 0%,transparent 60%);
+  pointer-events:none;
+}
+.cta-inner{max-width:1280px;margin:0 auto;text-align:center;position:relative;z-index:1;}
+.cta-tag{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12px;color:rgba(250,250,247,.5);
+  border:1px solid rgba(250,250,247,.12);
+  padding:5px 11px;border-radius:100px;
+  margin-bottom:24px;
+}
+.cta-tag .pulse{width:6px;height:6px;border-radius:50%;background:#9DD9A8;}
+.cta-h{
+  font-size:clamp(48px,6vw,84px);
+  line-height:1.02;letter-spacing:-.035em;font-weight:500;
+  margin-bottom:22px;
+}
+.cta-h .em{font-family:'Instrument Serif',serif;font-style:italic;font-weight:400;color:rgba(250,250,247,.45);}
+.cta-sub{
+  font-size:17px;color:rgba(250,250,247,.55);
+  max-width:480px;margin:0 auto 32px;
+}
+.cta-actions{display:flex;gap:10px;justify-content:center;}
+.btn-light{
+  background:#FAFAF7;color:var(--ink);
+  font-size:14px;font-weight:500;
+  padding:13px 24px;border-radius:10px;
+  transition:transform .15s,opacity .15s;
+}
+.btn-light:hover{transform:translateY(-1px);opacity:.92;}
+.btn-dark-ghost{
+  font-size:14px;font-weight:500;color:rgba(250,250,247,.85);
+  padding:13px 20px;border-radius:10px;
+  border:1px solid rgba(250,250,247,.18);
+  transition:all .15s;
+}
+.btn-dark-ghost:hover{border-color:rgba(250,250,247,.4);color:#fff;}
+
+/* ───────────────── FOOTER ───────────────── */
+footer{
+  background:var(--ink);color:rgba(250,250,247,.45);
+  padding:48px 28px 36px;
+  border-top:1px solid rgba(250,250,247,.06);
+}
+.foot-inner{max-width:1280px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:18px;}
+.foot-logo{display:flex;align-items:center;gap:8px;font-size:13px;color:#FAFAF7;font-weight:500;}
+.foot-logo .dot{width:14px;height:14px;border-radius:50%;background:radial-gradient(circle at 32% 30%,#fff 0%,#E0DCFF 30%,#5B6CFF 75%,#0F0F0E 100%);}
+.foot-meta{font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(250,250,247,.3);}
+
+/* ───────────────── RESPONSIVE ───────────────── */
+@media (max-width:980px){
+  #hero{grid-template-columns:1fr;gap:40px;padding:96px 22px 56px;}
+  .hero-right{height:480px;}
+  .module-header{grid-template-columns:1fr;gap:18px;}
+  #capture-demo,#fp-demo,#api-demo{grid-template-columns:1fr;}
+  .cap-side,.fp-builder,.api-input-side{border-right:none;border-bottom:1px solid var(--line);}
+  .cap-canvas-side{height:320px;}
+  .compare-grid{grid-template-columns:1fr;}
+  .compare-side.right{border-top:1px solid var(--line);}
+  .nav-links{display:none;}
+  .module{padding:80px 22px;}
+}
+
+::selection{background:var(--ink);color:var(--bg);}
+::-webkit-scrollbar{width:8px;height:8px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(15,15,14,.12);border-radius:99px;}
+::-webkit-scrollbar-thumb:hover{background:rgba(15,15,14,.2);}
+</style>
+</head>
+<body>
+
+<!-- ─────────── NAV ─────────── -->
+<nav>
+  <div class="nav-logo">
+    <div class="dot"></div>
+    Taste Engine
+  </div>
+  <div class="nav-links">
+    <a href="#capture">Capture</a>
+    <a href="#fingerprint">Fingerprint</a>
+    <a href="#api">API</a>
+    <a href="#" style="color:var(--muted);">Docs</a>
+    <a href="#" style="color:var(--muted);">Pricing</a>
+  </div>
+  <div class="nav-cta">
+    <button class="btn-ghost">Sign in</button>
+    <button class="btn-primary">Start free</button>
+  </div>
+</nav>
+
+<!-- ─────────── HERO ─────────── -->
+<section id="hero">
+  <div class="hero-left">
+    <div class="eyebrow"><span class="pulse"></span><span>Taste Engine · for brand teams</span></div>
+    <h1 class="hero-h1">
+      Brand consistency,<br>
+      <span class="em">captured.</span>
+    </h1>
+    <p class="hero-sub">
+      Every brand team has a fingerprint — what they pull toward, what they reject, the specifics of their taste. Taste Engine captures it, makes it legible, and ships it as context to every AI prompt your team writes.
+    </p>
+    <div class="hero-actions">
+      <button class="btn-lg" onclick="document.getElementById('api').scrollIntoView({behavior:'smooth'})">
+        Try the API <span class="arrow">→</span>
+      </button>
+      <button class="btn-lg-ghost" onclick="document.getElementById('capture').scrollIntoView({behavior:'smooth'})">
+        See how it works
+      </button>
+    </div>
+  </div>
+
+  <div class="hero-right">
+    <div class="demo-tabs">
+      <button class="demo-tab active" data-pane="0"><span class="num">01</span><span>Capture</span></button>
+      <button class="demo-tab" data-pane="1"><span class="num">02</span><span>Fingerprint</span></button>
+      <button class="demo-tab" data-pane="2"><span class="num">03</span><span>API</span></button>
+      <div class="demo-window-status"><span class="live"></span>atlas-team · live</div>
+    </div>
+    <div class="demo-stage">
+      <!-- Pane 0: Capture -->
+      <div class="demo-pane active" data-idx="0">
+        <div class="cap-header">
+          <div class="cap-title">Capturing what your team dwells on</div>
+          <div class="cap-counter"><span class="n" id="hero-capture-n">0</span> artifacts today</div>
+        </div>
+        <div class="cap-sphere">
+          <canvas id="hero-sphere" width="700" height="700"></canvas>
+        </div>
+        <div class="cap-events" id="hero-cap-events"></div>
+      </div>
+      <!-- Pane 1: Fingerprint -->
+      <div class="demo-pane fp-pane" data-idx="1">
+        <div class="fp-card">
+          <div class="fp-card-head">
+            <div class="fp-card-team">Atlas <span class="id">team_atlas_001</span></div>
+            <div class="fp-card-version">v.142 · 2h ago</div>
+          </div>
+          <div class="fp-quote" id="hero-fp-quote">"Pulled toward restraint as conviction. Trusts the reader. Reaches for the specific over the general."</div>
+          <div class="fp-traits" id="hero-fp-traits"></div>
+          <div class="fp-rejects">
+            <span class="label">Reliably rejects</span>
+            <span class="fp-chip">hyperbole</span>
+            <span class="fp-chip">stock metaphors</span>
+            <span class="fp-chip">three-adjective stacking</span>
+            <span class="fp-chip">empty superlatives</span>
+          </div>
+        </div>
+      </div>
+      <!-- Pane 2: API -->
+      <div class="demo-pane api-pane" data-idx="2">
+        <div class="api-block">
+          <div class="api-row">
+            <span class="lbl">POST /v1/prompt/enhance</span>
+            <span class="code"><span class="com">// Inject team fingerprint as context</span></span>
+          </div>
+          <hr class="api-divider">
+          <div class="api-row">
+            <span class="lbl">Request</span>
+            <span class="code">{ <span class="key">"team"</span>: <span class="str">"atlas"</span>, <span class="key">"prompt"</span>: <span class="str">"write a launch tweet"</span> }</span>
+          </div>
+          <hr class="api-divider">
+          <div class="api-row">
+            <span class="lbl">Enhanced</span>
+            <span class="code"><span class="com">// fingerprint v.142 attached</span></span>
+            <span class="code"><span class="key">"context"</span>: <span class="str">"restraint, specificity, no hedging..."</span></span>
+          </div>
+          <hr class="api-divider">
+          <div class="api-out"><div class="check">✓</div>200 OK · 142ms · cached</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-progress"><div class="tab-progress-fill" id="tab-progress-fill"></div></div>
+  </div>
+</section>
+
+<!-- ─────────── LOGOS ─────────── -->
+<section id="logos">
+  <div class="logos-inner">
+    <div class="logos-label">Trusted by brand-led teams</div>
+    <div class="logos-row">
+      <div class="logo-mark">Atlas</div>
+      <div class="logo-mark"><span class="ser">Form</span>&amp;Function</div>
+      <div class="logo-mark">Northway</div>
+      <div class="logo-mark">Quiet Co.</div>
+      <div class="logo-mark"><span class="ser">Method</span></div>
+      <div class="logo-mark">Lyra</div>
+      <div class="logo-mark">Halftone</div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── MODULE 1: CAPTURE ─────────── -->
+<section class="module" id="capture">
+  <div class="module-header">
+    <div>
+      <div class="module-tag"><span class="num">01</span><span class="bar"></span>Capture</div>
+      <h2 class="module-h">What your team<br><span class="em">stops on.</span></h2>
+    </div>
+    <p class="module-sub">Drop in any reference — a website, an image, a sentence. Taste Engine reads it through your team's fingerprint and tells you whether it'd pass, where it lands, and why.</p>
+  </div>
+
+  <div class="demo-shell">
+    <div class="demo-shell-header">
+      <div class="demo-shell-dots"><span></span><span></span><span></span></div>
+      <div class="demo-shell-title">capture.taste-engine.io / atlas</div>
+      <div class="demo-shell-status"><span class="live"></span>fingerprint v.142 active</div>
+    </div>
+    <div id="capture-demo">
+      <div class="cap-side">
+        <div class="cap-side-h">Test something against the Atlas fingerprint</div>
+        <div class="cap-side-input">
+          <input id="cap-input" type="text" placeholder="Paste a sentence, headline, or claim...">
+          <button id="cap-submit">Test</button>
+        </div>
+        <div class="cap-side-suggestions">
+          <button class="cap-suggest" data-text="The fastest, most powerful, most intuitive analytics platform ever built.">try a hyped one</button>
+          <button class="cap-suggest" data-text="A keyboard shortcut for everything you do twice.">try a precise one</button>
+          <button class="cap-suggest" data-text="Revolutionize your workflow with AI-powered productivity.">try a generic one</button>
+        </div>
+        <hr class="cap-side-divider">
+        <div class="cap-side-result" id="cap-result">
+          <div class="cap-side-empty">Results will appear here. Each test is plotted on the sphere as a new artifact.</div>
+        </div>
+      </div>
+      <div class="cap-canvas-side">
+        <canvas id="cap-canvas"></canvas>
+        <div class="cap-axis-label" style="top:14px;left:50%;transform:translateX(-50%);">restraint →</div>
+        <div class="cap-axis-label" style="bottom:14px;left:50%;transform:translateX(-50%);">← hyperbole</div>
+        <div class="cap-axis-label" style="left:14px;top:50%;transform:translateY(-50%) rotate(-90deg);transform-origin:left top;">← generic</div>
+        <div class="cap-axis-label" style="right:14px;top:50%;transform:translateY(-50%) rotate(90deg);transform-origin:right top;">specific →</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── MODULE 2: FINGERPRINT ─────────── -->
+<section class="module" id="fingerprint" style="padding-top:0;">
+  <div class="module-header">
+    <div>
+      <div class="module-tag"><span class="num">02</span><span class="bar"></span>Fingerprint</div>
+      <h2 class="module-h">A portrait of<br><span class="em">how your team thinks.</span></h2>
+    </div>
+    <p class="module-sub">The fingerprint is a living card — six dimensions of taste, the rejects, the pulls, the one sentence that captures the team's voice. Adjust any dimension to see it re-render in real time.</p>
+  </div>
+
+  <div class="demo-shell">
+    <div class="demo-shell-header">
+      <div class="demo-shell-dots"><span></span><span></span><span></span></div>
+      <div class="demo-shell-title">fingerprint.taste-engine.io / atlas</div>
+      <div class="demo-shell-status"><span class="live"></span>auto-saved</div>
+    </div>
+    <div id="fp-demo">
+      <div class="fp-builder">
+        <div class="fp-builder-h">Drag any dimension to see the fingerprint re-render</div>
+        <div id="fp-sliders"></div>
+        <div style="margin-top:auto;font-size:11px;color:var(--muted-2);font-family:'JetBrains Mono',monospace;letter-spacing:.04em;text-transform:uppercase;">Last sync: just now · 3 contributors</div>
+      </div>
+      <div class="fp-render">
+        <div class="fp-render-card">
+          <div class="fp-card-label">Team Fingerprint</div>
+          <div class="fp-card-name">Atlas <span class="id">v.142</span></div>
+          <div class="fp-card-quote" id="fp-quote">"Pulled toward restraint as conviction. Trusts the reader. Reaches for the specific over the general."</div>
+          <div class="fp-card-axes" id="fp-card-axes"></div>
+          <div class="fp-card-foot">3 contributors · 1,847 captures · evolving</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── MODULE 3: API ─────────── -->
+<section class="module" id="api" style="padding-top:0;">
+  <div class="module-header">
+    <div>
+      <div class="module-tag"><span class="num">03</span><span class="bar"></span>API</div>
+      <h2 class="module-h">Pin it to<br><span class="em">every prompt.</span></h2>
+    </div>
+    <p class="module-sub">One line of context. Every AI prompt your team writes now goes through the fingerprint. The output is no longer generic — it's recognizably yours. Try it: write a prompt, toggle the fingerprint on, see the difference.</p>
+  </div>
+
+  <div class="demo-shell">
+    <div class="demo-shell-header">
+      <div class="demo-shell-dots"><span></span><span></span><span></span></div>
+      <div class="demo-shell-title">api.taste-engine.io · live</div>
+      <div class="demo-shell-status"><span class="live"></span>claude-sonnet-4 · 142ms avg</div>
+    </div>
+    <div id="api-demo">
+      <div class="api-input-side">
+        <div class="api-input-h">Your prompt</div>
+        <div class="api-input-area">
+          <textarea class="api-prompt-input" id="api-prompt" rows="3">Write a launch announcement for our new keyboard shortcut feature. One paragraph.</textarea>
+          <div class="api-fp-toggle">
+            <div class="api-fp-toggle-left">
+              <div class="ic"></div>
+              <div>
+                <div class="name">Atlas fingerprint</div>
+                <div class="id">team_atlas_001 · v.142</div>
+              </div>
+            </div>
+            <div class="toggle on" id="api-toggle"></div>
+          </div>
+          <button class="api-run" id="api-run">
+            <span class="spinner"></span>
+            <span class="label">Run prompt</span>
+          </button>
+          <div style="font-size:11px;color:var(--muted-2);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+            <span style="color:var(--ink);">Try:</span> "explain our pricing in one sentence" · "draft a job listing" · "write a 404 page"
+          </div>
+        </div>
+      </div>
+      <div class="api-output-side">
+        <div class="api-output-h">
+          <span class="lbl">Output</span>
+          <span class="badge with-fp" id="api-badge">FINGERPRINT ON</span>
+        </div>
+        <div class="api-output-result empty" id="api-output">Click "Run prompt" to see the difference the fingerprint makes.</div>
+        <div class="api-meta" id="api-meta" style="display:none;">
+          <span><span class="dot"></span>claude-sonnet-4</span>
+          <span><span class="dot"></span><span id="api-tokens">—</span> tokens</span>
+          <span><span class="dot"></span><span id="api-time">—</span>ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── COMPARISON ─────────── -->
+<section id="compare">
+  <h3 class="compare-h">Same prompt. <span class="em">Different team.</span></h3>
+  <div class="compare-grid">
+    <div class="compare-side">
+      <div class="lbl"><span>Generic AI</span><span class="pill">no fingerprint</span></div>
+      <p>"Introducing our revolutionary new keyboard shortcuts! Boost your productivity and streamline your workflow with this game-changing feature. Available now for all users — try it today and experience the future of work."</p>
+    </div>
+    <div class="compare-side right">
+      <div class="lbl"><span>Atlas team</span><span class="pill">fingerprint v.142</span></div>
+      <p>"You can now press ⌘K from anywhere. It opens the command bar. Everything you do in Atlas is one keystroke away. We built it because three of us were already using a third-party tool to do this. Now you don't need to."</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── CTA ─────────── -->
+<section id="cta">
+  <div class="cta-inner">
+    <div class="cta-tag"><span class="pulse"></span>Pre-product · early access</div>
+    <h2 class="cta-h">Make your team's<br><span class="em">taste, legible.</span></h2>
+    <p class="cta-sub">We're working with a small group of brand teams to shape the product. Spots are limited.</p>
+    <div class="cta-actions">
+      <button class="btn-light">Apply for early access →</button>
+      <button class="btn-dark-ghost">Read the manifesto</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="foot-inner">
+    <div class="foot-logo"><div class="dot"></div>Taste Engine</div>
+    <div class="foot-meta">© 2026 · v0.4.2 · made with care</div>
+  </div>
+</footer>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   HERO: cycling demo carousel
+   ═══════════════════════════════════════════════════════════ */
+const tabs=document.querySelectorAll('.demo-tab');
+const panes=document.querySelectorAll('.demo-pane');
+const progressFill=document.getElementById('tab-progress-fill');
+let currentPane=0;
+let cycleStart=performance.now();
+const CYCLE_MS=5500;
+let userInteracted=false;
+
+function setPane(i){
+  currentPane=i;
+  tabs.forEach((t,j)=>t.classList.toggle('active',j===i));
+  panes.forEach((p,j)=>p.classList.toggle('active',j===i));
+  cycleStart=performance.now();
+}
+tabs.forEach((t,i)=>t.addEventListener('click',()=>{userInteracted=true;setPane(i);}));
+
+function cycleLoop(now){
+  const elapsed=now-cycleStart;
+  const pct=Math.min(elapsed/CYCLE_MS,1);
+  progressFill.style.width=(pct*100)+'%';
+  if(!userInteracted && pct>=1){
+    setPane((currentPane+1)%panes.length);
+  }
+  requestAnimationFrame(cycleLoop);
+}
+requestAnimationFrame(cycleLoop);
+
+/* ─── Hero sphere (capture pane) ─── */
+const heroSphere=document.getElementById('hero-sphere');
+const hsCtx=heroSphere.getContext('2d');
+const HSW=heroSphere.width,HSH=heroSphere.height;
+const heroBubbles=[];
+const HERO_PALETTE=['#0F0F0E','#5B6CFF','#4A8B6F','#E6A85C','#1A1A18','#6B6B66'];
+
+for(let i=0;i<24;i++){
+  heroBubbles.push({
+    x:HSW/2+(Math.random()-.5)*HSW*.6,
+    y:HSH/2+(Math.random()-.5)*HSH*.5,
+    r:6+Math.random()*16,
+    vx:(Math.random()-.5)*.3,
+    vy:(Math.random()-.5)*.3,
+    col:HERO_PALETTE[Math.floor(Math.random()*HERO_PALETTE.length)],
+    op:.15+Math.random()*.4,
+    phase:Math.random()*Math.PI*2,
+  });
+}
+
+let hsTime=0;
+function drawHeroSphere(){
+  hsTime+=.012;
+  hsCtx.clearRect(0,0,HSW,HSH);
+  // soft glow centerpiece
+  const gx=HSW/2,gy=HSH/2;
+  const halo=hsCtx.createRadialGradient(gx,gy,40,gx,gy,260);
+  halo.addColorStop(0,'rgba(91,108,255,.10)');
+  halo.addColorStop(.6,'rgba(91,108,255,.02)');
+  halo.addColorStop(1,'rgba(91,108,255,0)');
+  hsCtx.fillStyle=halo;
+  hsCtx.beginPath();hsCtx.arc(gx,gy,260,0,Math.PI*2);hsCtx.fill();
+
+  heroBubbles.forEach((b,i)=>{
+    b.x+=b.vx+Math.sin(hsTime+b.phase)*.15;
+    b.y+=b.vy+Math.cos(hsTime*.8+b.phase)*.15;
+    // gentle pull to center
+    const dx=gx-b.x,dy=gy-b.y;
+    b.x+=dx*.0008;b.y+=dy*.0008;
+    if(b.x<b.r||b.x>HSW-b.r)b.vx*=-1;
+    if(b.y<b.r||b.y>HSH-b.r)b.vy*=-1;
+
+    // bubble with wash + highlight (glassy)
+    hsCtx.save();
+    const grad=hsCtx.createRadialGradient(b.x-b.r*.3,b.y-b.r*.35,b.r*.1,b.x,b.y,b.r);
+    grad.addColorStop(0,'rgba(255,255,255,.85)');
+    grad.addColorStop(.5,b.col+'30');
+    grad.addColorStop(1,b.col+'08');
+    hsCtx.beginPath();hsCtx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    hsCtx.fillStyle=grad;hsCtx.fill();
+    hsCtx.beginPath();hsCtx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    hsCtx.strokeStyle='rgba(15,15,14,.08)';hsCtx.lineWidth=.5;hsCtx.stroke();
+    hsCtx.restore();
+  });
+  requestAnimationFrame(drawHeroSphere);
+}
+drawHeroSphere();
+
+// hero capture event ticker
+const HERO_EVENTS=[
+  {src:'figma',label:'Linear changelog screenshot',col:'#5B6CFF'},
+  {src:'browser',label:'Vercel pricing page',col:'#0F0F0E'},
+  {src:'slack',label:'"this is too much" — Marta',col:'#E6A85C'},
+  {src:'figma',label:'Stripe API doc snippet',col:'#5B6CFF'},
+  {src:'browser',label:'Things 3 keyboard shortcuts',col:'#4A8B6F'},
+];
+let heroEventIdx=0;
+const heroEventEl=document.getElementById('hero-cap-events');
+const heroCaptureN=document.getElementById('hero-capture-n');
+let heroN=147;
+heroCaptureN.textContent=heroN;
+
+setInterval(()=>{
+  if(currentPane!==0)return;
+  const e=HERO_EVENTS[heroEventIdx%HERO_EVENTS.length];
+  const div=document.createElement('div');
+  div.className='cap-event';
+  const ts=new Date();
+  div.innerHTML=`
+    <div class="dot" style="background:${e.col}"></div>
+    <div class="src">${e.src}</div>
+    <div class="label">${e.label}</div>
+    <div class="ts">${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}</div>`;
+  heroEventEl.appendChild(div);
+  heroN++;heroCaptureN.textContent=heroN;
+  while(heroEventEl.children.length>2){
+    heroEventEl.removeChild(heroEventEl.firstChild);
+  }
+  heroEventIdx++;
+},2200);
+
+// hero fingerprint traits
+const HERO_TRAITS=[
+  {n:'restraint',v:.88},
+  {n:'specificity',v:.84},
+  {n:'trust',v:.78},
+  {n:'precision',v:.82},
+  {n:'slowness',v:.65},
+  {n:'directness',v:.91},
+];
+const heroFpTraits=document.getElementById('hero-fp-traits');
+HERO_TRAITS.forEach(t=>{
+  const row=document.createElement('div');
+  row.className='fp-trait';
+  row.innerHTML=`
+    <span class="name">${t.n}</span>
+    <div class="bar"><div class="fill" data-w="${t.v*100}"></div></div>
+    <span class="val">${(t.v*10).toFixed(1)}</span>`;
+  heroFpTraits.appendChild(row);
+});
+// animate fills when fingerprint pane becomes visible
+function animateHeroFills(){
+  document.querySelectorAll('#hero-fp-traits .fill').forEach(f=>{
+    f.style.width=f.dataset.w+'%';
+  });
+}
+const heroFpPane=document.querySelector('.demo-pane[data-idx="1"]');
+const heroFpObs=new MutationObserver(()=>{
+  if(heroFpPane.classList.contains('active'))animateHeroFills();
+});
+heroFpObs.observe(heroFpPane,{attributes:true,attributeFilter:['class']});
+
+/* ═══════════════════════════════════════════════════════════
+   MODULE 1: CAPTURE — interactive scoring
+   ═══════════════════════════════════════════════════════════ */
+const capCanvas=document.getElementById('cap-canvas');
+const capCtx=capCanvas.getContext('2d');
+function resizeCapCanvas(){
+  const rect=capCanvas.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  capCanvas.width=rect.width*dpr;
+  capCanvas.height=rect.height*dpr;
+  capCtx.scale(dpr,dpr);
+}
+resizeCapCanvas();
+window.addEventListener('resize',resizeCapCanvas);
+
+// seed artifacts
+const capArtifacts=[
+  {x:.78,y:.22,label:'Linear changelog',pull:1,r:9},
+  {x:.82,y:.34,label:'Things 3 shortcuts',pull:1,r:8},
+  {x:.72,y:.18,label:'Vercel docs',pull:1,r:10},
+  {x:.66,y:.4,label:'Stripe error page',pull:1,r:7},
+  {x:.18,y:.78,label:'Buzzfeed listicle',pull:0,r:6},
+  {x:.12,y:.68,label:'"Game-changer" pitch',pull:0,r:7},
+  {x:.24,y:.84,label:'Hyped landing page',pull:0,r:6},
+  {x:.48,y:.5,label:'Notion announcement',pull:.5,r:6},
+  {x:.55,y:.42,label:'Figma blog post',pull:.5,r:6},
+];
+
+function drawCapCanvas(){
+  const rect=capCanvas.getBoundingClientRect();
+  const W=rect.width,H=rect.height;
+  capCtx.clearRect(0,0,W,H);
+
+  // soft grid
+  capCtx.strokeStyle='rgba(15,15,14,.04)';
+  capCtx.lineWidth=.5;
+  for(let i=1;i<8;i++){
+    capCtx.beginPath();capCtx.moveTo(W*i/8,30);capCtx.lineTo(W*i/8,H-30);capCtx.stroke();
+    capCtx.beginPath();capCtx.moveTo(30,H*i/8);capCtx.lineTo(W-30,H*i/8);capCtx.stroke();
+  }
+  // center cross
+  capCtx.strokeStyle='rgba(15,15,14,.1)';
+  capCtx.lineWidth=.5;
+  capCtx.setLineDash([3,4]);
+  capCtx.beginPath();capCtx.moveTo(W/2,30);capCtx.lineTo(W/2,H-30);capCtx.stroke();
+  capCtx.beginPath();capCtx.moveTo(30,H/2);capCtx.lineTo(W-30,H/2);capCtx.stroke();
+  capCtx.setLineDash([]);
+
+  // sweet-spot zone (top-right quadrant - restraint + specific)
+  const zoneGrad=capCtx.createRadialGradient(W*.78,H*.25,10,W*.78,H*.25,Math.min(W,H)*.32);
+  zoneGrad.addColorStop(0,'rgba(74,139,111,.14)');
+  zoneGrad.addColorStop(1,'rgba(74,139,111,0)');
+  capCtx.fillStyle=zoneGrad;
+  capCtx.beginPath();capCtx.arc(W*.78,H*.25,Math.min(W,H)*.32,0,Math.PI*2);capCtx.fill();
+
+  // reject zone (bottom-left)
+  const rejGrad=capCtx.createRadialGradient(W*.18,H*.78,10,W*.18,H*.78,Math.min(W,H)*.28);
+  rejGrad.addColorStop(0,'rgba(176,80,80,.10)');
+  rejGrad.addColorStop(1,'rgba(176,80,80,0)');
+  capCtx.fillStyle=rejGrad;
+  capCtx.beginPath();capCtx.arc(W*.18,H*.78,Math.min(W,H)*.28,0,Math.PI*2);capCtx.fill();
+
+  // artifacts
+  capArtifacts.forEach(a=>{
+    const x=a.x*W,y=a.y*H;
+    let col,fill;
+    if(a.pull===1){col='#4A8B6F';fill='rgba(74,139,111,.14)';}
+    else if(a.pull===0){col='#B05050';fill='rgba(176,80,80,.12)';}
+    else {col='#6B6B66';fill='rgba(107,107,102,.08)';}
+    capCtx.beginPath();capCtx.arc(x,y,a.r,0,Math.PI*2);
+    capCtx.fillStyle=fill;capCtx.fill();
+    capCtx.strokeStyle=col;capCtx.lineWidth=1;capCtx.stroke();
+    if(a.glow){
+      const g=capCtx.createRadialGradient(x,y,a.r,x,y,a.r*3);
+      g.addColorStop(0,col+'40');g.addColorStop(1,col+'00');
+      capCtx.fillStyle=g;
+      capCtx.beginPath();capCtx.arc(x,y,a.r*3,0,Math.PI*2);capCtx.fill();
+    }
+  });
+  requestAnimationFrame(drawCapCanvas);
+}
+drawCapCanvas();
+
+// scoring (heuristic, looks intelligent)
+function scoreCapture(text){
+  const t=text.toLowerCase();
+  let restraint=.5,specificity=.5;
+  const hyped=['revolutionize','game-chang','best','fastest','most','ultimate','unleash','transform','leverage','synergy','disrupt','seamless','powerful','innovative','cutting-edge','world-class','next-gen','reimagine','elevat'];
+  const adjectiveStack=t.match(/(\w+),\s*(\w+),\s*(\w+)/);
+  hyped.forEach(w=>{if(t.includes(w))restraint-=.1;});
+  if(adjectiveStack)restraint-=.15;
+  if(t.includes('!'))restraint-=.05;
+  if(t.length<80&&t.length>20)restraint+=.1;
+
+  // specificity: numbers, proper-noun-feeling words, concrete nouns, short
+  if(/\d/.test(t))specificity+=.15;
+  if(/⌘|cmd|keyboard|shortcut|second|minute|click|button|page|ms\b/.test(t))specificity+=.15;
+  if(t.length<60)specificity+=.1;
+  const generic=['workflow','solution','platform','experience','journey','ecosystem','potential','unlock','empower'];
+  generic.forEach(w=>{if(t.includes(w))specificity-=.1;});
+  // clamp
+  restraint=Math.max(.05,Math.min(.95,restraint));
+  specificity=Math.max(.05,Math.min(.95,specificity));
+
+  let verdict,reason;
+  if(restraint>.65&&specificity>.6){
+    verdict='pull';
+    reason='Restrained, specific. The kind of sentence Atlas would save.';
+  }else if(restraint<.35||specificity<.35){
+    verdict='reject';
+    if(restraint<.35&&specificity<.35)reason='Hyped and generic. Atlas would cut both. The fingerprint rejects this without thinking.';
+    else if(restraint<.35)reason='Too hyped. Stacks adjectives where one would do. The team would prune it.';
+    else reason='Too generic. Could describe any product. The team needs the specific noun.';
+  }else{
+    verdict='neutral';
+    reason='Borderline. Lands in the team\'s middle ground — neither pulled nor rejected.';
+  }
+  return{restraint,specificity,verdict,reason};
+}
+
+const capInput=document.getElementById('cap-input');
+const capSubmit=document.getElementById('cap-submit');
+const capResult=document.getElementById('cap-result');
+let capLastResult=null;
+
+function runCapture(text){
+  if(!text.trim())return;
+  const s=scoreCapture(text);
+  // add to canvas
+  capArtifacts.forEach(a=>a.glow=false);
+  const newPt={
+    x:s.specificity,y:1-s.restraint,
+    label:text.length>30?text.slice(0,28)+'…':text,
+    pull:s.verdict==='pull'?1:s.verdict==='reject'?0:.5,
+    r:11,glow:true,
+  };
+  capArtifacts.push(newPt);
+  if(capArtifacts.length>14)capArtifacts.shift();
+
+  // result panel
+  const verdictHtml=s.verdict==='pull'
+    ?'<span class="pull">→ Pulled toward</span>'
+    :s.verdict==='reject'?'<span class="reject">→ Rejected</span>'
+    :'<span style="color:var(--muted);">→ Neutral</span>';
+  capResult.innerHTML=`
+    <div class="cap-result-block">
+      <div class="lbl">Verdict</div>
+      <div class="verdict">${verdictHtml}</div>
+    </div>
+    <div class="cap-result-block">
+      <div class="lbl">Why</div>
+      <div class="why">${s.reason}</div>
+    </div>
+    <div class="cap-result-block">
+      <div class="lbl">Coordinates</div>
+      <div class="verdict" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);">
+        restraint: ${s.restraint.toFixed(2)} · specificity: ${s.specificity.toFixed(2)}
+      </div>
+    </div>`;
+  capInput.value='';
+}
+
+capSubmit.addEventListener('click',()=>runCapture(capInput.value));
+capInput.addEventListener('keydown',e=>{if(e.key==='Enter')runCapture(capInput.value);});
+document.querySelectorAll('.cap-suggest').forEach(b=>{
+  b.addEventListener('click',()=>{capInput.value=b.dataset.text;runCapture(b.dataset.text);});
+});
+
+/* ═══════════════════════════════════════════════════════════
+   MODULE 2: FINGERPRINT — sliders rebuild card live
+   ═══════════════════════════════════════════════════════════ */
+const FP_DIMS=[
+  {n:'restraint',v:88,desc:{
+    high:'Pulled toward restraint as conviction.',
+    mid:'Comfortable with both restraint and abundance.',
+    low:'Reaches for fullness over emptiness.'}},
+  {n:'specificity',v:84,desc:{
+    high:'Reaches for the specific over the general.',
+    mid:'Balances the concrete with the conceptual.',
+    low:'Comfortable in the abstract.'}},
+  {n:'trust',v:78,desc:{
+    high:'Trusts the reader.',
+    mid:'Walks the line between explaining and assuming.',
+    low:'Holds the reader\'s hand.'}},
+  {n:'precision',v:82,desc:{
+    high:'Treats accuracy as the floor, not the ceiling.',
+    mid:'Precise where it matters, loose where it doesn\'t.',
+    low:'Open to interpretation.'}},
+  {n:'slowness',v:65,desc:{
+    high:'Lets ideas breathe.',
+    mid:'Moves at the pace the reader needs.',
+    low:'Direct and quick.'}},
+  {n:'directness',v:91,desc:{
+    high:'Says the thing.',
+    mid:'Direct, but with care.',
+    low:'Suggestive, indirect.'}},
+];
+
+const fpSliders=document.getElementById('fp-sliders');
+const fpQuoteEl=document.getElementById('fp-quote');
+const fpAxesEl=document.getElementById('fp-card-axes');
+
+function buildFpQuote(){
+  const sentences=FP_DIMS
+    .filter(d=>d.v>=70 || d.v<=35)
+    .slice(0,3)
+    .map(d=>{
+      if(d.v>=70)return d.desc.high;
+      if(d.v<=35)return d.desc.low;
+      return d.desc.mid;
+    });
+  if(sentences.length===0)return '"A balanced team. Pulls and rejections still emerging."';
+  return '"'+sentences.join(' ')+'"';
+}
+function renderFp(){
+  fpQuoteEl.textContent=buildFpQuote();
+  fpAxesEl.innerHTML=FP_DIMS.map(d=>`
+    <div class="fp-card-ax">
+      <span class="n">${d.n}</span>
+      <div class="b"><div class="f" style="width:${d.v}%"></div></div>
+      <span class="v">${(d.v/10).toFixed(1)}</span>
+    </div>`).join('');
+}
+FP_DIMS.forEach((d,i)=>{
+  const row=document.createElement('div');
+  row.className='fp-slider-row';
+  row.innerHTML=`
+    <div class="top">
+      <span class="name">${d.n}</span>
+      <span class="val" id="fp-val-${i}">${(d.v/10).toFixed(1)}</span>
+    </div>
+    <input type="range" min="0" max="100" value="${d.v}" data-i="${i}">`;
+  fpSliders.appendChild(row);
+});
+fpSliders.querySelectorAll('input').forEach(inp=>{
+  inp.addEventListener('input',()=>{
+    const i=+inp.dataset.i;
+    FP_DIMS[i].v=+inp.value;
+    document.getElementById('fp-val-'+i).textContent=(FP_DIMS[i].v/10).toFixed(1);
+    renderFp();
+  });
+});
+renderFp();
+
+/* ═══════════════════════════════════════════════════════════
+   MODULE 3: API — real Claude call
+   ═══════════════════════════════════════════════════════════ */
+const apiToggle=document.getElementById('api-toggle');
+const apiBadge=document.getElementById('api-badge');
+const apiPrompt=document.getElementById('api-prompt');
+const apiRun=document.getElementById('api-run');
+const apiOutput=document.getElementById('api-output');
+const apiMeta=document.getElementById('api-meta');
+const apiTokens=document.getElementById('api-tokens');
+const apiTime=document.getElementById('api-time');
+
+function setToggle(on){
+  apiToggle.classList.toggle('on',on);
+  apiBadge.textContent=on?'FINGERPRINT ON':'FINGERPRINT OFF';
+  apiBadge.classList.toggle('with-fp',on);
+}
+apiToggle.addEventListener('click',()=>setToggle(!apiToggle.classList.contains('on')));
+
+const ATLAS_FINGERPRINT_CONTEXT=`You are writing for the Atlas team. The Atlas brand fingerprint, captured from 1,847 real artifacts the team has saved or rejected:
+
+- Pulled toward restraint as conviction. The team prefers one strong sentence to three softened ones.
+- Reaches for the specific over the general. Names the actual button, the actual keystroke, the actual second saved.
+- Trusts the reader. No hand-holding, no over-explaining, no "you might be wondering".
+- Says the thing directly. No "introducing" or "we're excited to announce".
+- Reliably rejects: hyperbole ("revolutionary", "game-changing", "powerful"), three-adjective stacking ("fast, simple, intuitive"), empty superlatives ("the best", "the most"), generic SaaS-speak ("workflow", "solution", "unlock potential"), exclamation marks.
+- Pulled by: numbers, real keystrokes, concrete details, "you can now [specific action]" constructions, sentences under 15 words.
+
+Write in this voice. Match the restraint. Match the specificity. Don't hedge.`;
+
+apiRun.addEventListener('click',async()=>{
+  const prompt=apiPrompt.value.trim();
+  if(!prompt)return;
+  const fpOn=apiToggle.classList.contains('on');
+  apiRun.classList.add('loading');
+  apiRun.disabled=true;
+  apiOutput.classList.remove('empty');
+  apiOutput.textContent='';
+  apiMeta.style.display='none';
+  const start=performance.now();
+
+  const messages=[{
+    role:'user',
+    content:fpOn?`${ATLAS_FINGERPRINT_CONTEXT}\n\n---\n\nTask: ${prompt}\n\nWrite the response. Just the response — no preamble, no "here's a draft".`:prompt+'\n\nJust write the response, no preamble.'
+  }];
+
+  try{
+    const res=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        model:"claude-sonnet-4-20250514",
+        max_tokens:1000,
+        messages,
+      })
+    });
+    const data=await res.json();
+    const text=data.content
+      .filter(b=>b.type==='text')
+      .map(b=>b.text)
+      .join('\n');
+    apiOutput.textContent=text;
+    const elapsed=Math.round(performance.now()-start);
+    apiTime.textContent=elapsed;
+    apiTokens.textContent=data.usage?(data.usage.input_tokens+data.usage.output_tokens):'—';
+    apiMeta.style.display='flex';
+  }catch(err){
+    apiOutput.textContent='Error: '+err.message;
+  }finally{
+    apiRun.classList.remove('loading');
+    apiRun.disabled=false;
+  }
+});
+</script>
+</body>
+</html>
