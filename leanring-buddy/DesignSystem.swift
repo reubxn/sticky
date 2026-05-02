@@ -844,6 +844,15 @@ enum ElevenLabsBrand {
         /// some social tiles.
         static let gradientLavender = Color(hex: "#C9B6E8")
 
+        /// Taste accent — the amber-orange used by Reverse Clicky's
+        /// teach-mode edge glow and any panel/dashboard surface that
+        /// signals taste-capture (Start Teach Session dot, Active pill
+        /// while voice is engaged, permission-warning icons, the
+        /// selection bar in the dashboard sidebar). Picked to match the
+        /// edge glow at OverlayWindow.swift's `.teachRecording` mode so
+        /// the same hue carries across surfaces.
+        static let tasteAccent = Color(hex: "#FFA94D")
+
         // MARK: - Dark Hero
         //
         // For the "most realistic voice AI platform" trade-show wall and
@@ -895,12 +904,6 @@ enum ElevenLabsBrand {
         /// Caption — metadata pills ("14m", "2.1k"), timestamps,
         /// fine-print legal.
         static let caption = Font.system(size: 11, weight: .medium, design: .default)
-
-        /// Wordmark — the "IIElevenLabs" lockup. Use only for the
-        /// brand mark; don't apply to UI labels.
-        static func wordmark(size: CGFloat = 20) -> Font {
-            .system(size: size, weight: .bold, design: .default)
-        }
     }
 
     // MARK: - Shape
@@ -1002,35 +1005,6 @@ enum ElevenLabsBrand {
         static func card<V: View>(_ view: V) -> some View {
             view.shadow(color: Color.black.opacity(0.04), radius: 1, x: 0, y: 1)
                 .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 4)
-        }
-    }
-}
-
-// MARK: - ElevenLabs Wordmark
-//
-// Renders the "IIElevenLabs" lockup. The leading "II" represents the
-// pause-symbol mark from the brand. We approximate it with two short
-// vertical bars set tightly against the wordmark.
-
-struct ElevenLabsWordmark: View {
-    var size: CGFloat = 20
-    var color: Color = ElevenLabsBrand.Colors.inkPure
-
-    var body: some View {
-        HStack(spacing: size * 0.18) {
-            // The "II" mark — two bars, slightly narrower than capital height.
-            HStack(spacing: size * 0.14) {
-                Capsule()
-                    .fill(color)
-                    .frame(width: size * 0.16, height: size * 0.95)
-                Capsule()
-                    .fill(color)
-                    .frame(width: size * 0.16, height: size * 0.95)
-            }
-            Text("ElevenLabs")
-                .font(ElevenLabsBrand.Typography.wordmark(size: size))
-                .foregroundColor(color)
-                .tracking(-0.5)
         }
     }
 }
@@ -1327,11 +1301,21 @@ struct IBeamCursorView: NSViewRepresentable {
 /// Uses AppKit's `NSView.toolTip` to show a tooltip on hover.
 /// SwiftUI's `.help()` conflicts with `.onHover` tracking areas, so
 /// this bridges directly to AppKit's tooltip system which works independently.
+private class NativeTooltipNSView: NSView {
+    /// Tooltip overlays sit on top of Buttons in `.overlay(...)`. NSView's
+    /// default hitTest returns self, which swallows the click before the
+    /// underlying SwiftUI Button can receive it. Returning nil makes this
+    /// view click-through (same pattern as PointerCursorNSView).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+}
+
 private struct NativeTooltipView: NSViewRepresentable {
     let tooltip: String
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = NativeTooltipNSView()
         view.toolTip = tooltip
         return view
     }

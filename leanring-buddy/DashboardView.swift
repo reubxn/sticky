@@ -15,8 +15,20 @@
 import SwiftUI
 
 struct DashboardView: View {
+    /// Optional shared CompanionManager. Threaded in by
+    /// `DashboardWindowController` from the menu bar layer so the live
+    /// Chat and Memory tabs can share persona, taste profile, and model
+    /// state with the menu bar and floating chat window. Nil in
+    /// previews — those tabs render a small "open the menu bar first"
+    /// fallback when CompanionManager isn't available.
+    let companionManager: CompanionManager?
+
     @StateObject private var dashboardNavigationState = DashboardNavigationState.shared
     @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
+    init(companionManager: CompanionManager? = nil) {
+        self.companionManager = companionManager
+    }
 
     var body: some View {
         Group {
@@ -51,6 +63,10 @@ struct DashboardView: View {
     @ViewBuilder
     private var currentSectionContent: some View {
         switch dashboardNavigationState.selectedSection {
+        case .chat:
+            DashboardLiveChatView(companionManager: companionManager)
+        case .memory:
+            DashboardMemoryView(companionManager: companionManager)
         case .tastes:
             DashboardTastesView()
         case .team:

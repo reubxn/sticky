@@ -36,11 +36,6 @@ struct DashboardSettingsView: View {
     @State private var isAnalyticsOptedOut: Bool = UserDefaults.standard
         .bool(forKey: "dashboardMockAnalyticsOptedOut")
 
-    private static let availableClaudeModels: [(modelId: String, displayName: String)] = [
-        ("claude-haiku-4-5-20251001", "Haiku 4.5 — fastest"),
-        ("claude-sonnet-4-6", "Sonnet 4.6 — balanced"),
-        ("claude-opus-4-7", "Opus 4.7 — sharpest")
-    ]
 
     var body: some View {
         DashboardContentScrollContainer {
@@ -65,8 +60,8 @@ struct DashboardSettingsView: View {
             ElevenLabsEyebrow("MODEL")
 
             VStack(spacing: 6) {
-                ForEach(Self.availableClaudeModels, id: \.modelId) { model in
-                    modelPickerRow(modelId: model.modelId, displayName: model.displayName)
+                ForEach(ModelPickerKind.allCases, id: \.self) { modelKind in
+                    modelPickerRow(modelKind: modelKind)
                 }
             }
             .padding(ElevenLabsBrand.Spacing.md)
@@ -81,13 +76,33 @@ struct DashboardSettingsView: View {
         }
     }
 
-    private func modelPickerRow(modelId: String, displayName: String) -> some View {
-        let isSelected = (modelId == selectedClaudeModel)
+    private func modelPickerRow(modelKind: ModelPickerKind) -> some View {
+        let isSelected = (modelKind.claudeModelId == selectedClaudeModel)
         return Button(action: {
-            selectedClaudeModel = modelId
-            UserDefaults.standard.set(modelId, forKey: "selectedClaudeModel")
+            selectedClaudeModel = modelKind.claudeModelId
+            UserDefaults.standard.set(modelKind.claudeModelId, forKey: "selectedClaudeModel")
         }) {
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                Text(modelKind.glyphCharacter)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(
+                        isSelected
+                            ? ElevenLabsBrand.Colors.ink
+                            : ElevenLabsBrand.Colors.inkSecondary
+                    )
+                    .frame(width: 22)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(modelKind.longLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    Text(modelKind.descriptor)
+                        .font(.system(size: 11))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                }
+
+                Spacer()
+
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(
@@ -95,12 +110,8 @@ struct DashboardSettingsView: View {
                             ? ElevenLabsBrand.Colors.ink
                             : ElevenLabsBrand.Colors.inkTertiary
                     )
-                Text(displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-                Spacer()
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
             .padding(.horizontal, 8)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

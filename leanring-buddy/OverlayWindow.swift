@@ -272,18 +272,22 @@ struct BlueCursorView: View {
     }
 
     /// Picks the color of the glow based on whose turn it is in the
-    /// conversation. The user's voice (listening / processing /
-    /// teach-recording) always glows in the fixed user color (blue) so
-    /// the speaking-side identity is stable across persona switches.
-    /// The persona's reply (responding) glows in the active persona's
-    /// accent color — the same hex shown on its spoke in the shift+cmd
-    /// wheel — so swapping persona on the wheel and seeing the reply
-    /// glow are visually consistent.
+    /// conversation. The user's voice (listening / processing) glows in
+    /// the fixed user color (blue) so the speaking-side identity is
+    /// stable across persona switches. Teach-recording overrides to
+    /// amber-orange to make taste-capture visually distinct from a
+    /// regular voice turn — the user is teaching, not asking. The
+    /// persona's reply (responding) glows in the active persona's accent
+    /// color — the same hex shown on its spoke in the shift+cmd wheel —
+    /// so swapping persona on the wheel and seeing the reply glow are
+    /// visually consistent.
     private var edgeGlowColor: Color {
         switch edgeGlowMode {
         case .respondingWithAI:
             return companionManager.personaReplyEdgeGlowColor
-        case .listeningToUser, .processingThinking, .teachRecording:
+        case .teachRecording:
+            return ElevenLabsBrand.Colors.tasteAccent
+        case .listeningToUser, .processingThinking:
             return companionManager.userVoiceColor
         }
     }

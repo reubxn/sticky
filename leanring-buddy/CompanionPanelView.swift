@@ -40,12 +40,33 @@ enum WarmPalette {
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
 
+    /// Live mock-auth state so the footer's signed-in chip and the
+    /// "Sign in" fallback react instantly when the user signs in or
+    /// out from the dashboard while the panel is open.
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
     @State private var emailInput: String = ""
 
     /// Drives the breathing animation on the status dot when Sticky is
     /// actively listening / processing / responding. Toggles continuously
     /// while `isVoiceActive` is true.
     @State private var isStatusDotPulsing: Bool = false
+
+    /// Drives the custom persona-picker popover. Replaces the native
+    /// `Menu` so we can render avatars, role subtitles, and a sectioned
+    /// layout that matches the rest of the panel.
+    @State private var isPersonaPickerPresented: Bool = false
+
+    /// Tracks hover over the persona picker's whole paper card so the
+    /// surface can subtly lift to advertise that the row is clickable.
+    @State private var isHoveringPersonaCard: Bool = false
+
+    /// Hover state for the small footer affordances (Quit, Sign in chip,
+    /// model menu). Each gets its own boolean so they animate
+    /// independently as the cursor moves between them.
+    @State private var isHoveringQuitButton: Bool = false
+    @State private var isHoveringSignedInChip: Bool = false
+    @State private var isHoveringModelMenu: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -204,42 +225,92 @@ struct CompanionPanelView: View {
                 teachSessionSavedSummary
             }
 
-            openChatLink
+            MiniPanelActivityFeed()
 
-            tasteLibraryLink
-
-            openDashboardLink
+            navigationRail
         }
         .padding(.horizontal, ElevenLabsBrand.Spacing.md)
         .padding(.top, ElevenLabsBrand.Spacing.md)
         .padding(.bottom, ElevenLabsBrand.Spacing.sm)
     }
 
-    // MARK: - Dashboard Link
+    // MARK: - Navigation Rail
+    //
+    // Three equal tiles — Chat / Memory / Dashboard — replacing the
+    // earlier stack of three near-identical text links. The previous
+    // layout had three rows that all looked the same (icon + label +
+    // up-right arrow), with the markdown-export icon orphaned to the
+    // far right of the Memory row. The rail gives each destination
+    // equal weight, removes the repeated "↗" decorations, and tucks
+    // export into the Memory tile as a small secondary affordance.
+    private var navigationRail: some View {
+        HStack(spacing: ElevenLabsBrand.Spacing.xs) {
+            navigationTile(
+                iconSymbol: "bubble.left.and.bubble.right",
+                title: "Chat",
+                tooltip: "Open Chat inside the dashboard",
+                action: {
+                    MenuBarPanelManager.shared?.openDashboardWindow(
+                        focusedPersonaId: nil,
+                        initialSection: .chat
+                    )
+                }
+            )
 
-    /// Opens the full Sticky Dashboard window — sidebar with Tastes,
-    /// Team, Profile, Recordings, Chats, Settings. The mini panel is
-    /// the quick HUD; the dashboard is where you actually manage
-    /// your taste, your team, and your profile.
-    private var openDashboardLink: some View {
-        Button(action: {
-            MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Open dashboard")
-                    .font(.system(size: 12, weight: .semibold))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .foregroundColor(ElevenLabsBrand.Colors.ink)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 8)
+            navigationTile(
+                iconSymbol: "books.vertical",
+                title: "Memory",
+                tooltip: "See every principle Sticky has learned",
+                action: {
+                    MenuBarPanelManager.shared?.openDashboardWindow(
+                        focusedPersonaId: nil,
+                        initialSection: .memory
+                    )
+                },
+                trailingAccessory: AnyView(memoryExportAccessory)
+            )
+
+            navigationTile(
+                iconSymbol: "square.grid.2x2",
+                title: "Dashboard",
+                tooltip: "Personas, team, profile, recordings, chats, settings",
+                action: {
+                    MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+                }
+            )
         }
-        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
-        .pointerCursor()
-        .nativeTooltip("Personas, team, profile, recordings, chats, settings")
+    }
+
+    /// One tile in the navigation rail. Square-ish, icon stacked above
+    /// label, paper card with hairline border. Tile fills the available
+    /// width so all three rails sit in a perfectly even row regardless
+    /// of label length. The optional `trailingAccessory` is laid out in
+    /// the top-right corner via overlay so it can't push the centered
+    /// icon/label off-axis.
+    private func navigationTile(
+        iconSymbol: String,
+        title: String,
+        tooltip: String,
+        action: @escaping () -> Void,
+        trailingAccessory: AnyView? = nil
+    ) -> some View {
+        NavigationTile(
+            iconSymbol: iconSymbol,
+            title: title,
+            tooltip: tooltip,
+            action: action,
+            trailingAccessory: trailingAccessory
+        )
+    }
+
+    /// Tiny export-to-markdown affordance pinned to the top-right of the
+    /// Memory tile. Stops propagation so tapping the icon doesn't also
+    /// open the library. Mirrors the same export action that lived on
+    /// the old `tasteLibraryLink` row.
+    private var memoryExportAccessory: some View {
+        MemoryExportAccessoryButton(
+            action: { exportPersonalTasteAsMarkdownFromMiniPanel() }
+        )
     }
 
     /// Eyebrow + bold instruction line. Uses SF Symbol glyphs for the
@@ -278,15 +349,14 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// Persona picker rendered as a standard dropdown. The trigger row
-    /// shows the active persona's avatar + name on the leading edge and
-    /// a chevron on the trailing edge. Tapping opens a native Menu with
-    /// Me + Team at the top and a Teammates section below — the persona
-    /// IS the scope, so no separate Personal/Team toggle is needed.
+    /// Persona picker rendered as a custom popover. Trigger shows the
+    /// active persona's avatar + name; tapping opens a paper-styled
+    /// dropdown with two sections (Modes, Teammates). Each row renders
+    /// the persona avatar, display name, and role — the native `Menu`
+    /// can't show avatars, which is why we render our own.
     private var personaControl: some View {
         let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
             ?? PersonaStore.mePseudoPersona
-        let teammates = PersonaStore.availableTeammates
 
         return HStack(spacing: ElevenLabsBrand.Spacing.sm) {
             Text("PERSONA")
@@ -296,22 +366,11 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            Menu {
-                personaMenuButton(persona: PersonaStore.mePseudoPersona)
-                personaMenuButton(persona: PersonaStore.teamPseudoPersona)
-                if !teammates.isEmpty {
-                    Divider()
-                    Section("Teammates") {
-                        ForEach(teammates, id: \.id) { teammate in
-                            personaMenuButton(persona: teammate)
-                        }
-                    }
-                }
-            } label: {
+            Button(action: { isPersonaPickerPresented.toggle() }) {
                 HStack(spacing: 8) {
                     PersonaAvatarView(
                         avatar: activePersonaBundle.avatar,
-                        diameter: 20
+                        diameter: 22
                     )
                     Text(activePersonaBundle.displayName)
                         .font(.system(size: 12, weight: .semibold))
@@ -319,42 +378,106 @@ struct CompanionPanelView: View {
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                        .foregroundColor(
+                            isHoveringPersonaCard
+                                ? ElevenLabsBrand.Colors.ink
+                                : ElevenLabsBrand.Colors.inkTertiary
+                        )
                 }
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .buttonStyle(InteractivePressStyle(pressScale: 0.96))
             .fixedSize()
             .pointerCursor()
+            .popover(
+                isPresented: $isPersonaPickerPresented,
+                arrowEdge: .top
+            ) {
+                personaPickerContent(activePersonaID: activePersonaBundle.id)
+            }
         }
         .padding(.horizontal, ElevenLabsBrand.Spacing.md)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                .fill(ElevenLabsBrand.Colors.card)
+                .fill(
+                    isHoveringPersonaCard
+                        ? ElevenLabsBrand.Colors.paperRecessed
+                        : ElevenLabsBrand.Colors.card
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                .stroke(
+                    isHoveringPersonaCard
+                        ? ElevenLabsBrand.Colors.inkTertiary.opacity(0.4)
+                        : ElevenLabsBrand.Colors.hairline,
+                    lineWidth: 1
+                )
         )
+        .contentShape(Rectangle())
+        .onHover { hovering in isHoveringPersonaCard = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHoveringPersonaCard)
     }
 
-    /// One row in the persona menu. Shows display name + role; selecting
-    /// it commits the persona via CompanionManager (which also keeps
-    /// tasteScope in sync for .me / .team).
+    /// Body of the persona popover. Two sections separated by a hairline:
+    /// the two pseudo-personas (Me, Team) on top, then a `TEAMMATES`
+    /// section listing each member. Width is fixed so the layout reads
+    /// the same regardless of name length.
     @ViewBuilder
-    private func personaMenuButton(persona: PersonaBundle) -> some View {
-        Button(action: {
-            companionManager.setPersonaSelection(
-                PersonaStore.selectionForWheelPersona(persona)
+    private func personaPickerContent(activePersonaID: String) -> some View {
+        let teammates = PersonaStore.availableTeammates
+
+        VStack(alignment: .leading, spacing: 0) {
+            personaPickerRow(
+                persona: PersonaStore.mePseudoPersona,
+                isSelected: activePersonaID == PersonaStore.mePseudoPersona.id
             )
-        }) {
-            if let role = persona.role, !role.isEmpty {
-                Text("\(persona.displayName) — \(role)")
-            } else {
-                Text(persona.displayName)
+            personaPickerRow(
+                persona: PersonaStore.teamPseudoPersona,
+                isSelected: activePersonaID == PersonaStore.teamPseudoPersona.id
+            )
+
+            if !teammates.isEmpty {
+                Divider()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+
+                Text("TEAMMATES")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
+
+                ForEach(teammates, id: \.id) { teammate in
+                    personaPickerRow(
+                        persona: teammate,
+                        isSelected: activePersonaID == teammate.id
+                    )
+                }
             }
         }
+        .padding(.vertical, 6)
+        .frame(width: 280)
+        .background(ElevenLabsBrand.Colors.card)
+    }
+
+    /// Single row inside the persona popover: avatar + name + role +
+    /// trailing checkmark when active. Hovering fills the row with a
+    /// subtle paper-recessed wash so the click target is obvious.
+    @ViewBuilder
+    private func personaPickerRow(persona: PersonaBundle, isSelected: Bool) -> some View {
+        PersonaPickerRow(
+            persona: persona,
+            isSelected: isSelected,
+            onSelect: {
+                companionManager.setPersonaSelection(
+                    PersonaStore.selectionForWheelPersona(persona)
+                )
+                isPersonaPickerPresented = false
+            }
+        )
     }
 
     // MARK: - Primary Action Row
@@ -380,7 +503,7 @@ struct CompanionPanelView: View {
         }) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(ElevenLabsBrand.Colors.gradientCoral)
+                    .fill(ElevenLabsBrand.Colors.tasteAccent)
                     .frame(width: 8, height: 8)
                 Text("Start Teach Session")
             }
@@ -465,58 +588,26 @@ struct CompanionPanelView: View {
         )
     }
 
-    // MARK: - Chat Link
-
-    /// Opens the floating chat window. Styled as a discreet text link to
-    /// match `tasteLibraryLink` so the two secondary destinations sit
-    /// quietly above the footer without competing with the primary CTA.
-    private var openChatLink: some View {
-        Button(action: {
-            MenuBarPanelManager.shared?.openChatWindow()
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Open chat")
-                    .font(.system(size: 12, weight: .semibold))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .bold))
+    /// Opens the system save panel pointing at TASTE.md and writes the
+    /// user's personal taste profile as markdown. Shares its renderer
+    /// with the Dashboard Profile tab so the file format is identical
+    /// regardless of which surface kicked off the export.
+    private func exportPersonalTasteAsMarkdownFromMiniPanel() {
+        let personalProfile: TasteProfile = {
+            do {
+                return try TasteProfileStore.loadProfile()
+            } catch {
+                return TasteProfile(userId: PersonaStore.myPersonaId, principles: [], updatedAt: Date())
             }
-            .foregroundColor(ElevenLabsBrand.Colors.ink)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 8)
-        }
-        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
-        .pointerCursor()
-        .nativeTooltip("Chat with Sticky in a floating window")
-    }
-
-    // MARK: - Library Link
-
-    /// Demoted from a full-width tinted button to a discreet text link
-    /// sitting just above the footer. The library is a reference, not a
-    /// frequent destination — it shouldn't compete with the primary CTA.
-    private var tasteLibraryLink: some View {
-        Button(action: {
-            MenuBarPanelManager.shared?.openTasteLibraryWindow(
-                companionManager: companionManager
-            )
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "books.vertical")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("View memory library")
-                    .font(.system(size: 12, weight: .semibold))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .foregroundColor(ElevenLabsBrand.Colors.ink)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 8)
-        }
-        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
-        .pointerCursor()
-        .nativeTooltip("See every principle Sticky has learned")
+        }()
+        let localBundle = PersonaStore.myOwnBundle
+        DashboardTasteMarkdownExporter.exportPersonalProfileAsMarkdown(
+            personalProfile,
+            displayName: localBundle?.displayName ?? "Me",
+            role: localBundle?.role,
+            accentHex: localBundle?.accentColorHex,
+            voiceId: localBundle?.voiceId
+        )
     }
 
     // MARK: - Onboarding (permissions granted, email not yet submitted)
@@ -733,59 +824,178 @@ struct CompanionPanelView: View {
                 .fill(ElevenLabsBrand.Colors.hairline)
                 .frame(height: 1)
 
-            HStack(spacing: ElevenLabsBrand.Spacing.md) {
+            // Footer is two clear zones separated by a flexible spacer:
+            // left = model picker (the only knob the user might toggle
+            // mid-session); right = identity (signed-in chip) + a small
+            // dot separator + Quit. The dot prevents the chip and Quit
+            // from blurring into one ambiguous text run.
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
                 modelFooterMenu
 
                 Spacer()
 
+                signedInUserChip
+
+                Circle()
+                    .fill(ElevenLabsBrand.Colors.hairline)
+                    .frame(width: 3, height: 3)
+
                 Button(action: {
                     NSApp.terminate(nil)
                 }) {
-                    Text("Quit Sticky")
+                    Text("Quit")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                        .foregroundColor(
+                            isHoveringQuitButton
+                                ? ElevenLabsBrand.Colors.ink
+                                : ElevenLabsBrand.Colors.inkTertiary
+                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InteractivePressStyle(pressScale: 0.94))
                 .pointerCursor()
+                .nativeTooltip("Quit Sticky")
+                .onHover { hovering in isHoveringQuitButton = hovering }
+                .animation(.easeOut(duration: 0.14), value: isHoveringQuitButton)
             }
             .padding(.horizontal, ElevenLabsBrand.Spacing.md)
             .padding(.vertical, 10)
         }
     }
 
-    /// Compact model picker living in the footer. Power users can switch
-    /// between Haiku / Sonnet / Opus, but the control no longer competes
-    /// for attention with persona / scope / the primary CTA. Renders as
-    /// a discreet text+chevron menu trigger styled like "Quit Sticky".
-    private var modelFooterMenu: some View {
-        let modelDisplayName: String = {
-            switch companionManager.selectedModel {
-            case "claude-haiku-4-5-20251001": return "Haiku"
-            case "claude-sonnet-4-6":         return "Sonnet"
-            case "claude-opus-4-6":           return "Opus"
-            default:                          return "Model"
+    /// Tiny "signed in as X" chip in the footer — clicking opens the
+    /// dashboard's Profile tab where the user can actually edit their
+    /// identity / sign out. Pulls live from the shared mock auth
+    /// state so signing out from the dashboard collapses this chip
+    /// the next time the panel re-opens.
+    @ViewBuilder
+    private var signedInUserChip: some View {
+        if dashboardMockAuthState.isSignedIn {
+            Button(action: {
+                DashboardNavigationState.shared.selectedSection = .profile
+                MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+            }) {
+                HStack(spacing: 6) {
+                    miniSignedInAvatar
+
+                    Text(dashboardMockAuthState.displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(
+                            isHoveringSignedInChip
+                                ? ElevenLabsBrand.Colors.ink
+                                : ElevenLabsBrand.Colors.inkTertiary
+                        )
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(
+                        isHoveringSignedInChip
+                            ? ElevenLabsBrand.Colors.paperRecessed
+                            : Color.clear
+                    )
+                )
+                .contentShape(Rectangle())
             }
-        }()
+            .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+            .pointerCursor()
+            .nativeTooltip("Edit your profile in the dashboard")
+            .onHover { hovering in isHoveringSignedInChip = hovering }
+            .animation(.easeOut(duration: 0.14), value: isHoveringSignedInChip)
+        } else {
+            Button(action: {
+                MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+            }) {
+                Text("Sign in")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(
+                        isHoveringSignedInChip
+                            ? ElevenLabsBrand.Colors.ink
+                            : ElevenLabsBrand.Colors.inkTertiary
+                    )
+            }
+            .buttonStyle(InteractivePressStyle(pressScale: 0.94))
+            .pointerCursor()
+            .onHover { hovering in isHoveringSignedInChip = hovering }
+            .animation(.easeOut(duration: 0.14), value: isHoveringSignedInChip)
+        }
+    }
+
+    /// Tiny circular avatar for the footer chip — uses the local
+    /// persona's avatar when one is loaded, otherwise a small initials
+    /// circle so the chip stays readable on a fresh install.
+    @ViewBuilder
+    private var miniSignedInAvatar: some View {
+        if let localBundle = PersonaStore.myOwnBundle {
+            PersonaAvatarView(avatar: localBundle.avatar, diameter: 16)
+        } else {
+            Circle()
+                .fill(ElevenLabsBrand.Colors.gradientSky)
+                .frame(width: 16, height: 16)
+        }
+    }
+
+    /// Compact model picker living in the footer. Re-skinned to read
+    /// in human terms ("Fast thinker / Balanced / Deep thinker") with
+    /// a small shape glyph that matches each model's character — a
+    /// triangle for fast, a circle for balanced, a four-point star
+    /// for deep. The Claude model id stays the source of truth on
+    /// `companionManager.selectedModel`; only the label and glyph
+    /// change.
+    private var modelFooterMenu: some View {
+        let currentModelKind = ModelPickerKind.fromClaudeModelId(companionManager.selectedModel)
 
         return Menu {
-            Button("Haiku — fastest")  { companionManager.setSelectedModel("claude-haiku-4-5-20251001") }
-            Button("Sonnet — balanced") { companionManager.setSelectedModel("claude-sonnet-4-6") }
-            Button("Opus — smartest")  { companionManager.setSelectedModel("claude-opus-4-6") }
-        } label: {
-            HStack(spacing: 4) {
-                Text("Model: \(modelDisplayName)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+            ForEach(ModelPickerKind.allCases, id: \.self) { modelKind in
+                Button(action: {
+                    companionManager.setSelectedModel(modelKind.claudeModelId)
+                }) {
+                    Text("\(modelKind.glyphCharacter)  \(modelKind.shortLabel) — \(modelKind.descriptor)")
+                }
             }
+        } label: {
+            HStack(spacing: 6) {
+                // Explicit "Model" prefix so the footer control reads as
+                // "Model: Balanced ▾" instead of two abstract glyphs that
+                // gave no hint of what the dropdown changed.
+                Text("Model")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.4)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .textCase(.uppercase)
+                Text(currentModelKind.glyphCharacter)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(currentModelKind.shortLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(
+                        isHoveringModelMenu
+                            ? ElevenLabsBrand.Colors.ink
+                            : ElevenLabsBrand.Colors.inkSecondary
+                    )
+                    .rotationEffect(.degrees(isHoveringModelMenu ? 180 : 0))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(
+                    isHoveringModelMenu
+                        ? ElevenLabsBrand.Colors.paperRecessed
+                        : Color.clear
+                )
+            )
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .pointerCursor()
         .nativeTooltip("Switch the Claude model that powers Sticky")
+        .onHover { hovering in isHoveringModelMenu = hovering }
+        .animation(.easeOut(duration: 0.18), value: isHoveringModelMenu)
     }
 
     // MARK: - Visual Helpers
@@ -850,6 +1060,159 @@ struct StickyOrbShape: Shape {
         path.addLine(to: leftChordEnd)
         path.closeSubpath()
         return path
+    }
+}
+
+// MARK: - Navigation Tile
+//
+// One tile in the Chat / Memory / Dashboard rail. Encapsulates hover
+// state so each tile can independently lift on hover without the
+// parent view tracking three booleans. On hover the card swaps from
+// `card` → `paperRecessed`, the hairline thickens slightly, and the
+// whole tile lifts on a small scale — the same press style on tap.
+private struct NavigationTile: View {
+    let iconSymbol: String
+    let title: String
+    let tooltip: String
+    let action: () -> Void
+    let trailingAccessory: AnyView?
+
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: iconSymbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .fill(isHovering
+                          ? ElevenLabsBrand.Colors.paperRecessed
+                          : ElevenLabsBrand.Colors.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .stroke(
+                        isHovering
+                            ? ElevenLabsBrand.Colors.inkTertiary.opacity(0.4)
+                            : ElevenLabsBrand.Colors.hairline,
+                        lineWidth: 1
+                    )
+            )
+            .overlay(alignment: .topTrailing) {
+                if let trailingAccessory {
+                    trailingAccessory
+                        .padding(4)
+                }
+            }
+            .scaleEffect(isHovering ? 1.02 : 1.0)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.97))
+        .pointerCursor()
+        .nativeTooltip(tooltip)
+        .onHover { hovering in isHovering = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHovering)
+    }
+}
+
+// MARK: - Memory Export Accessory Button
+//
+// Small download glyph pinned to the Memory tile. Owns its own hover
+// state so the icon + circular well darken when the user is targeting
+// it directly, even if the Memory tile around it is also hovered.
+private struct MemoryExportAccessoryButton: View {
+    let action: () -> Void
+
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(
+                    isHovering
+                        ? ElevenLabsBrand.Colors.ink
+                        : ElevenLabsBrand.Colors.inkTertiary
+                )
+                .padding(5)
+                .background(
+                    Circle().fill(
+                        isHovering
+                            ? ElevenLabsBrand.Colors.hairline
+                            : ElevenLabsBrand.Colors.paperRecessed
+                    )
+                )
+                .contentShape(Circle())
+                .scaleEffect(isHovering ? 1.08 : 1.0)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.88))
+        .pointerCursor()
+        .nativeTooltip("Export your taste as TASTE.md")
+        .onHover { hovering in isHovering = hovering }
+        .animation(.easeOut(duration: 0.14), value: isHovering)
+    }
+}
+
+// MARK: - Persona Picker Row
+//
+// Custom row used by the persona popover. Encapsulates hover state so
+// the surrounding view doesn't need a per-row @State.
+
+private struct PersonaPickerRow: View {
+    let persona: PersonaBundle
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                PersonaAvatarView(avatar: persona.avatar, diameter: 28)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(persona.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                        .lineLimit(1)
+
+                    if let role = persona.role, !role.isEmpty {
+                        Text(role)
+                            .font(.system(size: 11))
+                            .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovering ? ElevenLabsBrand.Colors.paperRecessed : Color.clear)
+            )
+            .padding(.horizontal, 6)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .onHover { hovering in isHovering = hovering }
     }
 }
 

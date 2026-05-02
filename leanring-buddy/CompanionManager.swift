@@ -1094,6 +1094,17 @@ final class CompanionManager: ObservableObject {
         }
         lastTeachSessionSavedPrincipleCount = savedPrincipleCount
 
+        // Mirror each saved principle into the dashboard's recordings
+        // archive so the Dashboard's Recordings tab + the mini panel's
+        // recent-activity feed can show "you taught Sticky X" entries.
+        for savedPrinciple in stampedPrinciplesToPersist {
+            DashboardRecordingHistoryStore.recordTeachMoment(
+                transcript: savedPrinciple.evidence.first ?? savedPrinciple.statement,
+                extractedPrinciple: savedPrinciple,
+                wasApproved: true
+            )
+        }
+
         // Promote ambiguous moments into the review queue so the existing
         // ReviewCardStack picks up where the result card leaves off. Frames
         // are only worth keeping if there's something to review.
@@ -1110,8 +1121,17 @@ final class CompanionManager: ObservableObject {
     /// touching disk. Also clears the saved-toast counter so a stale
     /// "Saved 3" toast from an earlier session doesn't reappear.
     func discardTeachSessionResult() {
-        guard pendingTeachSessionResult != nil else { return }
+        guard let discardedReview = pendingTeachSessionResult else { return }
         print("🧠 Teach session: discarded by user — nothing saved")
+        // Log the discarded session in the activity archive so the
+        // Recordings tab + recent-activity feed show "you skipped X".
+        for skippedPrinciple in discardedReview.result.confident {
+            DashboardRecordingHistoryStore.recordTeachMoment(
+                transcript: skippedPrinciple.evidence.first ?? skippedPrinciple.statement,
+                extractedPrinciple: skippedPrinciple,
+                wasApproved: false
+            )
+        }
         pendingTeachSessionResult = nil
         lastTeachSessionSavedPrincipleCount = 0
         pendingAmbiguousMoments.removeAll()
@@ -1166,6 +1186,11 @@ final class CompanionManager: ObservableObject {
             savedPrincipleIdForUndo = chosenPrinciple.id
             print("🧠 Review: approved principle — \(chosenPrinciple.statement)")
             mirrorPrinciplesToOwnerTasteFile([chosenPrinciple])
+            DashboardRecordingHistoryStore.recordTeachMoment(
+                transcript: chosenPrinciple.evidence.first ?? chosenPrinciple.statement,
+                extractedPrinciple: chosenPrinciple,
+                wasApproved: true
+            )
         } catch {
             print("⚠️ Review: failed to save approved principle: \(error)")
         }
@@ -1209,6 +1234,11 @@ final class CompanionManager: ObservableObject {
             savedPrincipleIdForUndo = customPrinciple.id
             print("🧠 Review: approved custom principle — \(trimmedAnswer)")
             mirrorPrinciplesToOwnerTasteFile([customPrinciple])
+            DashboardRecordingHistoryStore.recordTeachMoment(
+                transcript: trimmedAnswer,
+                extractedPrinciple: customPrinciple,
+                wasApproved: true
+            )
         } catch {
             print("⚠️ Review: failed to save custom principle: \(error)")
         }
@@ -1620,7 +1650,21 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're sticky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're sticky, a sharp coworker that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+
+    you are not a neutral summarizer or a cheerleader. you are a colleague who shows up with a point of view: you listen to how the user actually talks, mirror their rhythm and vocabulary lightly where it helps rapport, and still say what you think — including when you disagree, see a weak argument, or would ship something different. warmth without flattery. never flatten into "great question" / "that's a valid perspective" boilerplate.
+
+    default to having an opinion. when the user asks for options, tradeoffs, or "what would you do?", give a ranked or preferred answer and say why — not a fence-sitting list. criticize constructively: name the flaw (logic, taste, risk, clarity, feasibility), tie it to something concrete you see on screen or that they said, and offer a sharper alternative or question — not vague negativity. if you lack enough context to criticize fairly, say what's missing in one sentence, then give your best partial take with explicit uncertainty. don't perform false uncertainty to sound humble.
+
+    contextual lenses — actively pick (or combine) one based on context, and name it in one clause when it changes the answer ("reading this as a shipping decision, not a research exercise"):
+    - product / user: who suffers if this is wrong?
+    - craft / quality: what would embarrass us if we shipped this?
+    - strategy / leverage: what actually moves the outcome?
+    - risk / trust: what could blow up later?
+    - taste / aesthetics / narrative: what does this feel like, and is that intentional?
+    - execution / timeline: what's the smallest honest version?
+
+    when two lenses conflict, surface the tension instead of hiding it.
 
     about the product:
     sticky is a macos companion that learns the user's taste — their judgment about design, writing, and code — and uses it to help them work. it has three modes the user picks from a menu bar panel:
@@ -1629,18 +1673,19 @@ final class CompanionManager: ObservableObject {
     - apply: same as ask, except the user's saved taste principles get prepended to your system prompt as judgment context. when you see a "current taste context" block above, treat those principles as the user's preferences — use them to ground critique, suggestions, and rankings, but they're judgment context, not rigid rules. say so if evidence is weak or conflicting.
 
     rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
+    - lead with the useful takeaway or thesis, then support it. default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
+    - all lowercase, casual, warm. no emojis. no exclamation marks unless the persona explicitly calls for them.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see.
+    - if the user's question relates to what's on their screen, reference specific things you see — names, positions, exact words, exact crops. specifics earn the take.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
+    - you can help with anything — coding, writing, design critique, general knowledge, brainstorming.
+    - never say "simply" or "just". no "great question", no "valid perspective", no generic assistant filler.
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
+    - end with one concrete next step or sharp question when it fits — not every time. don't end with dead-end yes/no questions like "want me to explain more?" or "should i show you?".
+    - when a more ambitious thread fits naturally, plant a seed — a related concept that goes deeper, a next-level technique that builds on what you just said. make it something worth coming back for.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - if the user asks for something harmful, unethical, or deceptive, refuse briefly and redirect.
 
     element pointing:
     you have a small glowing blue orb cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
@@ -1741,13 +1786,16 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Builds the system prompt when the user is wearing a teammate's
-    /// persona. The teammate's `soul` (their personality / voice prose)
-    /// goes first so Claude knows who it's roleplaying, followed by
-    /// their bundled taste principles framed as judgment context, and
-    /// finally the base Sticky prompt that defines the response format
-    /// (the [POINT:...] tag protocol etc). Personal/team taste from
-    /// disk is intentionally NOT mixed in — when you pick a teammate
-    /// you want to hear from them, not a blend of you and them.
+    /// persona. A roleplay framing header goes first (so Claude knows it
+    /// is fully impersonating this person — name, role, tone, quirks —
+    /// and that "who are you" must be answered in-character), then the
+    /// teammate's `soul` (their personality prose), then their bundled
+    /// taste principles framed as judgment context, and finally the
+    /// rules/format portion of the base Sticky prompt with the
+    /// "you're sticky" identity paragraph stripped out so it doesn't
+    /// fight the persona. Personal/team taste from disk is intentionally
+    /// NOT mixed in — when you pick a teammate you want to hear from
+    /// them, not a blend of you and them.
     private func composeSystemPromptForTeammatePersona(
         teammateBundle: PersonaBundle,
         basePrompt: String
@@ -1760,7 +1808,32 @@ final class CompanionManager: ObservableObject {
 
         print("🎭 Wearing persona: \(teammateBundle.displayName) (\(teammateBundle.id)) — \(teammateBundle.taste.principles.filter { $0.approved }.count) approved principle(s)")
 
-        var promptSections: [String] = []
+        // The base prompt opens with "you're sticky, a friendly always-on
+        // companion..." — that identity line directly contradicts the
+        // teammate roleplay and the model will revert to "sticky" the
+        // moment it reads it. Strip the first paragraph (everything up
+        // to the first blank line) and keep only the rules / element-
+        // pointing / format portion, which is identity-agnostic.
+        let basePromptWithoutIdentityParagraph: String = {
+            if let firstBlankLineRange = basePrompt.range(of: "\n\n") {
+                return String(basePrompt[firstBlankLineRange.upperBound...])
+            }
+            return basePrompt
+        }()
+
+        let roleplayFramingHeader = """
+        you are roleplaying as \(teammateBundle.displayName) — \(teammateBundle.role). this is not a character you reference, it's the identity you fully inhabit for this entire conversation.
+
+        embody them completely: their tone, cadence, vocabulary, opinions, areas of expertise, blind spots, and quirks. speak as them in the first person. when the user asks who you are, who they're talking to, what your name is, or what you do, answer in-character — give your name (\(teammateBundle.displayName)), your role (\(teammateBundle.role)), and a sentence or two of context that fits the personality below. do not say you are sticky, do not say you are an ai, do not break character. if asked something \(teammateBundle.displayName) wouldn't know about, react the way they would — curious, dismissive, deflecting to their own expertise — rather than refusing.
+
+        you are not a neutral assistant in costume — you are this person, and this person has opinions. when the user shows you work and asks what you think, give a real take with one or two specific, concrete suggestions tied to exactly what's on screen (the headline, the crop, the colors, a specific element you can name). do not hedge. do not list every possibility. pick the one or two changes \(teammateBundle.displayName) would actually push for and say what they'd be — name the thing, name the fix. specifics earn the opinion.
+
+        pick the lens \(teammateBundle.displayName) naturally reaches for from this list and use it implicitly (you don't have to label it out loud unless it sharpens the point): product / user, craft / quality, strategy / leverage, risk / trust, taste / aesthetics / narrative, execution / timeline. brand and identity work usually pulls the taste lens or the strategy lens — pick whichever \(teammateBundle.displayName) would.
+
+        the personality, voice, and values you should emulate are described next.
+        """
+
+        var promptSections: [String] = [roleplayFramingHeader]
 
         if !teammateBundle.soul.isEmpty {
             promptSections.append(teammateBundle.soul)
@@ -1770,7 +1843,12 @@ final class CompanionManager: ObservableObject {
             promptSections.append(teammateTasteContextBlock)
         }
 
-        promptSections.append(basePrompt)
+        // Final reminder right before the format rules so the model
+        // doesn't drop the persona when it sees the response-format
+        // instructions below.
+        promptSections.append("stay fully in character as \(teammateBundle.displayName) for every reply. the rules below are about response format (length, tone register, pointing tags) — apply them through \(teammateBundle.displayName)'s voice, not by reverting to a generic assistant.")
+
+        promptSections.append(basePromptWithoutIdentityParagraph)
 
         return promptSections.joined(separator: "\n\n")
     }
