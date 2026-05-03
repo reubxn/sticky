@@ -192,7 +192,7 @@ struct TasteLibraryView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(
                     isSelected
-                        ? ElevenLabsBrand.Colors.onAccent
+                        ? ElevenLabsBrand.Colors.paper
                         : ElevenLabsBrand.Colors.ink
                 )
                 .padding(.horizontal, 14)

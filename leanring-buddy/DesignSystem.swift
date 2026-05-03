@@ -766,48 +766,94 @@ enum ElevenLabsBrand {
     // MARK: - Surfaces & Ink
 
     enum Colors {
+        // Surface + ink tokens are dynamic: they resolve to the warm
+        // off-white "paper" palette in light appearance and to a
+        // matching warm-dark palette in dark appearance. The same hex
+        // values that defined the original light theme stay the
+        // light-side of every pair, so nothing visual changes when the
+        // app is in light mode.
+
         /// Paper background — the warm off-white used in ElevenLabs landing
         /// pages and OOH (bus stop, billboard frames). Slightly warmer than
-        /// pure white so it reads as printed paper, not a screen.
-        static let paper = Color(hex: "#F4F2ED")
+        /// pure white so it reads as printed paper, not a screen. Dark
+        /// variant is a warm earthy near-black so the same "warm,
+        /// editorial" mood carries over.
+        static let paper = Color.appearanceAware(
+            lightHex: "#F4F2ED",
+            darkHex: "#1B1814"
+        )
 
         /// Pure white card surface — sits on top of `paper` with a hairline
         /// border for the marketing-card look (the audiobook hero card,
-        /// the chat preview tile, the voice cards).
-        static let card = Color(hex: "#FFFFFF")
+        /// the chat preview tile, the voice cards). Dark variant is a
+        /// slightly elevated warm-dark surface, mirroring how `card`
+        /// sits one step above `paper` in light mode.
+        static let card = Color.appearanceAware(
+            lightHex: "#FFFFFF",
+            darkHex: "#242120"
+        )
 
         /// Subtle paper variation — used for alternating sections or
         /// secondary surfaces that should feel one step recessed from `card`.
-        static let paperRecessed = Color(hex: "#ECEAE4")
+        /// Dark variant goes the other direction (deeper than `paper`) so
+        /// the same recessed/elevated relationship holds.
+        static let paperRecessed = Color.appearanceAware(
+            lightHex: "#ECEAE4",
+            darkHex: "#13110F"
+        )
 
         /// Near-black ink — the headline + body color. Slightly warm so it
         /// pairs with the paper background instead of feeling clinical.
-        static let ink = Color(hex: "#0B0B0B")
+        /// Flips to a warm off-white in dark mode (matching the light-mode
+        /// paper hex, which keeps text and surface color-related so the
+        /// whole UI reads as the same warm material in either theme).
+        static let ink = Color.appearanceAware(
+            lightHex: "#0B0B0B",
+            darkHex: "#F4F2ED"
+        )
 
         /// Pure black — used for the wordmark, poster headlines, and the
         /// dark-mode hero surface ("The most realistic voice AI platform").
-        static let inkPure = Color(hex: "#000000")
+        /// In dark mode it becomes a near-pure white so the wordmark
+        /// stays the punchiest contrast on the surface.
+        static let inkPure = Color.appearanceAware(
+            lightHex: "#000000",
+            darkHex: "#FAFAFA"
+        )
 
         /// Secondary ink — body copy, supporting labels (the small product
         /// description text under "Audiobooks" / "Video Voiceovers").
-        static let inkSecondary = Color(hex: "#3D3D3B")
+        static let inkSecondary = Color.appearanceAware(
+            lightHex: "#3D3D3B",
+            darkHex: "#B0AEA8"
+        )
 
         /// Tertiary ink — captions, metadata ("14m", "2.1k" pills under
         /// voice cards), section eyebrows ("For Creators, Media...").
-        static let inkTertiary = Color(hex: "#7A7A77")
+        static let inkTertiary = Color.appearanceAware(
+            lightHex: "#7A7A77",
+            darkHex: "#7E7B76"
+        )
 
         /// Hairline border — the thin 1px outlines on cards and the dotted
         /// grid frames inside gradient tiles. Very low contrast so cards
         /// look like printed cuts on paper rather than UI panels.
-        static let hairline = Color(hex: "#DEDBD3")
+        static let hairline = Color.appearanceAware(
+            lightHex: "#DEDBD3",
+            darkHex: "#2D2A26"
+        )
 
         /// A stronger hairline used for hover/focus on the otherwise
         /// almost-invisible default border.
-        static let hairlineStrong = Color(hex: "#B9B5AB")
+        static let hairlineStrong = Color.appearanceAware(
+            lightHex: "#B9B5AB",
+            darkHex: "#45413B"
+        )
 
         /// White overlay text — used on top of saturated gradient surfaces
         /// (the bus-stop poster, the dark hero, the wordmark on the OOH
-        /// billboard).
+        /// billboard). Always white because the gradient surfaces it
+        /// sits on don't change with the app theme.
         static let onAccent = Color.white
 
         // MARK: - Gradient Mesh Stops
@@ -1165,7 +1211,7 @@ struct ElevenLabsPrimaryButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
             .foregroundColor(
-                isHovered ? ElevenLabsBrand.Colors.inkPure : ElevenLabsBrand.Colors.onAccent
+                isHovered ? ElevenLabsBrand.Colors.inkPure : ElevenLabsBrand.Colors.paper
             )
             .frame(maxWidth: isFullWidth ? .infinity : nil)
             .padding(.vertical, 10)
@@ -1339,6 +1385,28 @@ extension View {
 // MARK: - Color Utilities
 
 extension Color {
+    /// Builds a SwiftUI `Color` that resolves to a different hex value in
+    /// light vs. dark appearance. Backed by `NSColor(name:dynamicProvider:)`
+    /// so the resolved color updates automatically whenever a hosting
+    /// view's `effectiveAppearance` changes (which happens when we set
+    /// `NSApp.appearance` from the ThemeManager, or when the user flips
+    /// macOS appearance in System Settings while we're in `.system` mode).
+    static func appearanceAware(lightHex: String, darkHex: String) -> Color {
+        let lightNSColor = NSColor.fromHex(lightHex)
+        let darkNSColor = NSColor.fromHex(darkHex)
+
+        let dynamicNSColor = NSColor(name: nil) { appearance in
+            switch appearance.bestMatch(from: [.aqua, .darkAqua]) {
+            case .darkAqua:
+                return darkNSColor
+            default:
+                return lightNSColor
+            }
+        }
+
+        return Color(nsColor: dynamicNSColor)
+    }
+
     /// Create a Color from a hex string like "#FF5733" or "FF5733".
     init(hex: String) {
         let hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1354,6 +1422,17 @@ extension Color {
         self.init(red: red, green: green, blue: blue)
     }
 
+    /// Resolves this Color in the currently-active drawing appearance and
+    /// returns the underlying `NSColor`. Use this when you need to hand
+    /// off to AppKit APIs (CALayer borderColor, CAGradientLayer colors,
+    /// NSWindow backgroundColor) that take a concrete CGColor / NSColor
+    /// rather than a SwiftUI Color. Pair with
+    /// `viewDidChangeEffectiveAppearance` so the layer is repainted
+    /// whenever the appearance flips.
+    func resolvedNSColor() -> NSColor {
+        return NSColor(self)
+    }
+
     /// Returns a lighter version of this color by blending toward white.
     /// `fraction` is 0.0 (no change) to 1.0 (pure white).
     func blendedWithWhite(fraction: Double) -> Color {
@@ -1365,5 +1444,24 @@ extension Color {
         let blue = nsColor.blueComponent + (1.0 - nsColor.blueComponent) * fraction
 
         return Color(red: red, green: green, blue: blue)
+    }
+}
+
+extension NSColor {
+    /// Mirror of `Color(hex:)` for AppKit — used by `Color.appearanceAware`
+    /// to build the underlying dynamic NSColor without a SwiftUI ↔ AppKit
+    /// round trip on every resolution.
+    static func fromHex(_ hex: String) -> NSColor {
+        let hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+
+        var rgbValue: UInt64 = 0
+        Scanner(string: hexSanitized).scanHexInt64(&rgbValue)
+
+        let red = CGFloat((rgbValue & 0xFF0000) >> 16) / 255.0
+        let green = CGFloat((rgbValue & 0x00FF00) >> 8) / 255.0
+        let blue = CGFloat(rgbValue & 0x0000FF) / 255.0
+
+        return NSColor(srgbRed: red, green: green, blue: blue, alpha: 1.0)
     }
 }

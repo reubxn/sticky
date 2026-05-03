@@ -110,8 +110,15 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
-        window.isMovableByWindowBackground = true
-        window.appearance = NSAppearance(named: .aqua)
+        // Drag only from the titlebar area (standard macOS behavior) —
+        // the dashboard body has interactive content the user expects
+        // to click, not grab.
+        window.isMovableByWindowBackground = false
+        // Follow the app-level appearance driven by ThemeManager.
+        // Leaving this nil means the window picks up `NSApp.appearance`
+        // (system / forced light / forced dark) and the dynamic brand
+        // colors below resolve into the right palette.
+        window.appearance = nil
         window.backgroundColor = NSColor(ElevenLabsBrand.Colors.paper)
         window.contentViewController = hostingController
         window.delegate = self

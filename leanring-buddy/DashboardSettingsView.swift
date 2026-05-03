@@ -31,10 +31,11 @@ struct DashboardSettingsView: View {
     @State private var isLaunchAtLoginEnabled: Bool = UserDefaults.standard
         .bool(forKey: "dashboardMockLaunchAtLogin")
 
-    /// Mocked: analytics opt-out toggle. Doesn't actually unhook
-    /// PostHog in the MVP — surface only.
-    @State private var isAnalyticsOptedOut: Bool = UserDefaults.standard
-        .bool(forKey: "dashboardMockAnalyticsOptedOut")
+    /// Live observer of the global ThemeManager so the appearance card
+    /// reflects the active mode and writing it back here propagates
+    /// instantly to every other surface (menu bar panel, chat window,
+    /// dashboard chrome).
+    @ObservedObject private var themeManager = ThemeManager.shared
 
 
     var body: some View {
@@ -45,12 +46,107 @@ struct DashboardSettingsView: View {
                 subtitle: "Tune the model, the cursor, and the demo toggles. Changes persist."
             )
 
+            appearanceCard
+
             modelPickerCard
 
             cursorAndHotkeyCard
 
             otherPreferencesCard
         }
+    }
+
+    // MARK: - Appearance card
+
+    /// Three-way segmented picker for light / dark / system. Mirrors
+    /// the menu bar panel's footer popover but laid out as a full-width
+    /// card to match the rest of the settings page.
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
+            ElevenLabsEyebrow("APPEARANCE")
+
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Theme")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    Text("Sticky defaults to your macOS system appearance. Pick a side to override it.")
+                        .font(.system(size: 11))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                appearanceSegmentedPicker
+            }
+            .padding(ElevenLabsBrand.Spacing.md)
+            .background(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .fill(ElevenLabsBrand.Colors.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
+                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+            )
+        }
+    }
+
+    /// Three side-by-side chips that read like a segmented control.
+    /// We hand-roll it (instead of using SwiftUI's `Picker(.segmented)`)
+    /// because the native segmented control doesn't honor the
+    /// paper-and-ink palette under custom appearances.
+    private var appearanceSegmentedPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(AppThemeMode.allCases) { themeMode in
+                appearanceSegment(themeMode: themeMode)
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(ElevenLabsBrand.Colors.paperRecessed)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+        )
+    }
+
+    private func appearanceSegment(themeMode: AppThemeMode) -> some View {
+        let isSelected = themeManager.mode == themeMode
+        return Button(action: {
+            themeManager.mode = themeMode
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: themeMode.sfSymbolName)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(themeMode.displayLabel)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(
+                isSelected
+                    ? ElevenLabsBrand.Colors.ink
+                    : ElevenLabsBrand.Colors.inkSecondary
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? ElevenLabsBrand.Colors.card : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? ElevenLabsBrand.Colors.hairline
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+        .pointerCursor()
+        .animation(.easeOut(duration: 0.16), value: isSelected)
     }
 
     // MARK: - Model picker card
@@ -206,17 +302,6 @@ struct DashboardSettingsView: View {
                         UserDefaults.standard.set(newValue, forKey: "dashboardMockLaunchAtLogin")
                     }
                 )
-
-                Divider().background(ElevenLabsBrand.Colors.hairline)
-
-                togglePreferenceRow(
-                    title: "Opt out of analytics",
-                    subtitle: "We collect anonymous usage stats to improve Sticky. Toggle this to opt out.",
-                    binding: $isAnalyticsOptedOut,
-                    onChange: { newValue in
-                        UserDefaults.standard.set(newValue, forKey: "dashboardMockAnalyticsOptedOut")
-                    }
-                )
             }
             .padding(ElevenLabsBrand.Spacing.md)
             .background(
@@ -252,6 +337,7 @@ struct DashboardSettingsView: View {
             Toggle("", isOn: binding)
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .tint(ElevenLabsBrand.Colors.tasteAccent)
                 .onChange(of: binding.wrappedValue) { newValue in
                     onChange(newValue)
                 }

@@ -110,7 +110,7 @@ final class ChatViewModel: ObservableObject {
     @Published var draftMessage: String = ""
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: Self.workerChatProxyURL, model: selectedModel)
+        return ClaudeAPI(proxyURL: Self.workerChatProxyURL, model: selectedModelClaudeId)
     }()
 
     /// Mirrors the voice flow's model preference so picking Sonnet/Opus
@@ -118,7 +118,7 @@ final class ChatViewModel: ObservableObject {
     /// UserDefaults key the voice path writes to. Updated by
     /// `refreshSelectedModelFromUserDefaults()` which the chat window
     /// calls each time it becomes visible.
-    private var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published private(set) var selectedModelClaudeId: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
     /// In-flight send task. Cancelled if the user sends a new message
     /// before the previous response finishes streaming.
@@ -153,10 +153,24 @@ final class ChatViewModel: ObservableObject {
     /// needing a Combine wire-up between the two windows.
     func refreshSelectedModelFromUserDefaults() {
         let latestSelectedModel = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
-        if latestSelectedModel != selectedModel {
-            selectedModel = latestSelectedModel
+        if latestSelectedModel != selectedModelClaudeId {
+            selectedModelClaudeId = latestSelectedModel
             claudeAPI.model = latestSelectedModel
         }
+    }
+
+    /// Updates the selected Claude model from the inline picker in the
+    /// chat composer. Persists to the same UserDefaults key the menu bar
+    /// panel + voice flow read from so all three surfaces stay in sync.
+    func setSelectedModel(claudeModelId: String) {
+        guard claudeModelId != selectedModelClaudeId else { return }
+        selectedModelClaudeId = claudeModelId
+        claudeAPI.model = claudeModelId
+        UserDefaults.standard.set(claudeModelId, forKey: "selectedClaudeModel")
+        // CompanionManager owns the canonical published copy of
+        // selectedModel for the menu bar UI; mirror the change into it
+        // when available so the footer picker reflects this picker.
+        companionManagerForPersona?.setSelectedModel(claudeModelId)
     }
 
     /// Clears the entire transcript. Used by the "New chat" button.
@@ -170,6 +184,50 @@ final class ChatViewModel: ObservableObject {
         // Mint a new id so the next chat archives to a fresh file
         // instead of overwriting the just-finished session.
         activeChatHistorySessionId = UUID().uuidString
+    }
+
+    /// Currently active chat history session id, exposed so the chat
+    /// history sidebar can highlight which session is loaded.
+    var currentChatHistorySessionId: String {
+        return activeChatHistorySessionId
+    }
+
+    /// Loads an archived session into the live transcript, replacing
+    /// whatever was there. The chat continues writing to that session's
+    /// file on disk — sending a new message extends the same archive
+    /// rather than starting a fresh one — so history-sidebar resume
+    /// feels continuous.
+    ///
+    /// Voice sessions are loaded as read-only context: the transcript
+    /// shows up but the user is expected to start a new chat to continue
+    /// (since voice and text are different mediums and switching mid-
+    /// archive would muddle the on-disk `medium` field).
+    func loadArchivedSession(_ session: DashboardChatSession) {
+        currentSendTask?.cancel()
+        currentSendTask = nil
+        isResponding = false
+        lastErrorMessage = nil
+
+        let restoredMessages: [ChatMessage] = session.messages.map { archivedMessage in
+            let restoredRole: ChatMessage.Role = (archivedMessage.role == "user") ? .user : .assistant
+            return ChatMessage(
+                id: UUID(uuidString: archivedMessage.id) ?? UUID(),
+                role: restoredRole,
+                text: archivedMessage.text,
+                isStreaming: false,
+                createdAt: archivedMessage.createdAt
+            )
+        }
+
+        messages = restoredMessages
+        // Voice sessions get a fresh id when continued from text — we
+        // don't want a text reply to overwrite the voice archive's
+        // `medium: "voice"` flag. Text sessions resume in place.
+        if session.medium == "voice" {
+            activeChatHistorySessionId = UUID().uuidString
+        } else {
+            activeChatHistorySessionId = session.id
+        }
     }
 
     /// Sends the current `draftMessage`. Captures a screenshot, appends
@@ -332,10 +390,31 @@ final class ChatViewModel: ObservableObject {
                 createdAt: message.createdAt
             )
         }
+        // Record the persona this chat was had with so the dashboard's
+        // Chats tab can group sessions under their persona. Falls back
+        // to `__me__` (the local user) when no companion manager is
+        // wired up — happens in SwiftUI previews and very early launch.
+        let personaIdForArchive: String = companionManagerForPersona
+            .map { Self.personaIdForArchiving($0.personaSelection) } ?? PersonaStore.mePseudoPersona.id
         DashboardChatHistoryStore.recordSession(
             sessionId: activeChatHistorySessionId,
-            messages: archivableMessages
+            messages: archivableMessages,
+            personaId: personaIdForArchive,
+            medium: "text"
         )
+    }
+
+    /// Translates the in-memory `PersonaSelection` enum into the flat
+    /// string id used by the on-disk session JSON. Mirrors the wheel's
+    /// id convention so a session archived under `"reuban"` or
+    /// `"__team__"` lines up with whatever `PersonaStore` returns at
+    /// read time.
+    private static func personaIdForArchiving(_ selection: PersonaSelection) -> String {
+        switch selection {
+        case .me: return PersonaStore.mePseudoPersona.id
+        case .team: return PersonaStore.teamPseudoPersona.id
+        case .teammate(let id): return id
+        }
     }
 
     private func removeAssistantMessage(id: UUID) {
@@ -368,15 +447,13 @@ final class ChatViewModel: ObservableObject {
     /// guidance (markdown, no `[POINT:...]` tags, screenshot framing) is
     /// always present regardless of persona.
     private func composeSystemPromptForActivePersona() -> String {
-        guard let companionManager = companionManagerForPersona else {
-            return Self.stickyIdentityParagraph + "\n\n" + Self.baseChatRules
+        if let companionManager = companionManagerForPersona {
+            if let teammateBundle = companionManager.activeTeammateBundle {
+                return composeSystemPromptForTeammatePersona(teammateBundle: teammateBundle)
+            }
+            return composeSystemPromptForOwnerPersona(companionManager: companionManager)
         }
-
-        if let teammateBundle = companionManager.activeTeammateBundle {
-            return composeSystemPromptForTeammatePersona(teammateBundle: teammateBundle)
-        }
-
-        return composeSystemPromptForOwnerPersona(companionManager: companionManager)
+        return Self.stickyIdentityParagraph + "\n\n" + Self.baseChatRules
     }
 
     /// Builds the chat system prompt when the user is wearing a teammate's
@@ -406,6 +483,15 @@ final class ChatViewModel: ObservableObject {
 
         if !teammateTasteContextBlock.isEmpty {
             promptSections.append(teammateTasteContextBlock)
+        }
+
+        // Every teammate is part of the same team, so they all get the
+        // team brief + dropped files as background context. Mirrors the
+        // voice flow in CompanionManager.composeSystemPromptForTeammatePersona.
+        let teamContextOverviewBlock = TeamContextPromptBuilder
+            .teamContextBlock(profile: TeamContextStore.loadProfile())
+        if !teamContextOverviewBlock.isEmpty {
+            promptSections.append(teamContextOverviewBlock)
         }
 
         promptSections.append("stay fully in character as \(teammateBundle.displayName) for every reply. the rules below are about response format (length, register, markdown) — apply them through \(teammateBundle.displayName)'s voice, not by reverting to a generic assistant.")
@@ -447,11 +533,19 @@ final class ChatViewModel: ObservableObject {
             scope: activeScope
         )
 
-        if tasteContextBlock.promptText.isEmpty {
+        // Team context (brief + files) is only injected when the user is
+        // operating in team scope. Personal scope stays clean — this
+        // matches the voice flow in CompanionManager.
+        let teamContextOverviewBlock: String = (activeScope == .team)
+            ? TeamContextPromptBuilder.teamContextBlock(profile: TeamContextStore.loadProfile())
+            : ""
+
+        if tasteContextBlock.promptText.isEmpty && teamContextOverviewBlock.isEmpty {
             return identitySection + "\n\n" + Self.baseChatRules
         }
 
-        return [identitySection, tasteContextBlock.promptText, Self.baseChatRules]
+        return [identitySection, teamContextOverviewBlock, tasteContextBlock.promptText, Self.baseChatRules]
+            .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
     }
 

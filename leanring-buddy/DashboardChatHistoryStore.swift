@@ -24,6 +24,11 @@ import Foundation
 /// Snapshot of one chat session that the Dashboard's Chats tab can
 /// render. Mirrors `ChatMessage` but uses a flat string role so the
 /// JSON stays simple to hand-edit if anyone wants to seed demo data.
+///
+/// `personaId` and `medium` were added when voice chats started getting
+/// archived alongside text chats — both are optional in the JSON so
+/// older session files (which were always text chats with no persona
+/// tag) keep decoding cleanly. Defaults are applied at the call site.
 struct DashboardChatSession: Codable, Identifiable {
     let id: String
     let startedAt: Date
@@ -33,6 +38,17 @@ struct DashboardChatSession: Codable, Identifiable {
     /// title chats manually.
     let title: String
     let messages: [DashboardChatMessage]
+    /// Identifies which persona this conversation was had with — the
+    /// special pseudo-ids `__me__` / `__team__` for the user's own /
+    /// pooled-team modes, or a teammate id (e.g. `"leonard"`) for a
+    /// borrowed persona. Optional so legacy archives (pre-persona,
+    /// always Sticky) decode without re-writing.
+    let personaId: String?
+    /// Whether this session came from the floating chat window
+    /// (`"text"`) or from push-to-talk voice exchanges (`"voice"`).
+    /// Optional for the same backwards-compat reason as `personaId`;
+    /// callers treat `nil` as `"text"` since that's all we used to have.
+    let medium: String?
 }
 
 struct DashboardChatMessage: Codable, Identifiable {
@@ -84,7 +100,9 @@ enum DashboardChatHistoryStore {
     @discardableResult
     static func recordSession(
         sessionId: String? = nil,
-        messages: [DashboardChatMessage]
+        messages: [DashboardChatMessage],
+        personaId: String? = nil,
+        medium: String? = nil
     ) -> String? {
         guard !messages.isEmpty else { return nil }
 
@@ -97,7 +115,9 @@ enum DashboardChatHistoryStore {
             startedAt: messages.first?.createdAt ?? Date(),
             endedAt: messages.last?.createdAt ?? Date(),
             title: derivedTitle,
-            messages: messages
+            messages: messages,
+            personaId: personaId,
+            medium: medium
         )
 
         do {

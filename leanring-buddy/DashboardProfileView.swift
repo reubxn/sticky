@@ -13,6 +13,19 @@
 import SwiftUI
 
 struct DashboardProfileView: View {
+    /// Optional shared CompanionManager. Threaded in from
+    /// `DashboardView` so voice picker writes go through
+    /// `setSelectedVoiceID(_:)` — that updates the in-memory
+    /// `@Published var selectedVoiceID` immediately, instead of only
+    /// updating UserDefaults (which CompanionManager only reads at
+    /// init, so a UserDefaults-only write wouldn't take effect until
+    /// the next app launch).
+    let companionManager: CompanionManager?
+
+    init(companionManager: CompanionManager? = nil) {
+        self.companionManager = companionManager
+    }
+
     @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
 
     /// Reading the personal taste profile lazily so the export button
@@ -32,6 +45,7 @@ struct DashboardProfileView: View {
     /// voice". Picker is rendered as a list of all free ElevenLabs
     /// voices.
     @State private var draftVoiceId: String?
+    @State private var customVoiceIdInput: String = ""
 
     var body: some View {
         DashboardContentScrollContainer {
@@ -158,6 +172,8 @@ struct DashboardProfileView: View {
                         descriptor: freeVoice.descriptor
                     )
                 }
+
+                customVoiceRow
             }
             .padding(ElevenLabsBrand.Spacing.md)
             .background(
@@ -175,9 +191,16 @@ struct DashboardProfileView: View {
         let isSelected = (voiceId == draftVoiceId)
         return Button(action: {
             draftVoiceId = voiceId
-            // Persist immediately to the same UserDefaults key the
-            // mini panel's voice picker reads/writes.
-            UserDefaults.standard.set(voiceId, forKey: "selectedElevenLabsVoiceID")
+            // Route through CompanionManager so the in-memory
+            // selectedVoiceID updates immediately (it also persists to
+            // UserDefaults). Writing to UserDefaults directly here
+            // wouldn't take effect until the next launch, since
+            // CompanionManager only reads the key at init.
+            if let companionManager {
+                companionManager.setSelectedVoiceID(voiceId)
+            } else {
+                UserDefaults.standard.set(voiceId, forKey: "selectedElevenLabsVoiceID")
+            }
         }) {
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -208,6 +231,74 @@ struct DashboardProfileView: View {
         }
         .buttonStyle(InteractivePressStyle(pressScale: 0.98))
         .pointerCursor()
+    }
+
+    // A row that lets the user paste an arbitrary ElevenLabs voice id
+    // (e.g. one they cloned in their own ElevenLabs account) and use it
+    // as the active voice. Selected when the saved voice id isn't one
+    // of the bundled options.
+    private var customVoiceRow: some View {
+        let trimmedInput = customVoiceIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isCustomActive = !trimmedInput.isEmpty && draftVoiceId == trimmedInput
+        let isBundledVoiceSelected = draftVoiceId.map { savedVoiceId in
+            ElevenLabsTTSClient.freeVoices.contains(where: { $0.id == savedVoiceId })
+        } ?? false
+        let isSelected = isCustomActive && !isBundledVoiceSelected
+
+        return HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(
+                    isSelected
+                        ? ElevenLabsBrand.Colors.ink
+                        : ElevenLabsBrand.Colors.inkTertiary
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Custom voice")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+                HStack(spacing: 6) {
+                    TextField("Paste ElevenLabs voice ID", text: $customVoiceIdInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(ElevenLabsBrand.Colors.paperRecessed)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                        )
+
+                    Button("Use") {
+                        let trimmed = customVoiceIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        draftVoiceId = trimmed
+                        if let companionManager {
+                            companionManager.setSelectedVoiceID(trimmed)
+                        } else {
+                            UserDefaults.standard.set(trimmed, forKey: "selectedElevenLabsVoiceID")
+                        }
+                    }
+                    .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                    .pointerCursor()
+                    .disabled(trimmedInput.isEmpty || trimmedInput == draftVoiceId)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? ElevenLabsBrand.Colors.paperRecessed : Color.clear)
+        )
     }
 
     // MARK: - TASTE.md export card
@@ -261,25 +352,45 @@ struct DashboardProfileView: View {
     }
 
     private func exportTasteAsMarkdown() {
-        let personalProfile: TasteProfile = {
+        // The user's TASTE.md should reflect everything Sticky knows
+        // about them — both the hand-curated soul + bundled principles
+        // (loaded from their persona's TASTE.md, the source of truth
+        // for identity prose) AND any extra principles teach-mode has
+        // appended into taste-profile.json over time. Merge them by id;
+        // the two sources use disjoint id schemes (slug vs UUID) so
+        // dedup collisions are unlikely but cheap to guard against.
+        let localBundle = PersonaStore.myCurrentBundle()
+
+        let bundledPrinciples: [TastePrinciple] = localBundle?.taste.principles ?? []
+        let teachModePrinciples: [TastePrinciple] = {
             do {
-                return try TasteProfileStore.loadProfile()
+                return try TasteProfileStore.loadProfile().principles
             } catch {
-                return TasteProfile(userId: PersonaStore.myPersonaId, principles: [], updatedAt: Date())
+                return []
             }
         }()
 
-        // Prefer the user's local persona bundle metadata so the
-        // exported TASTE.md has the right voice / accent / role
-        // baked in rather than blank metadata.
-        let localBundle = PersonaStore.myOwnBundle
+        var seenPrincipleIds = Set<String>()
+        var mergedPrinciples: [TastePrinciple] = []
+        for principle in bundledPrinciples + teachModePrinciples {
+            guard !seenPrincipleIds.contains(principle.id) else { continue }
+            seenPrincipleIds.insert(principle.id)
+            mergedPrinciples.append(principle)
+        }
+
+        let mergedProfile = TasteProfile(
+            userId: PersonaStore.myPersonaId,
+            principles: mergedPrinciples,
+            updatedAt: Date()
+        )
 
         DashboardTasteMarkdownExporter.exportPersonalProfileAsMarkdown(
-            personalProfile,
+            mergedProfile,
             displayName: localBundle?.displayName ?? dashboardMockAuthState.displayName,
             role: localBundle?.role ?? dashboardMockAuthState.role,
             accentHex: localBundle?.accentColorHex,
-            voiceId: localBundle?.voiceId
+            voiceId: localBundle?.voiceId,
+            soulProse: localBundle?.soul
         )
 
         // Show the small "Exported" confirmation — clear after a moment.
@@ -335,5 +446,15 @@ struct DashboardProfileView: View {
         draftDisplayName = dashboardMockAuthState.displayName
         draftRole = dashboardMockAuthState.role
         draftVoiceId = UserDefaults.standard.string(forKey: "selectedElevenLabsVoiceID")
+        // If the saved voice id isn't one of the bundled options, surface
+        // it in the custom-voice input so the user sees what's currently
+        // active and can edit it. Bundled selections leave the input
+        // empty so it reads as "add a new custom voice".
+        if let savedVoiceId = draftVoiceId,
+           !ElevenLabsTTSClient.freeVoices.contains(where: { $0.id == savedVoiceId }) {
+            customVoiceIdInput = savedVoiceId
+        } else {
+            customVoiceIdInput = ""
+        }
     }
 }

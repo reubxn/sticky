@@ -22,8 +22,6 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     case tastes
     case team
     case profile
-    case recordings
-    case chats
     case settings
 
     var id: String { rawValue }
@@ -35,8 +33,6 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         case .tastes:     return "Tastes"
         case .team:       return "Team"
         case .profile:    return "Profile"
-        case .recordings: return "Recordings"
-        case .chats:      return "Chat history"
         case .settings:   return "Settings"
         }
     }
@@ -48,8 +44,6 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         case .tastes:     return "person.crop.circle"
         case .team:       return "person.2"
         case .profile:    return "person.text.rectangle"
-        case .recordings: return "waveform"
-        case .chats:      return "bubble.left.and.bubble.right"
         case .settings:   return "gearshape"
         }
     }

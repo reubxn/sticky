@@ -5,8 +5,8 @@
 //  Shared section header shown at the top of every dashboard tab —
 //  large editorial title + optional subtitle + optional trailing
 //  control slot. Keeps the visual rhythm consistent across Tastes,
-//  Team, Profile, Recordings, Chats, Settings without repeating the
-//  same six-line VStack in each view.
+//  Team, Profile, Chat, Settings without repeating the same
+//  six-line VStack in each view.
 //
 
 import SwiftUI

@@ -26,6 +26,11 @@ struct TeachSessionResultCard: View {
     /// every time SwiftUI re-evaluates the view body.
     @State private var hasInitializedSelectionForPendingReview: Bool = false
 
+    /// Which confident principle ids the user has currently expanded so they
+    /// can read the full statement + evidence (the row otherwise truncates
+    /// both lines). Tapping the chevron toggles membership here.
+    @State private var expandedConfidentPrincipleIds: Set<String> = []
+
     private var confidentPrinciples: [TastePrinciple] {
         pendingReview.result.confident
     }
@@ -134,59 +139,105 @@ struct TeachSessionResultCard: View {
 
     private func confidentPrincipleRow(confidentPrinciple: TastePrinciple) -> some View {
         let isSelected = selectedConfidentPrincipleIds.contains(confidentPrinciple.id)
-        return Button(action: {
-            toggleSelection(forPrincipleId: confidentPrinciple.id)
-        }) {
-            HStack(alignment: .top, spacing: 8) {
+        let isExpanded = expandedConfidentPrincipleIds.contains(confidentPrinciple.id)
+        let firstEvidenceLine = confidentPrinciple.evidence.first ?? ""
+
+        return HStack(alignment: .top, spacing: 8) {
+            Button(action: {
+                toggleSelection(forPrincipleId: confidentPrinciple.id)
+            }) {
                 Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(isSelected ? WarmPalette.accent : WarmPalette.textTertiary)
                     .frame(width: 16, height: 16)
                     .padding(.top, 1)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(confidentPrinciple.domain.rawValue)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(WarmPalette.textPrimary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(WarmPalette.accent.opacity(0.35))
-                            )
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: domainIconName(forDomain: confidentPrinciple.domain))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(WarmPalette.textSecondary)
+                        .frame(width: 18, height: 18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(WarmPalette.accent.opacity(0.18))
+                        )
+                        .help(confidentPrinciple.domain.rawValue.capitalized)
 
-                        Text(confidentPrinciple.statement)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(WarmPalette.textPrimary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(2)
-                    }
+                    Text(confidentPrinciple.statement)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(WarmPalette.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(isExpanded ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: isExpanded)
+                }
 
-                    if let firstEvidenceLine = confidentPrinciple.evidence.first,
-                       !firstEvidenceLine.isEmpty {
-                        Text(firstEvidenceLine)
-                            .font(.system(size: 10))
-                            .foregroundColor(WarmPalette.textTertiary)
-                            .lineLimit(1)
-                    }
+                if !firstEvidenceLine.isEmpty {
+                    Text(isExpanded
+                         ? confidentPrinciple.evidence.joined(separator: "\n")
+                         : firstEvidenceLine)
+                        .font(.system(size: 10))
+                        .foregroundColor(WarmPalette.textTertiary)
+                        .lineLimit(isExpanded ? nil : 1)
+                        .fixedSize(horizontal: false, vertical: isExpanded)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(isSelected
-                          ? WarmPalette.surfaceTintStrong
-                          : WarmPalette.surfaceTint.opacity(0.4))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(WarmPalette.separator, lineWidth: 0.5)
-            )
+
+            Button(action: {
+                toggleExpansion(forPrincipleId: confidentPrinciple.id)
+            }) {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(WarmPalette.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .padding(.top, 1)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help(isExpanded ? "Collapse" : "Expand to see full text")
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(isSelected
+                      ? WarmPalette.surfaceTintStrong
+                      : WarmPalette.surfaceTint.opacity(0.4))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(WarmPalette.separator, lineWidth: 0.5)
+        )
+        .animation(.easeInOut(duration: 0.18), value: isExpanded)
+    }
+
+    /// Maps each taste domain to an SF Symbol so the row can show a small
+    /// glyph instead of a text badge. Keeps the row compact and stops
+    /// "general" / "design" labels from eating horizontal space the
+    /// statement needs.
+    private func domainIconName(forDomain domain: TasteDomain) -> String {
+        switch domain {
+        case .design:
+            return "paintpalette"
+        case .writing:
+            return "pencil.tip"
+        case .code:
+            return "chevron.left.forwardslash.chevron.right"
+        case .general:
+            return "sparkles"
+        }
+    }
+
+    private func toggleExpansion(forPrincipleId principleId: String) {
+        if expandedConfidentPrincipleIds.contains(principleId) {
+            expandedConfidentPrincipleIds.remove(principleId)
+        } else {
+            expandedConfidentPrincipleIds.insert(principleId)
+        }
     }
 
     private func toggleSelection(forPrincipleId principleId: String) {
@@ -282,7 +333,7 @@ struct TeachSessionResultCard: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(WarmPalette.textPrimary)
+                .foregroundColor(ElevenLabsBrand.Colors.paper)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
                 .background(

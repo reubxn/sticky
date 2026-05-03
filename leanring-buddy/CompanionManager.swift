@@ -10,7 +10,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -109,6 +108,49 @@ final class CompanionManager: ObservableObject {
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
+    /// Public mirror of "is there at least one completed exchange in the
+    /// current voice session?". Drives whether the menu bar panel shows
+    /// the "Start fresh voice chat" affordance — the row only makes sense
+    /// once the user has actually said something to reset away from. Kept
+    /// in sync with `conversationHistory` at the two mutation points
+    /// (append after a completed exchange, and `beginFreshVoiceSession`).
+    @Published private(set) var hasVoiceConversationHistory: Bool = false
+
+    /// Stable id for the currently-active *voice* session. Each completed
+    /// push-to-talk exchange overwrites the same on-disk file under this
+    /// id, so the Dashboard's Chats tab shows one growing entry per
+    /// conversation rather than a new one per utterance. Reset whenever
+    /// `conversationHistory` resets (persona switch, idle timeout, or the
+    /// user explicitly tapping "New voice chat") so the next press
+    /// archives to a fresh file.
+    private var activeVoiceSessionId: String = UUID().uuidString
+
+    /// Mirror of `activeVoiceSessionId`'s archive on disk — kept in
+    /// memory so the response handler can append the latest exchange to
+    /// it without re-reading from disk every time. Reset alongside
+    /// `activeVoiceSessionId`.
+    private var activeVoiceSessionMessages: [DashboardChatMessage] = []
+
+    /// Wall-clock time of the last completed push-to-talk exchange.
+    /// Used by `startsFreshVoiceSessionIfIdleTooLong` to decide whether
+    /// the next press should reuse the existing session or mint a new
+    /// one. Nil before the first ever exchange of the launch.
+    private var lastVoiceExchangeAt: Date? = nil
+
+    /// True when the next push-to-talk exchange will start a fresh voice
+    /// session (because persona changed, idle timeout elapsed, or the
+    /// user tapped "New voice chat"). Read by the system-prompt
+    /// composer so it can prepend a one-line note telling Sticky it may
+    /// have spoken to the user before but doesn't currently remember.
+    /// Cleared as soon as the upcoming exchange completes.
+    private var voiceSessionIsFreshAfterReset: Bool = true
+
+    /// Idle-timeout window after which the next voice press starts a
+    /// fresh session. Six hours is long enough that a single workday
+    /// won't accidentally split, short enough that yesterday's chat is
+    /// reliably its own entry. Tweakable in one place.
+    private static let voiceSessionIdleResetInterval: TimeInterval = 6 * 60 * 60
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
@@ -177,16 +219,115 @@ final class CompanionManager: ObservableObject {
 
     /// Color used everywhere "you" are visually represented — the bottom
     /// edge glow when you hold push-to-talk, the all-edges halo while a
-    /// teach session is recording, etc. Always the cursor blue: the user's
-    /// own voice is a fixed identity in the UI, regardless of which
-    /// persona they're currently talking *to*. The persona's accent only
-    /// shows up on the reply side (`stickyVoiceColor`) so the bottom
-    /// (user) and top (persona) edges read as two distinct identities
-    /// during a back-and-forth.
+    /// teach session is recording, etc. Defaults to the cursor blue so the
+    /// user's voice has a stable identity across persona switches, but the
+    /// hue list is user-tunable via `userVoiceColorHues` so the mic
+    /// indicator can be personalized (or made multicolor) from the panel.
     static let defaultUserVoiceColor: Color = DS.Colors.overlayCursorBlue
 
+    /// Ordered list of hues (0...360°, max 5) that drive the user's
+    /// voice color. One hue → solid edge glow (the original behavior).
+    /// Two-plus hues → aurora gradient across the bottom edge so the
+    /// glow reads as several colors blending into one another. Persisted
+    /// as a JSON array under `userVoiceColorHues`.
+    @Published var userVoiceColorHues: [Double] = CompanionManager.loadPersistedUserVoiceColorHues()
+
+    /// Default hue (in degrees) that reproduces `DS.Colors.overlayCursorBlue`
+    /// when paired with `userVoiceColorSaturation` / `userVoiceColorBrightness`.
+    static let defaultUserVoiceColorHue: Double = 217
+
+    /// Hard cap on how many colors can stack in the aurora. Five lands
+    /// on a comfortable visual variety without the gradient turning into
+    /// soup once each color owns less than ~20% of the edge.
+    static let maxUserVoiceColorHues: Int = 5
+
+    /// Saturation + brightness used together with `userVoiceColorHues` to
+    /// produce vivid colors in the same family as the original cursor blue.
+    /// Keeping these fixed (and only exposing hue) keeps the picker simple
+    /// while still landing on saturated, glow-friendly colors at any hue.
+    private static let userVoiceColorSaturation: Double = 0.8
+    private static let userVoiceColorBrightness: Double = 1.0
+
+    private static let userVoiceColorHuesDefaultsKey = "userVoiceColorHues"
+    /// Legacy single-hue key from the first iteration of this picker.
+    /// Read once at launch when the new array key is missing so users
+    /// who'd already tuned a color don't get reset back to default blue.
+    private static let legacyUserVoiceColorHueDefaultsKey = "userVoiceColorHue"
+
+    private static func loadPersistedUserVoiceColorHues() -> [Double] {
+        if let storedData = UserDefaults.standard.data(forKey: userVoiceColorHuesDefaultsKey),
+           let storedHues = try? JSONDecoder().decode([Double].self, from: storedData),
+           !storedHues.isEmpty {
+            return Array(storedHues.prefix(maxUserVoiceColorHues))
+        }
+        if let legacyHue = UserDefaults.standard.object(forKey: legacyUserVoiceColorHueDefaultsKey) as? Double {
+            return [legacyHue]
+        }
+        return [defaultUserVoiceColorHue]
+    }
+
+    private func persistUserVoiceColorHues() {
+        if let encoded = try? JSONEncoder().encode(userVoiceColorHues) {
+            UserDefaults.standard.set(encoded, forKey: Self.userVoiceColorHuesDefaultsKey)
+        }
+    }
+
+    /// Replaces the entire hue list (clamped to 0...360 each, capped at
+    /// `maxUserVoiceColorHues`). Used when the picker is rebuilding the
+    /// list wholesale rather than appending a single chip.
+    func setUserVoiceColorHues(_ hues: [Double]) {
+        let normalizedHues = hues.prefix(Self.maxUserVoiceColorHues).map { hue in
+            max(0, min(360, hue))
+        }
+        userVoiceColorHues = Array(normalizedHues)
+        persistUserVoiceColorHues()
+    }
+
+    /// Appends a hue to the list. No-op if the list is already full so
+    /// the picker can keep calling this and rely on the cap being
+    /// enforced here rather than at every call site.
+    func addUserVoiceColorHue(_ hue: Double) {
+        guard userVoiceColorHues.count < Self.maxUserVoiceColorHues else { return }
+        let clampedHue = max(0, min(360, hue))
+        userVoiceColorHues.append(clampedHue)
+        persistUserVoiceColorHues()
+    }
+
+    /// Removes the chip at `index`. If removing leaves the list empty
+    /// we don't auto-restore the default — the user voluntarily cleared
+    /// it, so we let `userVoiceColor` fall back at read time instead.
+    func removeUserVoiceColorHue(at index: Int) {
+        guard userVoiceColorHues.indices.contains(index) else { return }
+        userVoiceColorHues.remove(at: index)
+        persistUserVoiceColorHues()
+    }
+
+    /// Single representative color — used by chrome that can only
+    /// display one swatch (the small footer icon, conversation chrome
+    /// that's not aurora-aware). Falls back to the original cursor blue
+    /// when the user has cleared the list entirely.
     var userVoiceColor: Color {
-        return Self.defaultUserVoiceColor
+        let primaryHue = userVoiceColorHues.first ?? Self.defaultUserVoiceColorHue
+        return Self.color(forHue: primaryHue)
+    }
+
+    /// Full color list — used by `EdgeGlowView` to render the aurora.
+    /// Always non-empty (falls back to a single default-blue entry) so
+    /// the renderer never has to special-case the "user cleared all
+    /// chips" state.
+    var userVoiceAuroraColors: [Color] {
+        if userVoiceColorHues.isEmpty {
+            return [Self.color(forHue: Self.defaultUserVoiceColorHue)]
+        }
+        return userVoiceColorHues.map { Self.color(forHue: $0) }
+    }
+
+    private static func color(forHue hueDegrees: Double) -> Color {
+        return Color(
+            hue: max(0, min(360, hueDegrees)) / 360.0,
+            saturation: userVoiceColorSaturation,
+            brightness: userVoiceColorBrightness
+        )
     }
 
     /// Color used everywhere Sticky is visually represented — the cursor
@@ -477,6 +618,11 @@ final class CompanionManager: ObservableObject {
             conversationHistory.removeAll()
             currentResponseTask?.cancel()
             currentResponseTask = nil
+            // Switching personas is a real conversational reset — start
+            // a brand-new on-disk voice session so the next press doesn't
+            // append the new persona's replies to the old persona's chat
+            // entry in the dashboard.
+            beginFreshVoiceSession(reason: "persona changed")
             print("🧠 Persona changed → cleared conversation history")
         }
 
@@ -678,6 +824,14 @@ final class CompanionManager: ObservableObject {
     /// written to taste-profile.json — Discard wipes everything cleanly.
     @Published private(set) var pendingTeachSessionResult: PendingTeachSessionReview?
 
+    /// Human-readable status for what the analyzer is doing *right now* during
+    /// the `.analyzing` phase of a teach session. Drives the granular pill
+    /// text in CompanionPanelView so the user sees "Picking the best frames…"
+    /// → "Asking Claude what stood out…" → "Pulling out principles…" instead
+    /// of a single static loading message. Nil whenever teachSessionState is
+    /// not `.analyzing`.
+    @Published private(set) var teachAnalyzingStatus: String?
+
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
@@ -699,32 +853,6 @@ final class CompanionManager: ObservableObject {
     var hasCompletedOnboarding: Bool {
         get { true }
         set { /* no-op: onboarding is disabled */ }
-    }
-
-    /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
-
-    /// Submits the user's email to FormSpark and identifies them in PostHog.
-    func submitEmail(_ email: String) {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEmail.isEmpty else { return }
-
-        hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-
-        // Identify user in PostHog
-        PostHogSDK.shared.identify(trimmedEmail, userProperties: [
-            "email": trimmedEmail
-        ])
-
-        // Submit to FormSpark
-        Task {
-            var request = URLRequest(url: URL(string: "https://submit-form.com/RWbGJxmIs")!)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": trimmedEmail])
-            _ = try? await URLSession.shared.data(for: request)
-        }
     }
 
     func start() {
@@ -769,8 +897,6 @@ final class CompanionManager: ObservableObject {
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
 
-        ClickyAnalytics.trackOnboardingStarted()
-
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
 
@@ -785,7 +911,6 @@ final class CompanionManager: ObservableObject {
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
         overlayWindowManager.hasShownOverlayBefore = false
@@ -1026,14 +1151,34 @@ final class CompanionManager: ObservableObject {
         teachSessionFrames.removeAll()
 
         let analyzerClaudeAPI = claudeAPI
+        let frameCount = capturedFrames.count
+
+        // Kick off the staged status message right before the analyzer call.
+        // The first stage is fast (frame picking happens synchronously inside
+        // analyzeTeachSession), so the user sees this for a beat before the
+        // longer "Asking Claude…" stage takes over.
+        teachAnalyzingStatus = "Reviewing \(frameCount) frame\(frameCount == 1 ? "" : "s") from your session…"
 
         Task { @MainActor [weak self] in
             do {
+                // Switch to the longer-running stage on the next runloop tick
+                // so the first message has a chance to render. Most of the
+                // analyzing wall-clock time is spent inside this call waiting
+                // on Claude's vision response, so this message dominates.
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard let self else { return }
+                    guard self.teachSessionState == .analyzing else { return }
+                    self.teachAnalyzingStatus = "Looking for what stood out…"
+                }
+
                 let analysis = try await SessionAnalyzer.analyzeTeachSession(
                     transcript: trimmedTranscript,
                     frames: capturedFrames,
                     claudeAPI: analyzerClaudeAPI
                 )
+
+                self?.teachAnalyzingStatus = "Pulling out principles…"
                 self?.lastTeachSessionResult = analysis.result
                 Self.printTeachSessionResultForDebugging(analysis.result)
 
@@ -1095,8 +1240,8 @@ final class CompanionManager: ObservableObject {
         lastTeachSessionSavedPrincipleCount = savedPrincipleCount
 
         // Mirror each saved principle into the dashboard's recordings
-        // archive so the Dashboard's Recordings tab + the mini panel's
-        // recent-activity feed can show "you taught Sticky X" entries.
+        // archive so the mini panel's recent-activity feed can show
+        // "you taught Sticky X" entries.
         for savedPrinciple in stampedPrinciplesToPersist {
             DashboardRecordingHistoryStore.recordTeachMoment(
                 transcript: savedPrinciple.evidence.first ?? savedPrinciple.statement,
@@ -1124,7 +1269,7 @@ final class CompanionManager: ObservableObject {
         guard let discardedReview = pendingTeachSessionResult else { return }
         print("🧠 Teach session: discarded by user — nothing saved")
         // Log the discarded session in the activity archive so the
-        // Recordings tab + recent-activity feed show "you skipped X".
+        // recent-activity feed shows "you skipped X".
         for skippedPrinciple in discardedReview.result.confident {
             DashboardRecordingHistoryStore.recordTeachMoment(
                 transcript: skippedPrinciple.evidence.first ?? skippedPrinciple.statement,
@@ -1338,6 +1483,7 @@ final class CompanionManager: ObservableObject {
         teachSessionStartedAt = nil
         teachSessionElapsedSeconds = 0
         teachSessionFrames.removeAll()
+        teachAnalyzingStatus = nil
         teachSessionState = .idle
     }
 
@@ -1389,7 +1535,6 @@ final class CompanionManager: ObservableObject {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
-        let previouslyHadAll = allPermissionsGranted
 
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
@@ -1414,24 +1559,10 @@ final class CompanionManager: ObservableObject {
             print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
-        // Track individual permission grants as they happen
-        if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
-        }
-        if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
-        }
-        if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
-        }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
         if !hasScreenContentPermission {
             hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
-        }
-
-        if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
         }
     }
 
@@ -1464,7 +1595,6 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
                     if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
@@ -1614,9 +1744,7 @@ final class CompanionManager: ObservableObject {
                     self.onboardingPromptText = ""
                 }
             }
-    
 
-            ClickyAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -1628,7 +1756,6 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -1638,7 +1765,6 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -1673,36 +1799,53 @@ final class CompanionManager: ObservableObject {
     - apply: same as ask, except the user's saved taste principles get prepended to your system prompt as judgment context. when you see a "current taste context" block above, treat those principles as the user's preferences — use them to ground critique, suggestions, and rankings, but they're judgment context, not rigid rules. say so if evidence is weak or conflicting.
 
     rules:
-    - lead with the useful takeaway or thesis, then support it. default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
+    - **be conversational and concise. one or two sentences is the default. three at the absolute most.** you are talking, not writing. the user can always ask a follow-up if they want more — short answers earn follow-ups, long answers kill the conversation.
+    - lead with the useful takeaway. one beat, then stop. if a fix is the answer, say the fix and stop. don't preamble. don't summarise the brand. don't list every angle. don't justify the take three different ways.
+    - **answer the words the user actually said, not the screen.** a check-in like "what's up", "hey", "you there?", "working on xcode are we?", "how's it going" gets a short conversational reply — confirm what you can see in a single phrase if it fits and hand the turn back. only describe what's on screen when the user asked a question that genuinely needs that detail (a critique, a how-do-i, a what-is-this, a where's-x).
+    - never narrate the screen unprompted. don't open with "i can see…" or "you've got x open with y and z". if the user wants a screen tour they'll ask for one.
+    - the only time you can go longer is if the user explicitly asks you to explain more, go deeper, or elaborate. otherwise: short.
     - all lowercase, casual, warm. no emojis. no exclamation marks unless the persona explicitly calls for them.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see — names, positions, exact words, exact crops. specifics earn the take.
+    - if the user's question relates to what's on their screen, reference specific things you see — names, positions, exact words. specifics earn the take.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, design critique, general knowledge, brainstorming.
     - never say "simply" or "just". no "great question", no "valid perspective", no generic assistant filler.
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - end with one concrete next step or sharp question when it fits — not every time. don't end with dead-end yes/no questions like "want me to explain more?" or "should i show you?".
-    - when a more ambitious thread fits naturally, plant a seed — a related concept that goes deeper, a next-level technique that builds on what you just said. make it something worth coming back for.
+    - end when you're done. don't end with dead-end yes/no questions like "want me to explain more?" or "should i show you?". one concrete next step is fine if it fits — but most replies should just end on the take.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
     - if the user asks for something harmful, unethical, or deceptive, refuse briefly and redirect.
 
     element pointing:
-    you have a small glowing blue orb cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+    you have a small glowing blue orb cursor that can fly to and point at things on screen. **use it aggressively.** the pointing is one of the best parts of this product — every time you reference something specific on screen, point at it. err *heavily* on the side of pointing. if you can name the thing, you can point at the thing.
 
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
+    **most importantly: when you critique something, suggest a change, or recommend a fix, point at the exact thing you're talking about.** this is non-negotiable. if you say "the headline is too long," point at the headline. if you say "crop the feet," point at the feet. if you say "the logo needs to be bigger," point at the logo. if you say "the brand should feel more swedish," point at the empty area where the flag or *Made in Sweden* should go. the cursor on the thing is what makes the feedback land — words alone are noise, words plus the cursor on the actual pixel is craft.
 
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
+    when to point:
+    - critiquing or suggesting a change to a specific element on screen → point at that element. always.
+    - referencing a specific button, menu, image, region, headline, color, body part, crop edge, or piece of type → point at it.
+    - explaining how to do something in an app → point at the relevant control.
+    - flagging what's missing → point at the empty area where it should go.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+    when *not* to point:
+    - the user asked a pure general-knowledge question with nothing on screen attached.
+    - the conversation has nothing to do with what's on screen.
+    - the thing you'd point at takes up most of the visible area (no signal in pointing at the whole screen).
 
-    if pointing wouldn't help, append [POINT:none].
+    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward. aim for the visual center of the element you're naming — not a corner.
+
+    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar", "feet", "headline", "missing flag"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+
+    if pointing genuinely wouldn't help, append [POINT:none] — but use this sparingly. when in doubt, point.
 
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+    - critique on a poster: "the feet are throwing me off — crop them above the ankles or shoot from a higher angle. [POINT:640,1180:feet]"
+    - flagging what's missing: "this could be any sauna company. it needs *Made in Sweden* and the flag, somewhere down here in the empty space under the headline. [POINT:520,940:empty space below headline]"
+    - recommending a specific change: "the logo is too small — needs to be at least double this size to earn the brand presence. [POINT:120,80:logo]"
     """
 
     /// Builds the system prompt for the existing voice flow with the user's
@@ -1726,9 +1869,11 @@ final class CompanionManager: ObservableObject {
             // mapping from the previous request can't bleed into the
             // [USED:...] resolver.
             inFlightTasteContextBlock = nil
-            return composeSystemPromptForTeammatePersona(
-                teammateBundle: teammateBundle,
-                basePrompt: basePrompt
+            return prependFreshVoiceSessionHintIfNeeded(
+                composeSystemPromptForTeammatePersona(
+                    teammateBundle: teammateBundle,
+                    basePrompt: basePrompt
+                )
             )
         }
 
@@ -1747,7 +1892,7 @@ final class CompanionManager: ObservableObject {
             } catch {
                 print("⚠️ Couldn't load personal taste profile, using base prompt: \(error)")
                 inFlightTasteContextBlock = nil
-                return basePrompt
+                return prependFreshVoiceSessionHintIfNeeded(basePrompt)
             }
         }
 
@@ -1762,9 +1907,18 @@ final class CompanionManager: ObservableObject {
             teamProfile: loadedTeamProfile,
             scope: tasteScope
         )
-        guard !builtTasteContextBlock.promptText.isEmpty else {
+
+        // Team context (brief + dropped files) is only injected in team
+        // scope — when the user is "speaking on behalf of the team" the
+        // persona needs to know what the team's working on. Personal
+        // scope stays clean of team material.
+        let teamContextOverviewBlock: String = (tasteScope == .team)
+            ? TeamContextPromptBuilder.teamContextBlock(profile: TeamContextStore.loadProfile())
+            : ""
+
+        guard !builtTasteContextBlock.promptText.isEmpty || !teamContextOverviewBlock.isEmpty else {
             inFlightTasteContextBlock = nil
-            return basePrompt
+            return prependFreshVoiceSessionHintIfNeeded(basePrompt)
         }
 
         let approvedPersonalCount = loadedPersonalProfile.principles.filter { $0.approved }.count
@@ -1774,6 +1928,9 @@ final class CompanionManager: ObservableObject {
             print("🧠 Applying \(approvedPersonalCount) personal taste principle(s) to voice prompt")
         case .team:
             print("🧠 Applying taste — \(approvedPersonalCount) personal + \(approvedTeamCount) team principle(s)")
+            if !teamContextOverviewBlock.isEmpty {
+                print("📎 Injecting team context block (\(teamContextOverviewBlock.utf8.count) bytes)")
+            }
         }
 
         // Cache the block so the response handler can resolve Claude's
@@ -1782,7 +1939,32 @@ final class CompanionManager: ObservableObject {
         // mapping available. Teach mode follows a separate code path.
         inFlightTasteContextBlock = builtTasteContextBlock
 
-        return builtTasteContextBlock.promptText + "\n\n" + basePrompt
+        let assembledPromptSections: [String] = [
+            teamContextOverviewBlock,
+            builtTasteContextBlock.promptText,
+            basePrompt
+        ].filter { !$0.isEmpty }
+
+        return prependFreshVoiceSessionHintIfNeeded(
+            assembledPromptSections.joined(separator: "\n\n")
+        )
+    }
+
+    /// One-line hint prepended to every system prompt on the first
+    /// exchange after a voice session reset (persona switch, idle
+    /// timeout, or "New voice chat" tap). Tells Sticky / the active
+    /// persona that they may have spoken to this user before but don't
+    /// currently remember the prior context, so they should ask for a
+    /// quick recap if the user references something they shouldn't
+    /// know about. Returns the prompt unchanged when no reset just
+    /// happened — most exchanges within a session are pure continuations
+    /// and don't need the hint.
+    private func prependFreshVoiceSessionHintIfNeeded(_ prompt: String) -> String {
+        guard voiceSessionIsFreshAfterReset else { return prompt }
+        let hint = """
+        important context for this turn: this is the start of a fresh chat session. you may well have spoken with this user before in earlier sessions, but you do not currently have access to those past conversations — your memory of them has been reset for privacy. if the user references a previous chat, a decision you made together, or something they "told you last time," gently acknowledge that you may have spoken before but don't remember the specifics, and ask them to give you a quick recap so you can be useful again. don't pretend to remember things you don't, and don't be apologetic about it — treat it as natural ("i've forgotten the details, give me a quick recap?"). this hint applies to this turn only; once the user has caught you up, treat the conversation as in-progress.
+        """
+        return hint + "\n\n" + prompt
     }
 
     /// Builds the system prompt when the user is wearing a teammate's
@@ -1828,6 +2010,8 @@ final class CompanionManager: ObservableObject {
 
         you are not a neutral assistant in costume — you are this person, and this person has opinions. when the user shows you work and asks what you think, give a real take with one or two specific, concrete suggestions tied to exactly what's on screen (the headline, the crop, the colors, a specific element you can name). do not hedge. do not list every possibility. pick the one or two changes \(teammateBundle.displayName) would actually push for and say what they'd be — name the thing, name the fix. specifics earn the opinion.
 
+        **when you critique or suggest a change, always point at the thing you're talking about using the [POINT:x,y:label] tag described later in this prompt.** if you say "crop the feet," point at the feet. if you say "the brand needs to feel swedish," point at the empty area where the flag belongs. if you say "the logo is too small," point at the logo. the cursor on the actual pixel is what turns a quote into craft. critique without pointing is a missed beat.
+
         pick the lens \(teammateBundle.displayName) naturally reaches for from this list and use it implicitly (you don't have to label it out loud unless it sharpens the point): product / user, craft / quality, strategy / leverage, risk / trust, taste / aesthetics / narrative, execution / timeline. brand and identity work usually pulls the taste lens or the strategy lens — pick whichever \(teammateBundle.displayName) would.
 
         the personality, voice, and values you should emulate are described next.
@@ -1841,6 +2025,17 @@ final class CompanionManager: ObservableObject {
 
         if !teammateTasteContextBlock.isEmpty {
             promptSections.append(teammateTasteContextBlock)
+        }
+
+        // Every teammate persona is part of the same team, so they all
+        // get the team brief + dropped files as background context. The
+        // overview is intentionally light — filenames + summaries +
+        // small text bodies — so this doesn't crowd out the persona's
+        // own voice. Empty when the user hasn't filled the team page in.
+        let teamContextOverviewBlock = TeamContextPromptBuilder
+            .teamContextBlock(profile: TeamContextStore.loadProfile())
+        if !teamContextOverviewBlock.isEmpty {
+            promptSections.append(teamContextOverviewBlock)
         }
 
         // Final reminder right before the format rules so the model
@@ -1884,6 +2079,11 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+
+        // Idle-rollover happens *before* we read the system prompt below,
+        // so a fresh-session hint can be included on the very first
+        // exchange after a long gap (instead of waiting for the next one).
+        startsFreshVoiceSessionIfIdleTooLong()
 
         // Hand the in-flight preflight capture to the response task. We clear
         // the property up front so a stray release-then-press while we're
@@ -2095,7 +2295,6 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -2113,9 +2312,15 @@ final class CompanionManager: ObservableObject {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
 
+                hasVoiceConversationHistory = !conversationHistory.isEmpty
+
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                // Mirror the exchange into the on-disk voice chat archive
+                // so the dashboard's Chats tab can show it. This intentionally
+                // archives *every* completed exchange, even when the spoken
+                // text is empty, so the user's transcript still surfaces.
+                archiveVoiceExchangeToDisk(transcript: transcript, assistantResponse: spokenText)
 
                 // Sentences were already enqueued during streaming + via the
                 // trailing-text dispatch above. Audio is fetching and will
@@ -2130,7 +2335,6 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
             }
@@ -2202,11 +2406,98 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Voice Session Lifecycle
+
+    /// Resets the rolling voice session: clears `conversationHistory`,
+    /// mints a new on-disk archive id, drops the in-memory message
+    /// mirror, and flags the next exchange as "fresh" so the system
+    /// prompt can include a "you may have spoken before but don't
+    /// currently remember" hint. Called from persona switches, the idle
+    /// timeout, and the explicit "New voice chat" button. Safe to call
+    /// when no voice session is in flight — it just reseeds the ids.
+    private func beginFreshVoiceSession(reason: String) {
+        conversationHistory.removeAll()
+        hasVoiceConversationHistory = false
+        activeVoiceSessionId = UUID().uuidString
+        activeVoiceSessionMessages = []
+        voiceSessionIsFreshAfterReset = true
+        lastVoiceExchangeAt = nil
+        print("🧠 New voice session (\(reason)) → id \(activeVoiceSessionId.prefix(8))")
+    }
+
+    /// Public entry point for the "New voice chat" button in the menu
+    /// bar panel. Cancels any in-flight response and starts a brand-new
+    /// voice session so the user gets the same fresh-start behaviour as
+    /// switching personas — the prompt note will tell Sticky it doesn't
+    /// remember the previous chat.
+    func beginNewVoiceChat() {
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        beginFreshVoiceSession(reason: "user tapped New voice chat")
+    }
+
+    /// Inspects how long it's been since the last completed voice
+    /// exchange. If the gap exceeds `voiceSessionIdleResetInterval`,
+    /// rolls over to a fresh voice session before the upcoming press is
+    /// processed. Called at the *start* of the response pipeline (just
+    /// before `composeVoiceSystemPromptWithTaste` reads
+    /// `voiceSessionIsFreshAfterReset`) so the prompt note is included
+    /// on the first press of a new conversation, not the second.
+    private func startsFreshVoiceSessionIfIdleTooLong() {
+        guard let lastVoiceExchangeAt else { return }
+        let elapsed = Date().timeIntervalSince(lastVoiceExchangeAt)
+        guard elapsed > Self.voiceSessionIdleResetInterval else { return }
+        beginFreshVoiceSession(reason: "idle for \(Int(elapsed / 3600))h")
+    }
+
+    /// Appends the just-completed voice exchange to the in-memory
+    /// session mirror and writes the whole session back to disk under
+    /// the active session id. Called once per push-to-talk exchange,
+    /// right after `conversationHistory.append`.
+    private func archiveVoiceExchangeToDisk(transcript: String, assistantResponse: String) {
+        let now = Date()
+        let userMessage = DashboardChatMessage(
+            id: UUID().uuidString,
+            role: "user",
+            text: transcript,
+            createdAt: now
+        )
+        let assistantMessage = DashboardChatMessage(
+            id: UUID().uuidString,
+            role: "assistant",
+            text: assistantResponse,
+            createdAt: now
+        )
+        activeVoiceSessionMessages.append(userMessage)
+        activeVoiceSessionMessages.append(assistantMessage)
+
+        let personaIdForArchive: String = {
+            switch personaSelection {
+            case .me: return PersonaStore.mePseudoPersona.id
+            case .team: return PersonaStore.teamPseudoPersona.id
+            case .teammate(let id): return id
+            }
+        }()
+
+        DashboardChatHistoryStore.recordSession(
+            sessionId: activeVoiceSessionId,
+            messages: activeVoiceSessionMessages,
+            personaId: personaIdForArchive,
+            medium: "voice"
+        )
+
+        lastVoiceExchangeAt = now
+        // The fresh-session prompt hint only applies to the first
+        // exchange after a reset — clear it now that the user has
+        // actually said something the model can hear.
+        voiceSessionIsFreshAfterReset = false
+    }
+
     /// Speaks a hardcoded error message using macOS system TTS when API
     /// credits run out. Uses NSSpeechSynthesizer so it works even when
     /// ElevenLabs is down.
     private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
+        let utterance = "I'm all out of credits."
         let synthesizer = NSSpeechSynthesizer()
         fallbackSpeechSynthesizer = synthesizer
         synthesizer.startSpeaking(utterance)
@@ -2497,7 +2788,6 @@ final class CompanionManager: ObservableObject {
             forTimes: [NSValue(time: demoTriggerTime)],
             queue: .main
         ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
             self?.performOnboardingDemoInteraction()
         }
 
@@ -2508,7 +2798,6 @@ final class CompanionManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
             self.onboardingVideoOpacity = 0.0
             // Wait for the 2s fade-out animation to complete before tearing down
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
