@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="docs/images/logo.png" alt="Instinct" width="120" />
+<img src="docs/images/logo.png" alt="Sticky" width="120" />
 
-# Instinct
+# Sticky
 
-**A macOS menu bar companion that learns your taste.**
+**A macOS menu bar companion that wears your team's taste.**
 
 [![macOS](https://img.shields.io/badge/macOS-14.2+-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-FA7343?style=for-the-badge&logo=swift&logoColor=white)](#)
@@ -12,64 +12,65 @@
 [![AssemblyAI](https://img.shields.io/badge/AssemblyAI-2D2D2D?style=for-the-badge&logoColor=white)](#)
 [![ElevenLabs](https://img.shields.io/badge/ElevenLabs-000000?style=for-the-badge)](#)
 
-Hold a key, talk through a creative decision, and Instinct extracts a reusable taste principle. Saved principles become a personal or team knowledgebase the AI uses later to critique work, suggest improvements, and tell you whether something matches your style.
+Hold a key, ask a question, and Sticky answers in the voice and taste of whichever teammate you're "wearing." Teach Sticky a new principle from your screen, and it folds into that persona's taste profile so the next answer reflects what they just learned.
 
 <br />
 
-<img src="docs/images/hero.png" alt="Instinct in action" width="820" />
+<img src="docs/images/hero.png" alt="Sticky in action" width="820" />
 
 </div>
 
 ---
 
 > [!NOTE]
-> **The 30-second pitch.** Most AI tools forget you the moment the conversation ends. Instinct watches *how you make decisions* — what you keep, what you cut, what you reword — and turns that into durable, reusable taste. Next time you ask for feedback, the answer is grounded in your style, not a generic best-practice checklist.
+> **The 30-second pitch.** Most AI assistants flatten everyone into the same neutral voice. Sticky inverts that — each persona is a distinct teammate with their own voice, soul, and taste, and Sticky speaks as them. Teaching is the loop that keeps each persona's taste growing, so the assistant gets sharper at being *that specific person* over time.
 
 <div align="center">
-<img src="docs/images/demo.gif" alt="Full Teach → Remember → Apply loop" width="780" />
+<img src="docs/images/demo.gif" alt="Persona swap → Ask → Teach loop" width="780" />
 </div>
 
 ---
 
-## Three modes
+## Personas
 
-Switch between modes from the menu bar panel. Same gesture (hold ctrl+option, speak, release) — different brain.
+A persona is a teammate Sticky can wear. Each one is a `personas/<id>/TASTE.md` file with a Soul section (voice, tone, what they care about) and a Taste section (principles with confidence + tags). Swap personas from the wheel picker in the menu bar — Sticky's avatar, voice, accent color, and the taste injected into the prompt all change at once.
 
 <table>
 <tr>
-<td align="center" width="33%" valign="top">
+<td align="center" width="33%">
 
-![Ask](https://img.shields.io/badge/ASK-3B82F6?style=for-the-badge&labelColor=1E3A8A)
+[![Reuban](https://img.shields.io/badge/Reuban-1F6FEB?style=for-the-badge&labelColor=0B2447)](#)
 
-<img src="docs/images/mode-ask.png" alt="Ask mode" width="100%" />
-
-Hold ctrl+option, ask anything about what's on screen. Streamed answer with optional cursor pointing at the element you're asking about.
+Builder · ships the smallest thing that proves the idea.
 
 </td>
-<td align="center" width="33%" valign="top">
+<td align="center" width="33%">
 
-![Teach](https://img.shields.io/badge/TEACH-10B981?style=for-the-badge&labelColor=064E3B)
+[![Leonard](https://img.shields.io/badge/Leonard-10B981?style=for-the-badge&labelColor=064E3B)](#)
 
-<img src="docs/images/mode-teach.png" alt="Teach mode" width="100%" />
-
-Hold ctrl+option, talk through a creative choice. *"I made the logo bigger because brand presence matters."* Instinct distills it into a single taste principle to Remember or Skip.
+Engineer-designer · opinionated defaults over settings panes.
 
 </td>
-<td align="center" width="33%" valign="top">
+<td align="center" width="33%">
 
-![Apply](https://img.shields.io/badge/APPLY-A855F7?style=for-the-badge&labelColor=581C87)
+[![Magdalena](https://img.shields.io/badge/Magdalena-A855F7?style=for-the-badge&labelColor=581C87)](#)
 
-<img src="docs/images/mode-apply.png" alt="Apply mode" width="100%" />
-
-Hold ctrl+option, ask anything. Your saved principles are injected into the prompt so the answer is grounded in your style. Toggle Personal / Team profiles.
+Strategist · brand presence and clarity beat decoration.
 
 </td>
 </tr>
 </table>
 
+> [!TIP]
+> The three above are seed personas baked into the build. Drop a new `personas/<id>/TASTE.md` (with `<!-- @persona id=… voice=… accent=… avatar=… -->` frontmatter) into Application Support and it appears in the wheel automatically.
+
 ---
 
-## How it works
+## Ask — the main loop
+
+<table>
+<tr>
+<td width="55%" valign="top">
 
 ```mermaid
 flowchart LR
@@ -77,69 +78,27 @@ flowchart LR
     B --> C([Release])
     C --> D[ScreenCaptureKit<br/>grabs screen]
     C --> E[AssemblyAI<br/>finalizes transcript]
-    D --> F{Mode?}
+    D --> F[Active persona's<br/>TASTE.md injected]
     E --> F
-    F -->|Ask| G[Stream answer<br/>+ cursor pointing]
-    F -->|Teach| H[Extract principle<br/>as JSON]
-    F -->|Apply| I[Inject taste context<br/>then answer]
-    H --> J[Review card]
-    J -->|Remember| K[(taste-profile.json)]
-    K -.->|loaded into Apply mode| I
+    F --> G[Claude streams<br/>reply]
+    G --> H[ElevenLabs TTS<br/>in persona's voice]
+    G --> I[Optional cursor<br/>pointing on screen]
 
     classDef capture fill:#1E40AF,stroke:#1E3A8A,color:#fff
-    classDef ask fill:#3B82F6,stroke:#1E3A8A,color:#fff
-    classDef teach fill:#10B981,stroke:#064E3B,color:#fff
-    classDef apply fill:#A855F7,stroke:#581C87,color:#fff
-    classDef store fill:#F59E0B,stroke:#92400E,color:#fff
-    classDef router fill:#7C3AED,stroke:#4C1D95,color:#fff
+    classDef inject fill:#7C3AED,stroke:#4C1D95,color:#fff
+    classDef out fill:#3B82F6,stroke:#1E3A8A,color:#fff
 
     class A,B,C,D,E capture
-    class F router
-    class G ask
-    class H,J teach
-    class I apply
-    class K store
+    class F inject
+    class G,H,I out
 ```
-
-1. **Capture** — push-to-talk via `AVAudioEngine` + a system-wide listen-only `CGEvent` tap. While you hold the key, a waveform appears on screen so you always know capture is live.
-2. **Transcribe** — AssemblyAI streams the transcript back over a websocket; OpenAI and Apple Speech are fallbacks.
-3. **See** — on key release, ScreenCaptureKit grabs the active monitor.
-4. **Reason** — transcript + screenshot go to Claude through a Cloudflare Worker proxy. The system prompt depends on the mode you're in.
-5. **Persist** — in Teach mode, the JSON principle is shown in a review card. Remember writes it to `~/Library/Application Support/com.learning-buddy.clicky/taste-profile.json`.
-6. **Apply** — in Apply mode, every Claude call is preceded by a taste-context block built from your saved principles.
-
----
-
-## The taste profile
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-<img src="docs/images/review-card.png" alt="Principle review card" width="100%" />
-
-After each Teach press, Instinct surfaces a single proposed principle. Two buttons: **Remember** or **Skip**. No editing — keep the loop tight.
 
 </td>
-<td width="50%" valign="top">
+<td width="45%" valign="top">
 
-```json
-{
-  "id": "p1",
-  "domain": "design",
-  "statement": "Prefers strong brand presence
-                and clear visual hierarchy.",
-  "confidence": 0.82,
-  "evidence": [
-    "User enlarged the logo while saying
-     'brand presence matters more than whitespace'."
-  ],
-  "tags": ["brand", "hierarchy"],
-  "approved": true
-}
-```
+Push-to-talk via `AVAudioEngine` + a system-wide listen-only `CGEvent` tap. While you hold the key a waveform appears so you always know capture is live.
 
-Stored locally as JSON. Nothing leaves your machine except the per-press transcript + screenshot to the model.
+On release, ScreenCaptureKit grabs the active monitor and the active persona's `TASTE.md` is prepended to Claude's system prompt. The reply streams back as text and as TTS in the persona's voice. If Claude embeds a `[POINT:x,y:label:screenN]` tag, a blue cursor flies along a bezier arc to the target on the right monitor.
 
 </td>
 </tr>
@@ -147,17 +106,40 @@ Stored locally as JSON. Nothing leaves your machine except the per-press transcr
 
 ---
 
-## Personal vs Team
+## Teach — give the active persona context
 
-<div align="center">
+<table>
+<tr>
+<td width="50%" valign="top">
 
-[![Personal](https://img.shields.io/badge/Personal-3B82F6?style=for-the-badge)](#) &nbsp; [![Team](https://img.shields.io/badge/Team-A855F7?style=for-the-badge)](#)
+<img src="docs/images/teach-session.png" alt="Teach session in progress" width="100%" />
 
-<img src="docs/images/personal-team.png" alt="Personal / Team toggle" width="540" />
+Press **Start Teach Session** in the panel and work normally. Sticky captures frames at intervals while you narrate, drag, edit. Press **Stop** and Sticky reviews the timeline, distills it down, and surfaces a candidate principle in a review card.
 
-</div>
+**Remember** appends it to the active persona's `TASTE.md`. **Skip** discards it. Future Ask responses while wearing that persona reflect the new principle immediately — no app restart.
 
-In Apply mode, flip between **Personal** (just your principles) and **Team** (the union of everyone's). Team profiles are plain JSON, hand-written or exported — no backend, no admin panel.
+</td>
+<td width="50%" valign="top">
+
+```markdown
+## Taste
+
+### Design
+
+- **Mood and motion matter — a tool should
+  feel alive without showing off.**
+  *(confidence 0.88 · motion, feel)*
+  Cursor pulses, edge-glow breathes with
+  voice level, persona wheel springs into
+  place. Movement is on by default; static
+  UI feels dead.
+```
+
+Stored as plain markdown — readable, grep-able, hand-editable. The frontmatter (`<!-- @persona id=… voice=… -->`) holds the persona's voice ID and accent color.
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -171,7 +153,7 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`.
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`.
 
 ---
 
@@ -210,19 +192,19 @@ For local development create `worker/.dev.vars` with your keys and run `npx wran
 
 ```
 leanring-buddy/                  ← macOS app source
-  CompanionManager.swift         ← central state machine (voice + taste mode)
-  CompanionPanelView.swift       ← menu bar panel UI (mode picker lives here)
+  CompanionManager.swift         ← central state machine (voice + teach session)
+  CompanionPanelView.swift       ← menu bar panel with persona picker + teach button
+  PersonaStore.swift             ← loads personas from TASTE.md files
+  TeachSessionResultCard.swift   ← Remember/Skip card after a teach session
   OverlayWindow.swift            ← transparent full-screen overlay (cursor, waveform, text)
   BuddyDictationManager.swift    ← push-to-talk + transcription pipeline
   ClaudeAPI.swift                ← Claude vision + streaming client
   ElevenLabsTTSClient.swift      ← TTS playback
   DesignSystem.swift             ← DS.Colors / DS.CornerRadius / DS.Spacing tokens
-  ...
-ReverseClicky/                   ← taste-mode modules
-  Shared/TasteTypes.swift        ← TasteMode, TastePrinciple, TasteProfile, ...
-  Analysis/                      ← teach-mode prompt + principle review card + profile store
-  Apply/                         ← apply-mode prompt builder + team profile store
-  demo/                          ← seed taste profiles + demo script
+  personas/                      ← seed personas (TASTE.md per teammate)
+    reuban/TASTE.md
+    leonard/TASTE.md
+    magdalena/TASTE.md
 worker/                          ← Cloudflare Worker proxy
 ```
 
@@ -231,7 +213,7 @@ worker/                          ← Cloudflare Worker proxy
 > [!IMPORTANT]
 > ## Privacy
 >
-> - Capture only happens while you're actively holding ctrl+option. The waveform indicator is visible the entire time.
-> - No background or always-on capture.
+> - Voice capture only happens while you're actively holding ctrl+option. The waveform indicator is visible the entire time.
+> - Teach sessions only capture frames between Start and Stop, and the panel shows an elapsed timer the entire time.
 > - Screenshots are sent to the Worker proxy in-memory and not retained on disk.
-> - Taste principles are stored locally only; nothing is added to your profile until you tap **Remember**.
+> - Nothing is added to a persona's `TASTE.md` until you tap **Remember** on the review card.
