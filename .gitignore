@@ -7,3 +7,28 @@ build/
 releases/
 .claude/
 coding-plans/
+
+# Personal taste/persona content — never push
+leanring-buddy/personas/
+leanring-buddy/Assets.xcassets/reuban.imageset/
+leanring-buddy/Assets.xcassets/leonard.imageset/
+leanring-buddy/Assets.xcassets/magda.imageset/
+
+# Reverse Clicky demo seed data (per-user, hand-edited)
+ReverseClicky/demo/
+demo/
+
+# Loose root-level scratch / planning docs and team photos
+/*.html
+/STATUS.md
+/TEACH_MODE_PLAN.md
+/EDGE_GLOW_REDESIGN.md
+/ELEVENLABS_STYLING.md
+/vitra_brand_fingerprint.md
+/adit.png
+/artem.jpeg
+/daniel.jpeg
+/leonard.jpeg
+/magda.jpeg
+/reuban.png
+/samuli.jpeg

@@ -1,28 +1,29 @@
 <div align="center">
 
-<img src="docs/images/logo.png" alt="Clicky" width="120" />
+<img src="docs/images/logo.png" alt="Instinct" width="120" />
 
-# Clicky
+# Instinct
 
 **A macOS menu bar companion that learns your taste.**
 
-Hold a key, talk through a creative decision, and Clicky extracts a reusable taste principle. Saved principles become a personal or team knowledgebase the AI uses later to critique work, suggest improvements, and tell you whether something matches your style.
+[![macOS](https://img.shields.io/badge/macOS-14.2+-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
+[![SwiftUI](https://img.shields.io/badge/SwiftUI-FA7343?style=for-the-badge&logo=swift&logoColor=white)](#)
+[![Claude](https://img.shields.io/badge/Claude-Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](#)
+[![AssemblyAI](https://img.shields.io/badge/AssemblyAI-2D2D2D?style=for-the-badge&logoColor=white)](#)
+[![ElevenLabs](https://img.shields.io/badge/ElevenLabs-000000?style=for-the-badge)](#)
+
+Hold a key, talk through a creative decision, and Instinct extracts a reusable taste principle. Saved principles become a personal or team knowledgebase the AI uses later to critique work, suggest improvements, and tell you whether something matches your style.
 
 <br />
 
-<img src="docs/images/hero.png" alt="Clicky in action" width="820" />
-
-<br />
-
-<sub>macOS 14.2+ &nbsp;·&nbsp; SwiftUI &nbsp;·&nbsp; Claude (Sonnet 4.6 / Opus 4.6) &nbsp;·&nbsp; AssemblyAI &nbsp;·&nbsp; ElevenLabs</sub>
+<img src="docs/images/hero.png" alt="Instinct in action" width="820" />
 
 </div>
 
 ---
 
-## The 30-second pitch
-
-Most AI tools forget you the moment the conversation ends. Clicky watches *how you make decisions* — what you keep, what you cut, what you reword — and turns that into durable, reusable taste. Next time you ask for feedback, the answer is grounded in your style, not a generic best-practice checklist.
+> [!NOTE]
+> **The 30-second pitch.** Most AI tools forget you the moment the conversation ends. Instinct watches *how you make decisions* — what you keep, what you cut, what you reword — and turns that into durable, reusable taste. Next time you ask for feedback, the answer is grounded in your style, not a generic best-practice checklist.
 
 <div align="center">
 <img src="docs/images/demo.gif" alt="Full Teach → Remember → Apply loop" width="780" />
@@ -36,27 +37,27 @@ Switch between modes from the menu bar panel. Same gesture (hold ctrl+option, sp
 
 <table>
 <tr>
-<td width="33%" valign="top">
+<td align="center" width="33%" valign="top">
 
-### Ask
+![Ask](https://img.shields.io/badge/ASK-3B82F6?style=for-the-badge&labelColor=1E3A8A)
 
 <img src="docs/images/mode-ask.png" alt="Ask mode" width="100%" />
 
 Hold ctrl+option, ask anything about what's on screen. Streamed answer with optional cursor pointing at the element you're asking about.
 
 </td>
-<td width="33%" valign="top">
+<td align="center" width="33%" valign="top">
 
-### Teach
+![Teach](https://img.shields.io/badge/TEACH-10B981?style=for-the-badge&labelColor=064E3B)
 
 <img src="docs/images/mode-teach.png" alt="Teach mode" width="100%" />
 
-Hold ctrl+option, talk through a creative choice. *"I made the logo bigger because brand presence matters."* Clicky distills it into a single taste principle to Remember or Skip.
+Hold ctrl+option, talk through a creative choice. *"I made the logo bigger because brand presence matters."* Instinct distills it into a single taste principle to Remember or Skip.
 
 </td>
-<td width="33%" valign="top">
+<td align="center" width="33%" valign="top">
 
-### Apply
+![Apply](https://img.shields.io/badge/APPLY-A855F7?style=for-the-badge&labelColor=581C87)
 
 <img src="docs/images/mode-apply.png" alt="Apply mode" width="100%" />
 
@@ -70,9 +71,35 @@ Hold ctrl+option, ask anything. Your saved principles are injected into the prom
 
 ## How it works
 
-<div align="center">
-<img src="docs/images/architecture.png" alt="Architecture diagram" width="780" />
-</div>
+```mermaid
+flowchart LR
+    A([Hold ctrl+option]) --> B([Speak])
+    B --> C([Release])
+    C --> D[ScreenCaptureKit<br/>grabs screen]
+    C --> E[AssemblyAI<br/>finalizes transcript]
+    D --> F{Mode?}
+    E --> F
+    F -->|Ask| G[Stream answer<br/>+ cursor pointing]
+    F -->|Teach| H[Extract principle<br/>as JSON]
+    F -->|Apply| I[Inject taste context<br/>then answer]
+    H --> J[Review card]
+    J -->|Remember| K[(taste-profile.json)]
+    K -.->|loaded into Apply mode| I
+
+    classDef capture fill:#1E40AF,stroke:#1E3A8A,color:#fff
+    classDef ask fill:#3B82F6,stroke:#1E3A8A,color:#fff
+    classDef teach fill:#10B981,stroke:#064E3B,color:#fff
+    classDef apply fill:#A855F7,stroke:#581C87,color:#fff
+    classDef store fill:#F59E0B,stroke:#92400E,color:#fff
+    classDef router fill:#7C3AED,stroke:#4C1D95,color:#fff
+
+    class A,B,C,D,E capture
+    class F router
+    class G ask
+    class H,J teach
+    class I apply
+    class K store
+```
 
 1. **Capture** — push-to-talk via `AVAudioEngine` + a system-wide listen-only `CGEvent` tap. While you hold the key, a waveform appears on screen so you always know capture is live.
 2. **Transcribe** — AssemblyAI streams the transcript back over a websocket; OpenAI and Apple Speech are fallbacks.
@@ -91,7 +118,7 @@ Hold ctrl+option, ask anything. Your saved principles are injected into the prom
 
 <img src="docs/images/review-card.png" alt="Principle review card" width="100%" />
 
-After each Teach press, Clicky surfaces a single proposed principle. Two buttons: **Remember** or **Skip**. No editing — keep the loop tight.
+After each Teach press, Instinct surfaces a single proposed principle. Two buttons: **Remember** or **Skip**. No editing — keep the loop tight.
 
 </td>
 <td width="50%" valign="top">
@@ -123,7 +150,11 @@ Stored locally as JSON. Nothing leaves your machine except the per-press transcr
 ## Personal vs Team
 
 <div align="center">
+
+[![Personal](https://img.shields.io/badge/Personal-3B82F6?style=for-the-badge)](#) &nbsp; [![Team](https://img.shields.io/badge/Team-A855F7?style=for-the-badge)](#)
+
 <img src="docs/images/personal-team.png" alt="Personal / Team toggle" width="540" />
+
 </div>
 
 In Apply mode, flip between **Personal** (just your principles) and **Team** (the union of everyone's). Team profiles are plain JSON, hand-written or exported — no backend, no admin panel.
@@ -152,6 +183,7 @@ open leanring-buddy.xcodeproj
 
 Select the `leanring-buddy` scheme, set your signing team, ⌘R.
 
+> [!WARNING]
 > Do **not** run `xcodebuild` from the terminal — it invalidates TCC permissions (Screen Recording, Accessibility, Microphone) and the app will need to re-request them.
 
 <details>
@@ -196,15 +228,10 @@ worker/                          ← Cloudflare Worker proxy
 
 ---
 
-## Privacy
-
-- Capture only happens while you're actively holding ctrl+option. The waveform indicator is visible the entire time.
-- No background or always-on capture.
-- Screenshots are sent to the Worker proxy in-memory and not retained on disk.
-- Taste principles are stored locally only; nothing is added to your profile until you tap **Remember**.
-
----
-
-<div align="center">
-<sub>Built as a fork of Clicky for the Reverse Clicky hackathon.</sub>
-</div>
+> [!IMPORTANT]
+> ## Privacy
+>
+> - Capture only happens while you're actively holding ctrl+option. The waveform indicator is visible the entire time.
+> - No background or always-on capture.
+> - Screenshots are sent to the Worker proxy in-memory and not retained on disk.
+> - Taste principles are stored locally only; nothing is added to your profile until you tap **Remember**.
