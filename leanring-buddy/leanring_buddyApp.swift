@@ -39,8 +39,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        // Apply the user's persisted theme before any window is built so
+        // every NSWindow / NSPanel inherits the right NSAppearance from
+        // birth instead of flashing the default and re-rendering.
+        ThemeManager.shared.applyAppearanceToRunningApp()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()

@@ -11,8 +11,9 @@
 //  are being archived — without leaving the menu bar.
 //
 //  Each row tells you what kind of activity it was, when it
-//  happened, and a one-line summary. Tap a row to open the
-//  Dashboard pinned to either Recordings or Chats.
+//  happened, and a one-line summary. Tap a teach row to jump to
+//  Memory (where the principle lives) or a chat row to jump to
+//  the Chat transcript.
 //
 
 import SwiftUI
@@ -39,7 +40,7 @@ struct MiniPanelActivityFeed: View {
 
     /// How many rows to show. 3 strikes the right balance between
     /// "useful" and "doesn't dominate the panel". The dashboard's
-    /// Recordings/Chats tabs are the place to see the long tail.
+    /// Memory + Chat tabs are the place to see the long tail.
     private static let maxRowsShown = 3
 
     /// Hover state for the "See all" link in the section header. The
@@ -200,15 +201,15 @@ struct MiniPanelActivityFeed: View {
     private func openDashboardForActivityKind(_ kind: MiniPanelActivityRow.Kind) {
         switch kind {
         case .teach:
-            DashboardNavigationState.shared.selectedSection = .recordings
+            DashboardNavigationState.shared.selectedSection = .memory
         case .chat:
-            DashboardNavigationState.shared.selectedSection = .chats
+            DashboardNavigationState.shared.selectedSection = .chat
         }
         MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
     }
 
     private func openDashboardForFullHistory() {
-        DashboardNavigationState.shared.selectedSection = .recordings
+        DashboardNavigationState.shared.selectedSection = .memory
         MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
     }
 

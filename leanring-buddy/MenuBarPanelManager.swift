@@ -37,6 +37,7 @@ final class MenuBarPanelManager: NSObject {
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
+    private var clickInsideAppMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
 
     /// Combine subscription that re-renders the menu bar icon whenever
@@ -84,6 +85,9 @@ final class MenuBarPanelManager: NSObject {
 
     deinit {
         if let monitor = clickOutsideMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = clickInsideAppMonitor {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
@@ -196,7 +200,7 @@ final class MenuBarPanelManager: NSObject {
         // that size so the outline ring has room without the photo
         // looking shrunken. The status item adapts its width
         // automatically.
-        let iconSize: CGFloat = 22
+        let iconSize: CGFloat = 20
         // Width of the white outline. Sized for retina — at 1x it's
         // still a crisp single hairline thanks to the inset.
         let ringWidth: CGFloat = 1.5
@@ -265,7 +269,7 @@ final class MenuBarPanelManager: NSObject {
     /// in-app pointer cursor stays as a full glowing orb; the menu bar
     /// gets the slightly more graphic, sittable silhouette.
     private func makeStickyMenuBarIcon() -> NSImage {
-        let iconSize: CGFloat = 18
+        let iconSize: CGFloat = 16
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
@@ -427,66 +431,104 @@ final class MenuBarPanelManager: NSObject {
 
     // MARK: - Click Outside Dismissal
 
-    /// Installs a global event monitor that hides the panel when the user clicks
-    /// anywhere outside it — the same transient dismissal behavior as NSPopover.
-    /// Uses a short delay so that system permission dialogs (triggered by Grant
-    /// buttons in the panel) don't immediately dismiss the panel when they appear.
+    /// Installs both a global and local event monitor. Together they hide
+    /// the panel whenever the user clicks anywhere that isn't the panel —
+    /// matching NSPopover's transient dismissal behavior.
+    ///
+    /// - Global monitor: clicks in *other* applications (the desktop,
+    ///   another app's window, etc.).
+    /// - Local monitor: clicks inside Sticky's own other windows
+    ///   (dashboard, chat, taste library, popovers). The global monitor
+    ///   doesn't fire for in-app events, so without the local monitor
+    ///   the panel would stay open when the user clicks on, say, the
+    ///   dashboard window underneath it.
+    ///
+    /// Both share a small dismissal delay so system permission dialogs
+    /// (triggered by Grant buttons in the panel) don't immediately
+    /// dismiss the panel when they appear.
     private func installClickOutsideMonitor() {
         removeClickOutsideMonitor()
 
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            self?.handleClickOutsidePanelIfNeeded(at: NSEvent.mouseLocation)
+        }
+
+        // Local monitor catches clicks delivered to our own app's other
+        // windows. Returning the event unchanged lets the click reach its
+        // intended target — we just additionally schedule the panel
+        // dismiss as a side effect.
+        clickInsideAppMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] event in
-            guard let self, let panel = self.panel else { return }
+            self?.handleClickOutsidePanelIfNeeded(at: NSEvent.mouseLocation)
+            return event
+        }
+    }
 
-            // Check if the click is inside the status item button — if so, the
-            // statusItemClicked handler will toggle the panel, so don't also hide.
-            let clickLocation = NSEvent.mouseLocation
-            if panel.frame.contains(clickLocation) {
+    /// Shared dismissal logic for both the global and local click
+    /// monitors. Decides whether the click at `clickLocation` should
+    /// hide the panel based on what window is under the cursor and
+    /// the companion's current teach-flow state.
+    private func handleClickOutsidePanelIfNeeded(at clickLocation: NSPoint) {
+        guard let panel else { return }
+
+        // Click landed inside the panel itself — the panel's own SwiftUI
+        // content will handle it.
+        if panel.frame.contains(clickLocation) {
+            return
+        }
+
+        // SwiftUI's `.popover` (theme picker, voice color picker,
+        // persona picker) renders into a separate AppKit window
+        // positioned outside the parent panel's frame. We exempt clicks
+        // on those windows so they don't accidentally dismiss the
+        // menu bar panel underneath. Two ways to recognize a popover
+        // window: the canonical case is its window level being higher
+        // than the panel's `.floating`, but SwiftUI doesn't always
+        // elevate the level for every popover variant — so we also
+        // accept windows whose class name self-identifies as a popover
+        // (e.g. `_NSPopoverWindow`). Regular app windows (dashboard,
+        // chat, taste library) sit at `.normal` and have ordinary
+        // class names, so clicks on them still fall through and
+        // dismiss the panel.
+        let clickIsInsidePopoverLikeWindow = NSApp.windows.contains { auxiliaryWindow in
+            guard auxiliaryWindow !== panel else { return false }
+            guard auxiliaryWindow.isVisible else { return false }
+            guard !auxiliaryWindow.ignoresMouseEvents else { return false }
+            guard auxiliaryWindow.frame.contains(clickLocation) else { return false }
+            if auxiliaryWindow.level.rawValue > panel.level.rawValue {
+                return true
+            }
+            let auxiliaryClassName = String(describing: type(of: auxiliaryWindow))
+            return auxiliaryClassName.lowercased().contains("popover")
+        }
+        if clickIsInsidePopoverLikeWindow {
+            return
+        }
+
+        // Delay dismissal slightly to avoid closing the panel when
+        // a system permission dialog appears (e.g. microphone access).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, let panel = self.panel, panel.isVisible else { return }
+
+            // If permissions aren't all granted yet, a system dialog
+            // may have focus — don't dismiss during onboarding.
+            if !self.companionManager.allPermissionsGranted && !NSApp.isActive {
                 return
             }
 
-            // SwiftUI's `.popover` (used by the voice picker dropdown
-            // inside the panel content) renders into a separate AppKit
-            // window that's positioned outside the parent panel's frame.
-            // Without this guard the very first click on any row of the
-            // popover dismisses the entire menu bar panel, tearing the
-            // popover down with it. Exempt any visible app window that
-            // accepts mouse events and contains the click point — that
-            // covers SwiftUI popovers and any future child sheets without
-            // exempting the click-through cursor overlay.
-            let clickIsInsideAuxiliaryAppWindow = NSApp.windows.contains { auxiliaryWindow in
-                guard auxiliaryWindow !== panel else { return false }
-                guard auxiliaryWindow.isVisible else { return false }
-                guard !auxiliaryWindow.ignoresMouseEvents else { return false }
-                return auxiliaryWindow.frame.contains(clickLocation)
-            }
-            if clickIsInsideAuxiliaryAppWindow {
+            // Pin the panel while the user has transient teach-flow
+            // state in flight (recording, analyzing, a review queue,
+            // or an unsaved result card). A click anywhere outside the
+            // panel during these states would silently throw away
+            // mid-flow work, which is worse than leaving the panel up.
+            if self.companionManager.shouldKeepPanelOpenForActiveTeachState {
                 return
             }
 
-            // Delay dismissal slightly to avoid closing the panel when
-            // a system permission dialog appears (e.g. microphone access).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                guard panel.isVisible else { return }
-
-                // If permissions aren't all granted yet, a system dialog
-                // may have focus — don't dismiss during onboarding.
-                if !self.companionManager.allPermissionsGranted && !NSApp.isActive {
-                    return
-                }
-
-                // Pin the panel while the user has transient teach-flow
-                // state in flight (recording, analyzing, a review queue,
-                // or an unsaved result card). A click anywhere outside the
-                // panel during these states would silently throw away
-                // mid-flow work, which is worse than leaving the panel up.
-                if self.companionManager.shouldKeepPanelOpenForActiveTeachState {
-                    return
-                }
-
-                self.hidePanel()
-            }
+            self.hidePanel()
         }
     }
 
@@ -494,6 +536,10 @@ final class MenuBarPanelManager: NSObject {
         if let monitor = clickOutsideMonitor {
             NSEvent.removeMonitor(monitor)
             clickOutsideMonitor = nil
+        }
+        if let monitor = clickInsideAppMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickInsideAppMonitor = nil
         }
     }
 }
@@ -546,19 +592,17 @@ final class WarmDropdownBackgroundView: NSView {
         // Hairline border in the brand neutral so the paper card reads
         // as a printed object cut from a sheet, not a glassy panel.
         layer?.borderWidth = 1.0
-        layer?.borderColor = NSColor(red: 0.87, green: 0.86, blue: 0.83, alpha: 1.0).cgColor
 
-        // Flat paper fill — the brand "paper" hue. No gradient, no
-        // riso-print drama. Visual interest comes from the content
-        // (gradient hero tile, ink wordmark) rather than the surface.
-        gradientLayer.colors = [
-            NSColor(red: 0.957, green: 0.949, blue: 0.929, alpha: 1.0).cgColor,
-            NSColor(red: 0.957, green: 0.949, blue: 0.929, alpha: 1.0).cgColor
-        ]
         gradientLayer.locations = [0.0, 1.0]
         gradientLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
         gradientLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
         layer?.addSublayer(gradientLayer)
+
+        // Paint the paper / hairline colors via the dynamic brand
+        // tokens so they pick up the current light/dark mode. The CALayer
+        // CGColors aren't intrinsically dynamic, so `applyThemeColors`
+        // is also re-invoked from `viewDidChangeEffectiveAppearance`.
+        applyThemeColors()
 
         // Glow / column / grain layers are kept in the hierarchy but
         // rendered fully transparent. The brand surface is intentionally
@@ -586,6 +630,33 @@ final class WarmDropdownBackgroundView: NSView {
         columnLayer.frame = bounds
         grainLayer.frame = bounds
         CATransaction.commit()
+    }
+
+    /// Re-resolves the dynamic paper / hairline colors against the
+    /// view's current effective appearance and pushes them onto the
+    /// CALayers. CALayer borderColor / CAGradientLayer.colors are
+    /// non-dynamic CGColors, so we have to re-paint them by hand
+    /// whenever the appearance flips.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyThemeColors()
+    }
+
+    private func applyThemeColors() {
+        // Resolve the dynamic brand colors against the view's current
+        // effectiveAppearance (which honors NSApp.appearance, set by
+        // ThemeManager) so the panel surface matches whichever theme
+        // the rest of the SwiftUI content is currently rendering in.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let resolvedPaperColor = NSColor(ElevenLabsBrand.Colors.paper).cgColor
+            let resolvedHairlineColor = NSColor(ElevenLabsBrand.Colors.hairline).cgColor
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            gradientLayer.colors = [resolvedPaperColor, resolvedPaperColor]
+            layer?.borderColor = resolvedHairlineColor
+            CATransaction.commit()
+        }
     }
 
     // MARK: - Pattern image generators

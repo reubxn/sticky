@@ -27,7 +27,8 @@ enum DashboardTasteMarkdownExporter {
         displayName: String,
         role: String?,
         accentHex: String?,
-        voiceId: String?
+        voiceId: String?,
+        soulProse: String?
     ) {
         let savePanel = NSSavePanel()
         savePanel.title = "Export TASTE.md"
@@ -46,7 +47,8 @@ enum DashboardTasteMarkdownExporter {
             displayName: displayName,
             role: role,
             accentHex: accentHex,
-            voiceId: voiceId
+            voiceId: voiceId,
+            soulProse: soulProse
         )
 
         do {
@@ -68,7 +70,8 @@ enum DashboardTasteMarkdownExporter {
         displayName: String,
         role: String?,
         accentHex: String?,
-        voiceId: String?
+        voiceId: String?,
+        soulProse: String?
     ) -> String {
         var output: [String] = []
 
@@ -86,12 +89,18 @@ enum DashboardTasteMarkdownExporter {
         output.append("<!-- @persona id=\(tasteProfile.userId) voice=\(resolvedVoice) accent=\(resolvedAccent) -->")
         output.append("")
 
-        // Soul placeholder — the JSON profile doesn't carry a soul
-        // string, so we leave a hint for the user to fill in. Still
-        // valid markdown for the parser.
+        // Soul section — use the persona's actual soul prose when we
+        // have it (loaded from the user's persona bundle / TASTE.md);
+        // fall back to a placeholder hint only when the profile has
+        // never had soul prose attached.
         output.append("## Soul")
         output.append("")
-        output.append("_Add your personality prose here — how you think, what you care about, what you push back on._")
+        let trimmedSoulProse = (soulProse ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedSoulProse.isEmpty {
+            output.append("_Add your personality prose here — how you think, what you care about, what you push back on._")
+        } else {
+            output.append(trimmedSoulProse)
+        }
         output.append("")
 
         // Taste section — group principles by domain in stable order.

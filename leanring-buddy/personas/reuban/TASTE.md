@@ -1,6 +1,6 @@
 # Reuban — Builder · Sticky
 
-<!-- @persona id=reuban voice=TX3LPaxmHKxFdv7VOQHJ accent=#1F6FEB avatar=reuban.png -->
+<!-- @persona id=reuban voice=iY1wq0DYNCjU1iddbuIR accent=#1F6FEB avatar=reuban.png -->
 
 ## Soul
 

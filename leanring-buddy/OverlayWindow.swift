@@ -225,9 +225,16 @@ struct BlueCursorView: View {
     /// session is recording, so the user knows the mic is open even
     /// when the panel is dismissed. Hidden only when idle and no teach
     /// session is running.
+    ///
+    /// Teach-session recording bypasses the buddy-on-this-screen gate so
+    /// the four-edge halo stays lit on every display regardless of where
+    /// the cursor is. The glow signals "session is recording" to the
+    /// whole desktop — tying it to cursor location made it disappear
+    /// every time the user moved between monitors or hovered the menu
+    /// bar, which read as a glitch.
     private var edgeGlowShouldBeVisible: Bool {
-        guard buddyIsVisibleOnThisScreen else { return false }
         if companionManager.teachSessionState == .recording { return true }
+        guard buddyIsVisibleOnThisScreen else { return false }
         switch companionManager.voiceState {
         case .listening, .processing, .responding:
             return true
@@ -271,24 +278,27 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Picks the color of the glow based on whose turn it is in the
-    /// conversation. The user's voice (listening / processing) glows in
-    /// the fixed user color (blue) so the speaking-side identity is
-    /// stable across persona switches. Teach-recording overrides to
-    /// amber-orange to make taste-capture visually distinct from a
-    /// regular voice turn — the user is teaching, not asking. The
-    /// persona's reply (responding) glows in the active persona's accent
-    /// color — the same hex shown on its spoke in the shift+cmd wheel —
-    /// so swapping persona on the wheel and seeing the reply glow are
-    /// visually consistent.
-    private var edgeGlowColor: Color {
+    /// Picks the colors of the glow based on whose turn it is in the
+    /// conversation. The user's voice (listening AND processing) honors
+    /// the full aurora list the user picked in the footer popover — one
+    /// color for a solid glow, multiple for an aurora. Processing keeps
+    /// the same aurora as listening so the visual identity doesn't snap
+    /// back to a single hue when the user releases push-to-talk and
+    /// waits for Claude. The shimmer sweep that runs on top during
+    /// processing is still single-color (it's a small accent layer that
+    /// can't aurora cleanly), but the underlying halo aurora persists.
+    /// Teach-recording overrides to amber-orange to make taste-capture
+    /// visually distinct from a regular voice turn. The persona's reply
+    /// (responding) glows in the active persona's accent color so the
+    /// reply side matches the shift+cmd wheel.
+    private var edgeGlowColors: [Color] {
         switch edgeGlowMode {
         case .respondingWithAI:
-            return companionManager.personaReplyEdgeGlowColor
+            return [companionManager.personaReplyEdgeGlowColor]
         case .teachRecording:
-            return ElevenLabsBrand.Colors.tasteAccent
+            return [ElevenLabsBrand.Colors.tasteAccent]
         case .listeningToUser, .processingThinking:
-            return companionManager.userVoiceColor
+            return companionManager.userVoiceAuroraColors
         }
     }
 
@@ -305,7 +315,7 @@ struct BlueCursorView: View {
             EdgeGlowView(
                 audioPowerLevel: edgeGlowAudioPowerLevel,
                 mode: edgeGlowMode,
-                color: edgeGlowColor
+                colors: edgeGlowColors
             )
                 .opacity(edgeGlowShouldBeVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.4), value: companionManager.voiceState)
@@ -1056,9 +1066,14 @@ private struct InnerShadowEdgeHalo: View {
     /// gradient and frame alignment so the brightest band sits flush
     /// against the matching screen edge.
     let edge: Edge
-    /// Saturated color of the glow's outer halo. Bright color near the
-    /// edge fades to fully transparent toward the center of the screen.
-    let color: Color
+    /// Ordered list of saturated colors that paint the glow's halo.
+    /// `count == 1` keeps the original behavior — a single color fading
+    /// from bright at the edge to transparent toward the center.
+    /// `count > 1` paints an aurora: the colors run as a linear gradient
+    /// along the edge axis (left-to-right for top/bottom, top-to-bottom
+    /// for leading/trailing), still fading to transparent toward the
+    /// center. Always non-empty.
+    let colors: [Color]
     /// 0...1 reactivity scalar. Drives both the brightness of every
     /// layer and the height/spread of the saturated band, so silence
     /// reads as a calm dim glow and shouting reads as a tall vivid one.
@@ -1067,6 +1082,13 @@ private struct InnerShadowEdgeHalo: View {
     /// a small ~24pt radius so the corners feel gently rounded but the
     /// glow is still flush against three of the four screen edges.
     let cornerRadius: CGFloat
+
+    /// Primary color used for the white inner-highlight pass. The white
+    /// pass doesn't aurora — it's a neutral rim — so it just needs a
+    /// fallback when `colors` is somehow empty (defensive; the caller
+    /// guarantees non-empty, but `first ?? .white` keeps the renderer
+    /// honest).
+    private var primaryColor: Color { colors.first ?? .white }
 
     var body: some View {
         ZStack {
@@ -1123,6 +1145,19 @@ private struct InnerShadowEdgeHalo: View {
     /// the requested height and blurred. Stacking several of these with
     /// different opacities and blur radii creates the layered
     /// inner-shadow look from the reference.
+    ///
+    /// Single-color path (used by every layer when `colors.count == 1`,
+    /// and always for the white inner highlight pass):
+    /// just a 1D gradient running from transparent at the inner side
+    /// to saturated at the edge.
+    ///
+    /// Aurora path (when `colors.count > 1` and no single-color
+    /// override): paint the saturated colors as a linear gradient
+    /// running along the edge axis at full opacity, then mask that with
+    /// the same fade-to-transparent the single-color path uses, scaled
+    /// by `colorOpacity`. The mask is grayscale (only alpha matters),
+    /// so the aurora colors stay vivid in the saturated band and fade
+    /// out cleanly toward the center.
     @ViewBuilder
     private func haloBand(
         colorOpacity: Double,
@@ -1131,11 +1166,42 @@ private struct InnerShadowEdgeHalo: View {
         colorOverride: Color? = nil,
         blendMode: BlendMode = .normal
     ) -> some View {
-        let bandColor = colorOverride ?? color
-        // The band is a linear gradient running from transparent (deep
-        // inside the screen) to fully colored (right at the edge), so
-        // the glow appears to emanate from the edge inward.
-        let gradient = LinearGradient(
+        Group {
+            if let colorOverride {
+                singleColorBand(
+                    bandColor: colorOverride,
+                    colorOpacity: colorOpacity
+                )
+            } else if colors.count <= 1 {
+                singleColorBand(
+                    bandColor: primaryColor,
+                    colorOpacity: colorOpacity
+                )
+            } else {
+                auroraBand(colorOpacity: colorOpacity)
+            }
+        }
+        // Frame the band so its long axis runs along the chosen
+        // edge and its short axis (the height for top/bottom, the
+        // width for leading/trailing) controls how far the glow
+        // reaches into the screen.
+        .frame(
+            maxWidth: edgeIsHorizontal ? .infinity : bandHeight,
+            maxHeight: edgeIsHorizontal ? bandHeight : .infinity,
+            alignment: edgeAlignment
+        )
+        // Frame again at the parent size so we can position the
+        // band flush against the chosen edge regardless of where
+        // it would otherwise lay out.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edgeAlignment)
+        .blur(radius: blurRadius)
+        .blendMode(blendMode)
+    }
+
+    /// 1D gradient band — original single-color rendering preserved
+    /// verbatim so single-color glows look identical to before.
+    private func singleColorBand(bandColor: Color, colorOpacity: Double) -> LinearGradient {
+        return LinearGradient(
             stops: [
                 .init(color: bandColor.opacity(0), location: 0),
                 .init(color: bandColor.opacity(colorOpacity * 0.55), location: 0.45),
@@ -1144,23 +1210,41 @@ private struct InnerShadowEdgeHalo: View {
             startPoint: gradientStartPoint,
             endPoint: gradientEndPoint
         )
+    }
 
-        gradient
-            // Frame the band so its long axis runs along the chosen
-            // edge and its short axis (the height for top/bottom, the
-            // width for leading/trailing) controls how far the glow
-            // reaches into the screen.
-            .frame(
-                maxWidth: edgeIsHorizontal ? .infinity : bandHeight,
-                maxHeight: edgeIsHorizontal ? bandHeight : .infinity,
-                alignment: edgeAlignment
+    /// 2D aurora: colors run as a linear gradient along the edge axis;
+    /// the perpendicular fade-to-transparent is applied as a grayscale
+    /// alpha mask so the aurora colors don't get desaturated by being
+    /// blended with the band's own color stops.
+    @ViewBuilder
+    private func auroraBand(colorOpacity: Double) -> some View {
+        LinearGradient(
+            colors: colors,
+            startPoint: auroraGradientStartPoint,
+            endPoint: auroraGradientEndPoint
+        )
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: Color.white.opacity(0), location: 0),
+                    .init(color: Color.white.opacity(colorOpacity * 0.55), location: 0.45),
+                    .init(color: Color.white.opacity(colorOpacity), location: 1)
+                ],
+                startPoint: gradientStartPoint,
+                endPoint: gradientEndPoint
             )
-            // Frame again at the parent size so we can position the
-            // band flush against the chosen edge regardless of where
-            // it would otherwise lay out.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edgeAlignment)
-            .blur(radius: blurRadius)
-            .blendMode(blendMode)
+        )
+    }
+
+    /// Aurora gradient axis runs *along* the edge — left to right on
+    /// horizontal edges, top to bottom on vertical edges — so adjacent
+    /// colors blend along the visible band rather than into the fade.
+    private var auroraGradientStartPoint: UnitPoint {
+        edgeIsHorizontal ? .leading : .top
+    }
+
+    private var auroraGradientEndPoint: UnitPoint {
+        edgeIsHorizontal ? .trailing : .bottom
     }
 
     /// Whether the chosen edge runs horizontally (`.bottom` or `.top`).
@@ -1293,10 +1377,17 @@ private struct EdgeGlowView: View {
     /// by the caller via `audioPowerLevel`), and whether the synthetic
     /// breathing + shimmer sweep are active.
     let mode: EdgeGlowMode
-    /// The hue of the glow. The caller picks user vs Sticky color
-    /// based on whose turn it is in the conversation, so this view
-    /// doesn't need to know about the voice picker or the user's blue.
-    let color: Color
+    /// Colors of the glow. Length 1 → solid hue (every mode except the
+    /// user-voice modes when the user has picked multiple chips). Length
+    /// >1 → aurora gradient across the edge, used when the user has
+    /// committed multiple voice colors. Always non-empty.
+    let colors: [Color]
+
+    /// Single representative color used by the shimmer sweep + the
+    /// processing-mode rendering, both of which are only ever single-
+    /// color in practice (processing isn't aurora-enabled). Computed
+    /// rather than passed so callers don't have to think about it.
+    private var primaryColor: Color { colors.first ?? .white }
 
     /// Per-edge opacity drivers. All four halos are mounted at all
     /// times; switching modes animates these between 0 and 1 (or 0 and
@@ -1338,10 +1429,10 @@ private struct EdgeGlowView: View {
     /// feels like a wait, not just a calm idle.
     private static let processingPulsePeriodSeconds: Double = 2.4
 
-    init(audioPowerLevel: CGFloat, mode: EdgeGlowMode, color: Color) {
+    init(audioPowerLevel: CGFloat, mode: EdgeGlowMode, colors: [Color]) {
         self.audioPowerLevel = audioPowerLevel
         self.mode = mode
-        self.color = color
+        self.colors = colors.isEmpty ? [.white] : colors
         let anchor = mode.defaultAnchor
         let activeOpacity: Double = (anchor == .all) ? Self.teachEdgeOpacity : 1.0
         _bottomEdgeOpacity = State(initialValue: anchor.includesBottom ? activeOpacity : 0)
@@ -1389,7 +1480,7 @@ private struct EdgeGlowView: View {
             ZStack {
                 InnerShadowEdgeHalo(
                     edge: .bottom,
-                    color: color,
+                    colors: colors,
                     intensity: intensity,
                     cornerRadius: Self.cornerRadius
                 )
@@ -1397,7 +1488,7 @@ private struct EdgeGlowView: View {
 
                 InnerShadowEdgeHalo(
                     edge: .top,
-                    color: color,
+                    colors: colors,
                     intensity: intensity,
                     cornerRadius: Self.cornerRadius
                 )
@@ -1405,7 +1496,7 @@ private struct EdgeGlowView: View {
 
                 InnerShadowEdgeHalo(
                     edge: .leading,
-                    color: color,
+                    colors: colors,
                     intensity: intensity,
                     cornerRadius: Self.cornerRadius
                 )
@@ -1413,7 +1504,7 @@ private struct EdgeGlowView: View {
 
                 InnerShadowEdgeHalo(
                     edge: .trailing,
-                    color: color,
+                    colors: colors,
                     intensity: intensity,
                     cornerRadius: Self.cornerRadius
                 )
@@ -1422,8 +1513,11 @@ private struct EdgeGlowView: View {
                 // Shimmer sweep is mounted at all times; visibility
                 // animates between 0 (every other mode) and 1
                 // (processing) so it crossfades rather than appears.
+                // Shimmer is only used during processing (single-color
+                // by design) so we feed it the primary color regardless
+                // of how many aurora colors the user has committed.
                 ProcessingShimmerSweep(
-                    color: color,
+                    color: primaryColor,
                     visibility: CGFloat(shimmerVisibility)
                 )
             }

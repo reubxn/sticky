@@ -45,13 +45,6 @@ struct CompanionPanelView: View {
     /// out from the dashboard while the panel is open.
     @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
 
-    @State private var emailInput: String = ""
-
-    /// Drives the breathing animation on the status dot when Sticky is
-    /// actively listening / processing / responding. Toggles continuously
-    /// while `isVoiceActive` is true.
-    @State private var isStatusDotPulsing: Bool = false
-
     /// Drives the custom persona-picker popover. Replaces the native
     /// `Menu` so we can render avatars, role subtitles, and a sectioned
     /// layout that matches the rest of the panel.
@@ -66,7 +59,34 @@ struct CompanionPanelView: View {
     /// independently as the cursor moves between them.
     @State private var isHoveringQuitButton: Bool = false
     @State private var isHoveringSignedInChip: Bool = false
-    @State private var isHoveringModelMenu: Bool = false
+
+    /// Hover state for the Sticky wordmark in the header. Tapping the
+    /// wordmark opens the full dashboard window, so on hover the
+    /// trailing arrow nudges to telegraph that the brand is clickable.
+    @State private var isHoveringOpenAppRow: Bool = false
+
+    /// Drives the small theme-picker popover anchored on the footer.
+    /// Anchored to a footer icon so the panel stays compact: the icon
+    /// telegraphs the active mode, tapping opens a 3-row picker.
+    @State private var isThemePickerPresented: Bool = false
+
+    /// Tracks hover over the footer's theme button so it gets the same
+    /// gentle highlight the Quit power button uses.
+    @State private var isHoveringThemeButton: Bool = false
+
+    /// Drives the popover that lets the user pick the hue of their voice
+    /// color (the bottom-edge glow shown while holding ctrl+option).
+    /// Anchored to a footer icon so it sits next to the theme picker.
+    @State private var isVoiceColorPickerPresented: Bool = false
+
+    /// Hover state for the footer's voice-color button — same gentle
+    /// highlight pattern as the theme + quit buttons.
+    @State private var isHoveringVoiceColorButton: Bool = false
+
+    /// Live observer of the global ThemeManager. Drives the icon shown
+    /// on the footer button (sun / moon / split-circle) so the user can
+    /// see the active mode without opening the popover.
+    @ObservedObject private var themeManager = ThemeManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -94,10 +114,9 @@ struct CompanionPanelView: View {
 
     // MARK: - Hero Header
     //
-    // App wordmark on the left, status pill on the right. The wordmark
-    // is a custom "Sticky" mark — a small filled pause-bars glyph paired
-    // with the app name in tight, ink-weight type. The status pill uses
-    // a coral dot that breathes while Sticky is active.
+    // App wordmark on the left. The wordmark is a custom "Sticky" mark —
+    // a small filled pause-bars glyph paired with the app name in tight,
+    // ink-weight type.
 
     private var heroHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -106,7 +125,7 @@ struct CompanionPanelView: View {
 
                 Spacer()
 
-                statusPill
+                headerPersonaPicker
             }
             .padding(.horizontal, ElevenLabsBrand.Spacing.md)
             .padding(.top, ElevenLabsBrand.Spacing.md)
@@ -118,86 +137,104 @@ struct CompanionPanelView: View {
         }
     }
 
+    /// Compact persona picker in the top-right of the header. Shows just
+    /// the active persona's avatar + name + chevron — the "PERSONA"
+    /// label is omitted because the avatar makes it self-evident.
+    /// Reuses the same popover content as the body picker did.
+    private var headerPersonaPicker: some View {
+        let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
+            ?? PersonaStore.mePseudoPersona
+
+        return Button(action: { isPersonaPickerPresented.toggle() }) {
+            HStack(spacing: 6) {
+                PersonaAvatarView(
+                    avatar: activePersonaBundle.avatar,
+                    diameter: 20
+                )
+                Text(activePersonaBundle.displayName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(
+                        isHoveringPersonaCard
+                            ? ElevenLabsBrand.Colors.ink
+                            : ElevenLabsBrand.Colors.inkTertiary
+                    )
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(
+                    isHoveringPersonaCard
+                        ? ElevenLabsBrand.Colors.paperRecessed
+                        : ElevenLabsBrand.Colors.card
+                )
+            )
+            .overlay(
+                Capsule()
+                    .stroke(
+                        isHoveringPersonaCard
+                            ? ElevenLabsBrand.Colors.inkTertiary.opacity(0.4)
+                            : ElevenLabsBrand.Colors.hairline,
+                        lineWidth: 1
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.96))
+        .fixedSize()
+        .pointerCursor()
+        .onHover { hovering in isHoveringPersonaCard = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHoveringPersonaCard)
+        .popover(
+            isPresented: $isPersonaPickerPresented,
+            arrowEdge: .top
+        ) {
+            personaPickerContent(activePersonaID: activePersonaBundle.id)
+        }
+    }
+
     /// The app's own brand mark — the flat-bottomed orb glyph used in
     /// the menu bar, paired with the "Sticky" wordmark. Same silhouette
     /// as `makeStickyMenuBarIcon` in MenuBarPanelManager so the in-panel
     /// brand reads as the same identity the user clicked from the
-    /// status bar.
+    /// status bar. Tapping the wordmark opens the full Sticky dashboard
+    /// window — this replaces the standalone "Open Sticky" row that
+    /// previously lived in the body of the panel and felt redundant
+    /// next to the brand mark.
     private var stickyAppWordmark: some View {
-        HStack(spacing: 8) {
-            StickyOrbGlyph(size: 18, color: ElevenLabsBrand.Colors.inkPure)
+        Button(action: {
+            MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+        }) {
+            HStack(spacing: 8) {
+                StickyOrbGlyph(size: 18, color: ElevenLabsBrand.Colors.inkPure)
 
-            Text("Sticky")
-                .font(.system(size: 16, weight: .bold))
-                .tracking(-0.4)
-                .foregroundColor(ElevenLabsBrand.Colors.inkPure)
-        }
-    }
+                Text("Sticky")
+                    .font(.system(size: 16, weight: .bold))
+                    .tracking(-0.4)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkPure)
 
-    /// Status pill — paper card with a colored dot + label. The dot
-    /// gently breathes (opacity oscillation) while voice is active so
-    /// "I'm listening to you" is unmissable without being noisy.
-    private var statusPill: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusPillColor)
-                .frame(width: 6, height: 6)
-                .scaleEffect(isStatusDotPulsing && isVoiceActive ? 1.25 : 1.0)
-                .opacity(isStatusDotPulsing && isVoiceActive ? 0.65 : 1.0)
-                .animation(
-                    isVoiceActive
-                        ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
-                        : .easeOut(duration: 0.2),
-                    value: isStatusDotPulsing
-                )
-
-            Text(statusText)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(ElevenLabsBrand.Colors.ink)
-                .contentTransition(.opacity)
-                .animation(.easeInOut(duration: 0.18), value: statusText)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(
+                        isHoveringOpenAppRow
+                            ? ElevenLabsBrand.Colors.ink
+                            : ElevenLabsBrand.Colors.inkTertiary
+                    )
+                    .offset(
+                        x: isHoveringOpenAppRow ? 2 : 0,
+                        y: isHoveringOpenAppRow ? -2 : 0
+                    )
+            }
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(ElevenLabsBrand.Colors.card))
-        .overlay(Capsule().stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1))
-        .onAppear { isStatusDotPulsing = true }
-        .onChange(of: isVoiceActive) { _ in
-            // Re-trigger the breathing loop when activity flips on/off.
-            isStatusDotPulsing.toggle()
-        }
-    }
-
-    private var isVoiceActive: Bool {
-        guard companionManager.isOverlayVisible else { return false }
-        switch companionManager.voiceState {
-        case .listening, .processing, .responding: return true
-        case .idle: return false
-        }
-    }
-
-    private var statusPillColor: Color {
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            return ElevenLabsBrand.Colors.gradientCoral
-        }
-        return isVoiceActive
-            ? ElevenLabsBrand.Colors.gradientCoral
-            : ElevenLabsBrand.Colors.ink
-    }
-
-    private var statusText: String {
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            return "Setup"
-        }
-        if !companionManager.isOverlayVisible {
-            return "Ready"
-        }
-        switch companionManager.voiceState {
-        case .idle:       return "Active"
-        case .listening:  return "Listening"
-        case .processing: return "Processing"
-        case .responding: return "Responding"
-        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.97))
+        .pointerCursor()
+        .nativeTooltip("Open the full Sticky app — dashboard, memory, and team views")
+        .onHover { hovering in isHoveringOpenAppRow = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHoveringOpenAppRow)
     }
 
     // MARK: - Main Content (onboarded + permissions granted)
@@ -206,12 +243,12 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
             instructionEyebrow
 
-            settingsGrid
-
-            primaryActionRow
+            if companionManager.hasVoiceConversationHistory {
+                newVoiceChatRow
+            }
 
             // Pending review surfaces (teach result card / review stack /
-            // saved summary) live below the action area so they don't push
+            // saved summary) live above the activity feed so they don't push
             // the primary controls around.
             if let pendingTeachSessionReview = companionManager.pendingTeachSessionResult {
                 TeachSessionResultCard(
@@ -227,105 +264,77 @@ struct CompanionPanelView: View {
 
             MiniPanelActivityFeed()
 
-            navigationRail
+            primaryActionRow
         }
         .padding(.horizontal, ElevenLabsBrand.Spacing.md)
         .padding(.top, ElevenLabsBrand.Spacing.md)
         .padding(.bottom, ElevenLabsBrand.Spacing.sm)
     }
 
-    // MARK: - Navigation Rail
-    //
-    // Three equal tiles — Chat / Memory / Dashboard — replacing the
-    // earlier stack of three near-identical text links. The previous
-    // layout had three rows that all looked the same (icon + label +
-    // up-right arrow), with the markdown-export icon orphaned to the
-    // far right of the Memory row. The rail gives each destination
-    // equal weight, removes the repeated "↗" decorations, and tucks
-    // export into the Memory tile as a small secondary affordance.
-    private var navigationRail: some View {
-        HStack(spacing: ElevenLabsBrand.Spacing.xs) {
-            navigationTile(
-                iconSymbol: "bubble.left.and.bubble.right",
-                title: "Chat",
-                tooltip: "Open Chat inside the dashboard",
-                action: {
-                    MenuBarPanelManager.shared?.openDashboardWindow(
-                        focusedPersonaId: nil,
-                        initialSection: .chat
-                    )
-                }
+/// Small "Start fresh chat" affordance that gives the user explicit
+    /// control over voice-session boundaries. Tapping it clears the
+    /// rolling voice conversation history, mints a new on-disk session
+    /// id, and tells `CompanionManager` to inject a one-line note into
+    /// the next system prompt so Sticky knows it may have spoken to
+    /// the user before but doesn't currently remember the past chat.
+    /// Lives just under the push-to-talk instruction so the user sees
+    /// it next to the surface it controls without it competing with
+    /// the primary CTA.
+    private var newVoiceChatRow: some View {
+        Button(action: {
+            companionManager.beginNewVoiceChat()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 10, weight: .bold))
+                Text("Start fresh voice chat")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(ElevenLabsBrand.Colors.paperRecessed)
             )
-
-            navigationTile(
-                iconSymbol: "books.vertical",
-                title: "Memory",
-                tooltip: "See every principle Sticky has learned",
-                action: {
-                    MenuBarPanelManager.shared?.openDashboardWindow(
-                        focusedPersonaId: nil,
-                        initialSection: .memory
-                    )
-                },
-                trailingAccessory: AnyView(memoryExportAccessory)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
             )
-
-            navigationTile(
-                iconSymbol: "square.grid.2x2",
-                title: "Dashboard",
-                tooltip: "Personas, team, profile, recordings, chats, settings",
-                action: {
-                    MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
-                }
-            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+        .pointerCursor()
+        .nativeTooltip("Forget the current voice conversation and start a fresh chat. Sticky will know it may have spoken to you before but doesn't currently remember.")
     }
 
-    /// One tile in the navigation rail. Square-ish, icon stacked above
-    /// label, paper card with hairline border. Tile fills the available
-    /// width so all three rails sit in a perfectly even row regardless
-    /// of label length. The optional `trailingAccessory` is laid out in
-    /// the top-right corner via overlay so it can't push the centered
-    /// icon/label off-axis.
-    private func navigationTile(
-        iconSymbol: String,
-        title: String,
-        tooltip: String,
-        action: @escaping () -> Void,
-        trailingAccessory: AnyView? = nil
-    ) -> some View {
-        NavigationTile(
-            iconSymbol: iconSymbol,
-            title: title,
-            tooltip: tooltip,
-            action: action,
-            trailingAccessory: trailingAccessory
-        )
-    }
-
-    /// Tiny export-to-markdown affordance pinned to the top-right of the
-    /// Memory tile. Stops propagation so tapping the icon doesn't also
-    /// open the library. Mirrors the same export action that lived on
-    /// the old `tasteLibraryLink` row.
-    private var memoryExportAccessory: some View {
-        MemoryExportAccessoryButton(
-            action: { exportPersonalTasteAsMarkdownFromMiniPanel() }
-        )
-    }
-
-    /// Eyebrow + bold instruction line. Uses SF Symbol glyphs for the
-    /// Control and Option modifier keys so the shortcut reads at a
-    /// glance the way it appears on the user's keyboard.
+    /// Eyebrow + bold instruction line. The Control and Option modifier
+    /// keys render as small rounded "keycap" chips so the shortcut reads
+    /// the way it appears on a physical keyboard rather than as inline
+    /// glyphs in a sentence.
     private var instructionEyebrow: some View {
-        let headline = Text("Hold ")
-            + Text(Image(systemName: "control"))
-            + Text(" + ")
-            + Text(Image(systemName: "option"))
-            + Text("\nto ask anything.")
-
-        return VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             ElevenLabsEyebrow("PUSH TO TALK")
-            headline
+
+            HStack(alignment: .center, spacing: 6) {
+                Text("Hold")
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 18))
+                    .tracking(-0.3)
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+                modifierKeyCap(symbolName: "control")
+
+                Text("+")
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 18))
+                    .tracking(-0.3)
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+                modifierKeyCap(symbolName: "option")
+            }
+
+            Text("to ask anything.")
                 .font(ElevenLabsBrand.Typography.cardTitle(size: 18))
                 .tracking(-0.3)
                 .foregroundColor(ElevenLabsBrand.Colors.ink)
@@ -333,90 +342,22 @@ struct CompanionPanelView: View {
         }
     }
 
-    // MARK: - Settings Grid
-    //
-    // Persona is the only setting that lives in the panel body. It
-    // doubles as the scope control: picking Me runs personal mode,
-    // picking Team runs pooled-team mode, picking a teammate borrows
-    // their lens entirely. A separate Personal/Team toggle would just
-    // duplicate state that CompanionManager already derives from the
-    // persona selection (see setPersonaSelection). Model lives in the
-    // footer as a discreet selector.
-
-    private var settingsGrid: some View {
-        VStack(spacing: ElevenLabsBrand.Spacing.sm) {
-            personaControl
-        }
-    }
-
-    /// Persona picker rendered as a custom popover. Trigger shows the
-    /// active persona's avatar + name; tapping opens a paper-styled
-    /// dropdown with two sections (Modes, Teammates). Each row renders
-    /// the persona avatar, display name, and role — the native `Menu`
-    /// can't show avatars, which is why we render our own.
-    private var personaControl: some View {
-        let activePersonaBundle = PersonaStore.wheelPersonaForSelection(companionManager.personaSelection)
-            ?? PersonaStore.mePseudoPersona
-
-        return HStack(spacing: ElevenLabsBrand.Spacing.sm) {
-            Text("PERSONA")
-                .font(ElevenLabsBrand.Typography.eyebrow)
-                .tracking(0.4)
-                .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
-
-            Spacer()
-
-            Button(action: { isPersonaPickerPresented.toggle() }) {
-                HStack(spacing: 8) {
-                    PersonaAvatarView(
-                        avatar: activePersonaBundle.avatar,
-                        diameter: 22
-                    )
-                    Text(activePersonaBundle.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(ElevenLabsBrand.Colors.ink)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(
-                            isHoveringPersonaCard
-                                ? ElevenLabsBrand.Colors.ink
-                                : ElevenLabsBrand.Colors.inkTertiary
-                        )
-                }
-            }
-            .buttonStyle(InteractivePressStyle(pressScale: 0.96))
-            .fixedSize()
-            .pointerCursor()
-            .popover(
-                isPresented: $isPersonaPickerPresented,
-                arrowEdge: .top
-            ) {
-                personaPickerContent(activePersonaID: activePersonaBundle.id)
-            }
-        }
-        .padding(.horizontal, ElevenLabsBrand.Spacing.md)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                .fill(
-                    isHoveringPersonaCard
-                        ? ElevenLabsBrand.Colors.paperRecessed
-                        : ElevenLabsBrand.Colors.card
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                .stroke(
-                    isHoveringPersonaCard
-                        ? ElevenLabsBrand.Colors.inkTertiary.opacity(0.4)
-                        : ElevenLabsBrand.Colors.hairline,
-                    lineWidth: 1
-                )
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering in isHoveringPersonaCard = hovering }
-        .animation(.easeOut(duration: 0.16), value: isHoveringPersonaCard)
+    /// A small rounded-rectangle "keycap" rendering of a single modifier
+    /// key. Sized to sit inline with the 18pt headline text.
+    private func modifierKeyCap(symbolName: String) -> some View {
+        Image(systemName: symbolName)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(ElevenLabsBrand.Colors.ink)
+            .frame(width: 26, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(ElevenLabsBrand.Colors.paper)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.06), radius: 1, x: 0, y: 1)
     }
 
     /// Body of the persona popover. Two sections separated by a hairline:
@@ -533,9 +474,12 @@ struct CompanionPanelView: View {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.7)
-            Text("Reviewing your decisions…")
+            Text(companionManager.teachAnalyzingStatus ?? "Reviewing your decisions…")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .animation(.easeInOut(duration: 0.2), value: companionManager.teachAnalyzingStatus)
             Spacer()
         }
         .padding(.horizontal, ElevenLabsBrand.Spacing.md)
@@ -588,93 +532,30 @@ struct CompanionPanelView: View {
         )
     }
 
-    /// Opens the system save panel pointing at TASTE.md and writes the
-    /// user's personal taste profile as markdown. Shares its renderer
-    /// with the Dashboard Profile tab so the file format is identical
-    /// regardless of which surface kicked off the export.
-    private func exportPersonalTasteAsMarkdownFromMiniPanel() {
-        let personalProfile: TasteProfile = {
-            do {
-                return try TasteProfileStore.loadProfile()
-            } catch {
-                return TasteProfile(userId: PersonaStore.myPersonaId, principles: [], updatedAt: Date())
-            }
-        }()
-        let localBundle = PersonaStore.myOwnBundle
-        DashboardTasteMarkdownExporter.exportPersonalProfileAsMarkdown(
-            personalProfile,
-            displayName: localBundle?.displayName ?? "Me",
-            role: localBundle?.role,
-            accentHex: localBundle?.accentColorHex,
-            voiceId: localBundle?.voiceId
-        )
-    }
-
-    // MARK: - Onboarding (permissions granted, email not yet submitted)
+    // MARK: - Onboarding (permissions granted)
 
     @ViewBuilder
     private var onboardingContent: some View {
         VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
             VStack(alignment: .leading, spacing: 4) {
                 ElevenLabsEyebrow("ALMOST READY")
-                if !companionManager.hasSubmittedEmail {
-                    Text("Drop your email\nto get started.")
-                        .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
-                        .tracking(-0.3)
-                        .foregroundColor(ElevenLabsBrand.Colors.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("If I keep building this, I'll keep you in the loop.")
-                        .font(ElevenLabsBrand.Typography.body)
-                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
-                } else {
-                    Text("You're all set.\nHit Start to meet Sticky.")
-                        .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
-                        .tracking(-0.3)
-                        .foregroundColor(ElevenLabsBrand.Colors.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("You're all set.\nHit Start to meet Sticky.")
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                    .tracking(-0.3)
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !companionManager.hasSubmittedEmail {
-                emailInputCard
-
-                Button(action: {
-                    companionManager.submitEmail(emailInput)
-                }) {
-                    Text("Submit")
-                }
-                .elevenLabsPrimaryButtonStyle()
-                .disabled(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1.0)
-            } else {
-                Button(action: {
-                    companionManager.triggerOnboarding()
-                }) {
-                    Text("Start")
-                }
-                .elevenLabsPrimaryButtonStyle()
+            Button(action: {
+                companionManager.triggerOnboarding()
+            }) {
+                Text("Start")
             }
+            .elevenLabsPrimaryButtonStyle()
         }
         .padding(.horizontal, ElevenLabsBrand.Spacing.md)
         .padding(.top, ElevenLabsBrand.Spacing.md)
         .padding(.bottom, ElevenLabsBrand.Spacing.sm)
-    }
-
-    private var emailInputCard: some View {
-        TextField("you@email.com", text: $emailInput)
-            .textFieldStyle(.plain)
-            .font(ElevenLabsBrand.Typography.body)
-            .foregroundColor(ElevenLabsBrand.Colors.ink)
-            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
-            .padding(.vertical, ElevenLabsBrand.Spacing.sm)
-            .background(
-                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                    .fill(ElevenLabsBrand.Colors.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                    .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
-            )
     }
 
     // MARK: - Permissions
@@ -784,7 +665,7 @@ struct CompanionPanelView: View {
                 Button(action: onGrant) {
                     Text("Grant")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(ElevenLabsBrand.Colors.onAccent)
+                        .foregroundColor(ElevenLabsBrand.Colors.paper)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(Capsule().fill(ElevenLabsBrand.Colors.inkPure))
@@ -824,38 +705,42 @@ struct CompanionPanelView: View {
                 .fill(ElevenLabsBrand.Colors.hairline)
                 .frame(height: 1)
 
-            // Footer is two clear zones separated by a flexible spacer:
-            // left = model picker (the only knob the user might toggle
-            // mid-session); right = identity (signed-in chip) + a small
-            // dot separator + Quit. The dot prevents the chip and Quit
-            // from blurring into one ambiguous text run.
+            // Footer: identity chip on the left, Voice Color + Theme + Quit on the right.
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
-                modelFooterMenu
+                signedInUserChip
 
                 Spacer()
 
-                signedInUserChip
+                voiceColorPickerButton
 
-                Circle()
-                    .fill(ElevenLabsBrand.Colors.hairline)
-                    .frame(width: 3, height: 3)
+                themePickerButton
 
                 Button(action: {
                     NSApp.terminate(nil)
                 }) {
-                    Text("Quit")
-                        .font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "power")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(
                             isHoveringQuitButton
                                 ? ElevenLabsBrand.Colors.ink
                                 : ElevenLabsBrand.Colors.inkTertiary
                         )
+                        .frame(width: 22, height: 22)
+                        .background(
+                            Circle()
+                                .fill(
+                                    isHoveringQuitButton
+                                        ? ElevenLabsBrand.Colors.ink.opacity(0.08)
+                                        : Color.clear
+                                )
+                        )
+                        .scaleEffect(isHoveringQuitButton ? 1.08 : 1.0)
                 }
-                .buttonStyle(InteractivePressStyle(pressScale: 0.94))
+                .buttonStyle(InteractivePressStyle(pressScale: 0.92))
                 .pointerCursor()
                 .nativeTooltip("Quit Sticky")
                 .onHover { hovering in isHoveringQuitButton = hovering }
-                .animation(.easeOut(duration: 0.14), value: isHoveringQuitButton)
+                .animation(.easeOut(duration: 0.16), value: isHoveringQuitButton)
             }
             .padding(.horizontal, ElevenLabsBrand.Spacing.md)
             .padding(.vertical, 10)
@@ -935,67 +820,106 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// Compact model picker living in the footer. Re-skinned to read
-    /// in human terms ("Fast thinker / Balanced / Deep thinker") with
-    /// a small shape glyph that matches each model's character — a
-    /// triangle for fast, a circle for balanced, a four-point star
-    /// for deep. The Claude model id stays the source of truth on
-    /// `companionManager.selectedModel`; only the label and glyph
-    /// change.
-    private var modelFooterMenu: some View {
-        let currentModelKind = ModelPickerKind.fromClaudeModelId(companionManager.selectedModel)
+    // MARK: - Voice Color Picker (footer)
 
-        return Menu {
-            ForEach(ModelPickerKind.allCases, id: \.self) { modelKind in
-                Button(action: {
-                    companionManager.setSelectedModel(modelKind.claudeModelId)
-                }) {
-                    Text("\(modelKind.glyphCharacter)  \(modelKind.shortLabel) — \(modelKind.descriptor)")
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                // Explicit "Model" prefix so the footer control reads as
-                // "Model: Balanced ▾" instead of two abstract glyphs that
-                // gave no hint of what the dropdown changed.
-                Text("Model")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.4)
-                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
-                    .textCase(.uppercase)
-                Text(currentModelKind.glyphCharacter)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-                Text(currentModelKind.shortLabel)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(
-                        isHoveringModelMenu
-                            ? ElevenLabsBrand.Colors.ink
-                            : ElevenLabsBrand.Colors.inkSecondary
-                    )
-                    .rotationEffect(.degrees(isHoveringModelMenu ? 180 : 0))
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(
-                Capsule().fill(
-                    isHoveringModelMenu
-                        ? ElevenLabsBrand.Colors.paperRecessed
-                        : Color.clear
-                )
+    /// Compact icon button in the footer — a small filled circle in the
+    /// user's current voice color. Tapping it opens a popover with a
+    /// circular hue wheel so the user can retint their bottom-edge mic
+    /// glow live without leaving the panel.
+    private var voiceColorPickerButton: some View {
+        Button(action: { isVoiceColorPickerPresented.toggle() }) {
+            VoiceColorOrb(
+                colors: companionManager.userVoiceAuroraColors,
+                diameter: 14,
+                outlineColor: isHoveringVoiceColorButton
+                    ? ElevenLabsBrand.Colors.ink.opacity(0.5)
+                    : ElevenLabsBrand.Colors.hairline
             )
-            .contentShape(Rectangle())
+            .frame(width: 22, height: 22)
+            .background(
+                Circle()
+                    .fill(
+                        isHoveringVoiceColorButton
+                            ? ElevenLabsBrand.Colors.ink.opacity(0.08)
+                            : Color.clear
+                    )
+            )
+            .scaleEffect(isHoveringVoiceColorButton ? 1.08 : 1.0)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(InteractivePressStyle(pressScale: 0.92))
         .pointerCursor()
-        .nativeTooltip("Switch the Claude model that powers Sticky")
-        .onHover { hovering in isHoveringModelMenu = hovering }
-        .animation(.easeOut(duration: 0.18), value: isHoveringModelMenu)
+        .nativeTooltip("Your color — bottom-edge glow while you hold ctrl+option")
+        .onHover { hovering in isHoveringVoiceColorButton = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHoveringVoiceColorButton)
+        .animation(.easeOut(duration: 0.16), value: companionManager.userVoiceColorHues)
+        .popover(
+            isPresented: $isVoiceColorPickerPresented,
+            arrowEdge: .bottom
+        ) {
+            VoiceColorPickerPopover(companionManager: companionManager)
+        }
+    }
+
+    // MARK: - Theme Picker (footer)
+
+    /// Compact icon button in the footer — shows the currently-active
+    /// theme mode as a glyph (sun / moon / split-circle). Tapping it
+    /// opens a small popover with the three options laid out as rows,
+    /// matching the persona popover's row pattern so the two pickers
+    /// feel like the same control in two places.
+    private var themePickerButton: some View {
+        Button(action: { isThemePickerPresented.toggle() }) {
+            Image(systemName: themeManager.mode.sfSymbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(
+                    isHoveringThemeButton
+                        ? ElevenLabsBrand.Colors.ink
+                        : ElevenLabsBrand.Colors.inkTertiary
+                )
+                .frame(width: 22, height: 22)
+                .background(
+                    Circle()
+                        .fill(
+                            isHoveringThemeButton
+                                ? ElevenLabsBrand.Colors.ink.opacity(0.08)
+                                : Color.clear
+                        )
+                )
+                .scaleEffect(isHoveringThemeButton ? 1.08 : 1.0)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.92))
+        .pointerCursor()
+        .nativeTooltip("Appearance — \(themeManager.mode.displayLabel)")
+        .onHover { hovering in isHoveringThemeButton = hovering }
+        .animation(.easeOut(duration: 0.16), value: isHoveringThemeButton)
+        .animation(.easeOut(duration: 0.16), value: themeManager.mode)
+        .popover(
+            isPresented: $isThemePickerPresented,
+            arrowEdge: .bottom
+        ) {
+            themePickerPopoverContent
+        }
+    }
+
+    /// Three-row popover body: System / Light / Dark. Each row is a
+    /// button that switches `ThemeManager.shared.mode` and dismisses
+    /// the popover. Selected row gets a checkmark.
+    private var themePickerPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(AppThemeMode.allCases) { themeMode in
+                ThemePickerPopoverRow(
+                    themeMode: themeMode,
+                    isSelected: themeManager.mode == themeMode,
+                    onSelect: {
+                        themeManager.mode = themeMode
+                        isThemePickerPresented = false
+                    }
+                )
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(width: 220)
+        .background(ElevenLabsBrand.Colors.card)
     }
 
     // MARK: - Visual Helpers
@@ -1063,104 +987,6 @@ struct StickyOrbShape: Shape {
     }
 }
 
-// MARK: - Navigation Tile
-//
-// One tile in the Chat / Memory / Dashboard rail. Encapsulates hover
-// state so each tile can independently lift on hover without the
-// parent view tracking three booleans. On hover the card swaps from
-// `card` → `paperRecessed`, the hairline thickens slightly, and the
-// whole tile lifts on a small scale — the same press style on tap.
-private struct NavigationTile: View {
-    let iconSymbol: String
-    let title: String
-    let tooltip: String
-    let action: () -> Void
-    let trailingAccessory: AnyView?
-
-    @State private var isHovering: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: iconSymbol)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                    .fill(isHovering
-                          ? ElevenLabsBrand.Colors.paperRecessed
-                          : ElevenLabsBrand.Colors.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                    .stroke(
-                        isHovering
-                            ? ElevenLabsBrand.Colors.inkTertiary.opacity(0.4)
-                            : ElevenLabsBrand.Colors.hairline,
-                        lineWidth: 1
-                    )
-            )
-            .overlay(alignment: .topTrailing) {
-                if let trailingAccessory {
-                    trailingAccessory
-                        .padding(4)
-                }
-            }
-            .scaleEffect(isHovering ? 1.02 : 1.0)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(InteractivePressStyle(pressScale: 0.97))
-        .pointerCursor()
-        .nativeTooltip(tooltip)
-        .onHover { hovering in isHovering = hovering }
-        .animation(.easeOut(duration: 0.16), value: isHovering)
-    }
-}
-
-// MARK: - Memory Export Accessory Button
-//
-// Small download glyph pinned to the Memory tile. Owns its own hover
-// state so the icon + circular well darken when the user is targeting
-// it directly, even if the Memory tile around it is also hovered.
-private struct MemoryExportAccessoryButton: View {
-    let action: () -> Void
-
-    @State private var isHovering: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "square.and.arrow.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(
-                    isHovering
-                        ? ElevenLabsBrand.Colors.ink
-                        : ElevenLabsBrand.Colors.inkTertiary
-                )
-                .padding(5)
-                .background(
-                    Circle().fill(
-                        isHovering
-                            ? ElevenLabsBrand.Colors.hairline
-                            : ElevenLabsBrand.Colors.paperRecessed
-                    )
-                )
-                .contentShape(Circle())
-                .scaleEffect(isHovering ? 1.08 : 1.0)
-        }
-        .buttonStyle(InteractivePressStyle(pressScale: 0.88))
-        .pointerCursor()
-        .nativeTooltip("Export your taste as TASTE.md")
-        .onHover { hovering in isHovering = hovering }
-        .animation(.easeOut(duration: 0.14), value: isHovering)
-    }
-}
-
 // MARK: - Persona Picker Row
 //
 // Custom row used by the persona popover. Encapsulates hover state so
@@ -1213,6 +1039,409 @@ private struct PersonaPickerRow: View {
         .buttonStyle(.plain)
         .pointerCursor()
         .onHover { hovering in isHovering = hovering }
+    }
+}
+
+// MARK: - Theme Picker Popover Row
+//
+// Single row inside the footer's theme popover: glyph + label + (when
+// `.system`) a one-line subtitle explaining the auto-follow behavior.
+// Hovering fills the row with a paper-recessed wash so the click
+// target is obvious. Mirrors the persona-picker row pattern visually
+// so the two pickers feel like the same control.
+
+private struct ThemePickerPopoverRow: View {
+    let themeMode: AppThemeMode
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                Image(systemName: themeMode.sfSymbolName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    .frame(width: 22)
+
+                Text(themeMode.displayLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovering ? ElevenLabsBrand.Colors.paperRecessed : Color.clear)
+            )
+            .padding(.horizontal, 6)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .onHover { hovering in isHovering = hovering }
+    }
+}
+
+// MARK: - Voice Color Picker Popover
+//
+// The footer button's popover. Owns a transient "working hue" — the
+// hue currently parked on the wheel — separate from the committed list
+// the manager persists. The user spins the wheel to pick a color, taps
+// the "+" button to commit it as a chip, and the bottom-edge glow then
+// renders that chip's color (or, with multiple chips, an aurora across
+// all of them). Tapping a chip removes it. Capped at
+// `CompanionManager.maxUserVoiceColorHues` chips.
+
+private struct VoiceColorPickerPopover: View {
+    @ObservedObject var companionManager: CompanionManager
+
+    /// Hue currently parked on the wheel (in degrees). Local state
+    /// because it doesn't represent a committed selection — the user
+    /// has to press "+" to add it to the manager's list. Initialized
+    /// from the last committed hue (so opening the popover lands on
+    /// "the last color you picked") falling back to the default blue
+    /// when the user has cleared the list entirely.
+    @State private var workingHueDegrees: Double
+
+    init(companionManager: CompanionManager) {
+        self.companionManager = companionManager
+        let initialHue = companionManager.userVoiceColorHues.last
+            ?? CompanionManager.defaultUserVoiceColorHue
+        _workingHueDegrees = State(initialValue: initialHue)
+    }
+
+    private var canAddMoreColors: Bool {
+        companionManager.userVoiceColorHues.count < CompanionManager.maxUserVoiceColorHues
+    }
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 12) {
+            Text("YOUR COLOR")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.6)
+                .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+
+            HueWheel(hueDegrees: $workingHueDegrees, diameter: 160)
+
+            committedColorChipsRow
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(width: 240)
+        .background(ElevenLabsBrand.Colors.card)
+    }
+
+    /// Horizontal strip of committed colors with a trailing "+" button
+    /// that adds the wheel's current working hue. Tapping a chip removes
+    /// it. The "+" is filled with the working color so the user sees
+    /// exactly which color is about to land in the strip — once the
+    /// list is full it dims and disables.
+    private var committedColorChipsRow: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(companionManager.userVoiceColorHues.enumerated()), id: \.offset) { indexAndHue in
+                let chipIndex = indexAndHue.offset
+                let chipHue = indexAndHue.element
+                CommittedColorChip(
+                    hueDegrees: chipHue,
+                    onRemove: {
+                        companionManager.removeUserVoiceColorHue(at: chipIndex)
+                    }
+                )
+            }
+            addColorButton
+        }
+        .frame(height: 22)
+    }
+
+    private var addColorButton: some View {
+        Button(action: {
+            guard canAddMoreColors else { return }
+            companionManager.addUserVoiceColorHue(workingHueDegrees)
+        }) {
+            ZStack {
+                Circle()
+                    .fill(
+                        canAddMoreColors
+                            ? Color(hue: workingHueDegrees / 360.0, saturation: 0.8, brightness: 1.0).opacity(0.85)
+                            : ElevenLabsBrand.Colors.paperRecessed
+                    )
+                Circle()
+                    .stroke(
+                        canAddMoreColors
+                            ? Color.white
+                            : ElevenLabsBrand.Colors.hairline,
+                        style: StrokeStyle(
+                            lineWidth: canAddMoreColors ? 1.5 : 1,
+                            dash: canAddMoreColors ? [] : [2, 2]
+                        )
+                    )
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(
+                        canAddMoreColors
+                            ? .white
+                            : ElevenLabsBrand.Colors.inkTertiary
+                    )
+                    .shadow(
+                        color: canAddMoreColors ? Color.black.opacity(0.3) : .clear,
+                        radius: 1, x: 0, y: 0
+                    )
+            }
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.9))
+        .pointerCursor()
+        .disabled(!canAddMoreColors)
+        .nativeTooltip(
+            canAddMoreColors
+                ? "Add this color to your aurora"
+                : "Aurora is full (\(CompanionManager.maxUserVoiceColorHues) colors max)"
+        )
+    }
+}
+
+/// One committed color in the popover's chip strip. Filled with the
+/// hue's color; tap to remove. Hovering reveals an inset "×" so the
+/// affordance reads as deletable rather than a static swatch.
+private struct CommittedColorChip: View {
+    let hueDegrees: Double
+    let onRemove: () -> Void
+
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: onRemove) {
+            ZStack {
+                Circle()
+                    .fill(Color(hue: hueDegrees / 360.0, saturation: 0.8, brightness: 1.0))
+                Circle()
+                    .stroke(Color.white, lineWidth: 1.5)
+                Circle()
+                    .stroke(Color.black.opacity(0.18), lineWidth: 1)
+                if isHovering {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .shadow(color: Color.black.opacity(0.4), radius: 1, x: 0, y: 0)
+                }
+            }
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(InteractivePressStyle(pressScale: 0.9))
+        .pointerCursor()
+        .nativeTooltip("Remove this color")
+        .onHover { hovering in isHovering = hovering }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+    }
+}
+
+// MARK: - Voice Color Orb
+//
+// Small glowing orb shown on the footer button. With one color it reads
+// as a flat colored dot; with multiple colors the colors blur into a
+// soft gradient orb so the button telegraphs the user's whole aurora at
+// a glance. Built from a horizontal `LinearGradient` re-clipped to a
+// circle and softly blurred so adjacent colors bleed into each other,
+// plus a top-left specular highlight + a subtle outer glow in the
+// average color so the dot feels like a lit orb rather than a flat
+// swatch.
+
+private struct VoiceColorOrb: View {
+    let colors: [Color]
+    let diameter: CGFloat
+    let outlineColor: Color
+
+    /// Mean of all the colors, used for the outer glow ring so the
+    /// "spill" around the orb reads as the aurora's overall hue rather
+    /// than locking onto whichever color happened to be first.
+    private var averagedColor: Color {
+        guard !colors.isEmpty else { return .white }
+        var totalRed: CGFloat = 0
+        var totalGreen: CGFloat = 0
+        var totalBlue: CGFloat = 0
+        for color in colors {
+            let nsColor = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.white
+            totalRed   += nsColor.redComponent
+            totalGreen += nsColor.greenComponent
+            totalBlue  += nsColor.blueComponent
+        }
+        let count = CGFloat(colors.count)
+        return Color(
+            red: Double(totalRed / count),
+            green: Double(totalGreen / count),
+            blue: Double(totalBlue / count)
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            // The colored fill — single color or aurora gradient. Aurora
+            // variant is blurred so neighboring colors bleed into one
+            // another, then re-clipped to the circle so the blur doesn't
+            // soften the orb's silhouette.
+            Group {
+                if colors.count <= 1 {
+                    Circle().fill(colors.first ?? .white)
+                } else {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: colors,
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .blur(radius: max(1, diameter * 0.18))
+                        .clipShape(Circle())
+                }
+            }
+
+            // Top-left specular highlight — sells the "lit orb" feel
+            // without painting a full sphere shader.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        gradient: Gradient(colors: [
+                            Color.white.opacity(0.55),
+                            Color.white.opacity(0.0)
+                        ]),
+                        center: UnitPoint(x: 0.32, y: 0.30),
+                        startRadius: 0,
+                        endRadius: diameter * 0.55
+                    )
+                )
+
+            Circle()
+                .stroke(outlineColor, lineWidth: 1)
+        }
+        .frame(width: diameter, height: diameter)
+        .shadow(color: averagedColor.opacity(0.55), radius: max(2, diameter * 0.25), x: 0, y: 0)
+    }
+}
+
+// MARK: - Hue Wheel
+//
+// Circular hue picker used by the footer voice-color popover. The wheel
+// itself is the hue spectrum painted as an `AngularGradient` masked into
+// a ring (annulus), so the affordance is unambiguous — click or drag
+// anywhere on the wheel to retint the user's bottom-edge mic glow live.
+// Bound to the hue in degrees (0...360), with 0° at the right (3 o'clock)
+// and angle increasing clockwise to match the gradient stops.
+//
+// Sizing is fixed (no GeometryReader) — `.popover` content on macOS
+// can lay out flexibly-sized children unpredictably which interferes
+// with click delivery, so we pin everything to a known diameter and
+// compute positions from a single center constant.
+
+private struct HueWheel: View {
+    @Binding var hueDegrees: Double
+
+    let diameter: CGFloat
+
+    private let ringThickness: CGFloat = 18
+    private let handleDiameter: CGFloat = 22
+
+    private var center: CGPoint { CGPoint(x: diameter / 2, y: diameter / 2) }
+    private var ringCenterRadius: CGFloat { diameter / 2 - ringThickness / 2 }
+
+    private static let hueAngularGradient = AngularGradient(
+        gradient: Gradient(colors: [
+            Color(hue: 0.0,   saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.125, saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.25,  saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.375, saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.5,   saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.625, saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.75,  saturation: 0.8, brightness: 1.0),
+            Color(hue: 0.875, saturation: 0.8, brightness: 1.0),
+            Color(hue: 1.0,   saturation: 0.8, brightness: 1.0)
+        ]),
+        center: .center,
+        startAngle: .degrees(0),
+        endAngle: .degrees(360)
+    )
+
+    var body: some View {
+        let handleAngleRadians = hueDegrees * .pi / 180.0
+        let handleCenter = CGPoint(
+            x: center.x + cos(handleAngleRadians) * ringCenterRadius,
+            y: center.y + sin(handleAngleRadians) * ringCenterRadius
+        )
+        let currentColor = Color(hue: hueDegrees / 360.0, saturation: 0.8, brightness: 1.0)
+
+        return ZStack {
+            // Hit-target backdrop so clicks anywhere within the wheel's
+            // bounding square register on the gesture, including the
+            // hollow middle. Drawing a near-clear color (rather than
+            // .clear) keeps SwiftUI's hit-testing happy.
+            Color.black.opacity(0.001)
+
+            Circle()
+                .strokeBorder(Self.hueAngularGradient, lineWidth: ringThickness)
+
+            Circle()
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+            Circle()
+                .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                .padding(ringThickness)
+
+            // Center swatch — large preview of the currently picked
+            // color so the user sees the result alongside the wheel.
+            Circle()
+                .fill(currentColor)
+                .overlay(Circle().stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1))
+                .padding(ringThickness + 8)
+
+            // Draggable handle pinned at the angle matching the current
+            // hue. Filled with the current color so the handle reads as
+            // "this is what's selected."
+            Circle()
+                .fill(currentColor)
+                .frame(width: handleDiameter, height: handleDiameter)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                .overlay(Circle().stroke(Color.black.opacity(0.22), lineWidth: 1))
+                .shadow(color: Color.black.opacity(0.22), radius: 2, x: 0, y: 1)
+                .position(handleCenter)
+        }
+        .frame(width: diameter, height: diameter)
+        .contentShape(Rectangle())
+        // Use `highPriorityGesture` (not `.gesture`) so the wheel claims
+        // the mouseDown / mouseUp pair before SwiftUI's enclosing popover
+        // sees the release. Without this, NSPopover treats the unclaimed
+        // mouseUp as an outside-tap and dismisses on release.
+        // `onEnded` is a no-op but its presence ensures the gesture
+        // formally completes at the AppKit layer.
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { dragValue in
+                    updateHue(forLocation: dragValue.location)
+                }
+                .onEnded { _ in }
+        )
+    }
+
+    private func updateHue(forLocation location: CGPoint) {
+        let dx = location.x - center.x
+        let dy = location.y - center.y
+        // Ignore drags that land too close to the center (no meaningful
+        // angle there) so a tiny jitter near the middle doesn't snap
+        // the handle to a random direction.
+        guard hypot(dx, dy) > 4 else { return }
+        var angleDegrees = atan2(dy, dx) * 180.0 / .pi
+        if angleDegrees < 0 { angleDegrees += 360 }
+        hueDegrees = angleDegrees
     }
 }
 

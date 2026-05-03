@@ -72,11 +72,7 @@ struct DashboardView: View {
         case .team:
             DashboardTeamView()
         case .profile:
-            DashboardProfileView()
-        case .recordings:
-            DashboardRecordingsView()
-        case .chats:
-            DashboardChatsView()
+            DashboardProfileView(companionManager: companionManager)
         case .settings:
             DashboardSettingsView()
         }

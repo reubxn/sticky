@@ -73,11 +73,13 @@ final class TasteLibraryWindowController: NSObject, NSWindowDelegate {
         libraryWindow.titlebarAppearsTransparent = true
         libraryWindow.titleVisibility = .hidden
         libraryWindow.titlebarSeparatorStyle = .none
-        libraryWindow.isMovableByWindowBackground = true
-        // Lock the window to the light Aqua appearance so the brand
-        // paper-and-ink palette renders correctly under a system-wide
-        // dark mode setting.
-        libraryWindow.appearance = NSAppearance(named: .aqua)
+        // Drag only from the titlebar area (standard macOS behavior) —
+        // the library body has interactive content the user expects to
+        // click, not grab.
+        libraryWindow.isMovableByWindowBackground = false
+        // Inherit `NSApp.appearance` (driven by ThemeManager) so the
+        // window flips light/dark in lockstep with the rest of the app.
+        libraryWindow.appearance = nil
         libraryWindow.backgroundColor = NSColor(ElevenLabsBrand.Colors.paper)
         libraryWindow.contentViewController = libraryHostingController
         libraryWindow.delegate = self

@@ -101,12 +101,20 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
-        window.isMovableByWindowBackground = true
-        // Force light appearance so the paper-and-ink palette renders
-        // correctly even when the user has macOS in dark mode.
-        window.appearance = NSAppearance(named: .aqua)
+        // Drag only from the titlebar area (standard macOS behavior) —
+        // dragging from anywhere in the body felt off because the chat
+        // body has interactive content (text, buttons) the user expects
+        // to click, not grab.
+        window.isMovableByWindowBackground = false
+        // Inherit the app-level appearance set by ThemeManager (system /
+        // forced light / forced dark). Setting `appearance = nil`
+        // explicitly so the window follows `NSApp.appearance` rather
+        // than locking itself to a hardcoded value.
+        window.appearance = nil
         // Tint the window background to the brand paper hue so the area
         // beneath the traffic lights matches the SwiftUI content.
+        // `ElevenLabsBrand.Colors.paper` is a dynamic Color, so the
+        // wrapped NSColor flips automatically when appearance changes.
         window.backgroundColor = NSColor(ElevenLabsBrand.Colors.paper)
         window.contentViewController = hostingController
         window.delegate = self
