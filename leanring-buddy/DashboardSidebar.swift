@@ -137,13 +137,17 @@ struct DashboardSidebar: View {
         }
     }
 
-    /// Avatar for the signed-in user. Borrows the local persona's
-    /// avatar (the user's real photo, when present) so the sidebar
-    /// chip feels personalised even though sign-in is mocked.
+    /// Avatar for the signed-in user. Prefers a user-uploaded profile
+    /// picture from the Profile tab, falls back to the local persona's
+    /// avatar, then to initials over a gradient.
     @ViewBuilder
     private var avatarForCurrentUser: some View {
         if let localPersonaBundle = PersonaStore.myOwnBundle {
-            PersonaAvatarView(avatar: localPersonaBundle.avatar, diameter: 32)
+            PersonaAvatarView(
+                avatar: localPersonaBundle.avatar,
+                diameter: 32,
+                uploadedImageOverridePath: dashboardMockAuthState.profilePicturePath
+            )
         } else {
             Circle()
                 .fill(ElevenLabsBrand.Colors.gradientSky)

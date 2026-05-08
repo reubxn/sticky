@@ -86,8 +86,18 @@ final class ElevenLabsTTSClient: NSObject, ObservableObject {
     // AVAudioPlayerDelegate so the next segment kicks in the moment the
     // previous one finishes.
 
+    /// One sentence-streamed segment waiting to play. The optional
+    /// `onSegmentStart` fires the moment THIS segment begins playing,
+    /// which lets the response pipeline sync side effects (e.g. the
+    /// cursor flight to a multi-step pointing waypoint) to the exact
+    /// audio boundary where Claude said "click here".
+    private struct QueuedAudioSegment {
+        let audioData: Data
+        let onSegmentStart: (() -> Void)?
+    }
+
     /// Queue of audio segments waiting to play. Front is played first.
-    private var pendingAudioDataQueue: [Data] = []
+    private var pendingAudioDataQueue: [QueuedAudioSegment] = []
 
     /// True while the chain driver is actively cycling through queued audio.
     /// Prevents a duplicate driver from being started when a new segment is
@@ -254,9 +264,22 @@ final class ElevenLabsTTSClient: NSObject, ObservableObject {
     /// the chain driver if it's idle. Stale enqueues (mismatched epoch) are
     /// dropped — the previous response's leftover fetches can't bleed into
     /// the new one.
-    func enqueueAudioData(_ audioData: Data, forEpoch epoch: Int) {
+    ///
+    /// `onSegmentStart` (if provided) fires the moment this specific
+    /// segment begins playing — used by the response pipeline to fly the
+    /// cursor to the next pointing waypoint synchronized with the spoken
+    /// audio for that sentence. The closure runs at most once and is
+    /// dropped on stale-epoch enqueues so a leftover waypoint from a
+    /// cancelled response can't fire after the user moved on.
+    func enqueueAudioData(
+        _ audioData: Data,
+        forEpoch epoch: Int,
+        onSegmentStart: (() -> Void)? = nil
+    ) {
         guard epoch == currentPlaybackEpoch else { return }
-        pendingAudioDataQueue.append(audioData)
+        pendingAudioDataQueue.append(
+            QueuedAudioSegment(audioData: audioData, onSegmentStart: onSegmentStart)
+        )
         if !isPlaybackChainActive {
             isPlaybackChainActive = true
             advancePlaybackChain()
@@ -285,22 +308,32 @@ final class ElevenLabsTTSClient: NSObject, ObservableObject {
             }
             return
         }
-        let nextAudioData = pendingAudioDataQueue.removeFirst()
+        let nextSegment = pendingAudioDataQueue.removeFirst()
         do {
-            let player = try AVAudioPlayer(data: nextAudioData)
+            let player = try AVAudioPlayer(data: nextSegment.audioData)
             player.isMeteringEnabled = true
             player.delegate = self
             self.audioPlayer = player
             player.play()
             startMeteringTimer()
-            print("🔊 ElevenLabs TTS: playing chained \(nextAudioData.count / 1024)KB segment (\(pendingAudioDataQueue.count) queued behind it)")
+            print("🔊 ElevenLabs TTS: playing chained \(nextSegment.audioData.count / 1024)KB segment (\(pendingAudioDataQueue.count) queued behind it)")
 
             if let onFirstPlaybackStartedCallback = onFirstPlaybackStarted {
                 onFirstPlaybackStarted = nil
                 onFirstPlaybackStartedCallback()
             }
+            // Fire the per-segment hook so the response pipeline can sync
+            // side effects to this segment's playback boundary (e.g. fly
+            // the cursor to the waypoint Claude pointed at right before
+            // this sentence).
+            nextSegment.onSegmentStart?()
         } catch {
             print("⚠️ Chained TTS segment failed to play: \(error); skipping")
+            // Skipped segments still need their hook fired — otherwise a
+            // mid-reply audio decode failure would silently swallow the
+            // cursor flight for that step. Better to fly slightly out of
+            // sync than not at all.
+            nextSegment.onSegmentStart?()
             advancePlaybackChain()
         }
     }

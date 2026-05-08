@@ -28,6 +28,7 @@ final class DashboardMockAuthState: ObservableObject {
     private static let displayNameDefaultsKey = "dashboardMockDisplayName"
     private static let roleDefaultsKey = "dashboardMockRole"
     private static let emailDefaultsKey = "dashboardMockEmail"
+    private static let profilePicturePathDefaultsKey = "dashboardMockProfilePicturePath"
 
     /// True while the user is "signed in". Defaults to true on first
     /// launch so the demo doesn't open into an empty sign-in wall.
@@ -63,6 +64,15 @@ final class DashboardMockAuthState: ObservableObject {
         }
     }
 
+    /// Absolute path to a user-uploaded profile picture in Application
+    /// Support. nil when the user has never uploaded one — UI falls back
+    /// to initials over the persona accent color.
+    @Published var profilePicturePath: String? {
+        didSet {
+            UserDefaults.standard.set(profilePicturePath, forKey: Self.profilePicturePathDefaultsKey)
+        }
+    }
+
     init() {
         let defaults = UserDefaults.standard
 
@@ -85,6 +95,8 @@ final class DashboardMockAuthState: ObservableObject {
         self.role = defaults.string(forKey: Self.roleDefaultsKey) ?? bundledRole
 
         self.email = defaults.string(forKey: Self.emailDefaultsKey) ?? ""
+
+        self.profilePicturePath = defaults.string(forKey: Self.profilePicturePathDefaultsKey)
     }
 
     // MARK: - Actions

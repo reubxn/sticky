@@ -120,7 +120,7 @@ struct TasteLibraryView: View {
             refreshProfilesFromDisk()
         }
         .alert(
-            "Forget this principle?",
+            "Forget this note?",
             isPresented: deletionAlertBinding,
             presenting: principlePendingDeletion
         ) { principleAboutToBeDeleted in
@@ -170,9 +170,9 @@ struct TasteLibraryView: View {
         if count == 0 {
             return "Nothing learned\nyet."
         }
-        let principleNoun = count == 1 ? "principle" : "principles"
+        let noteNoun = count == 1 ? "note" : "notes"
         let scopeWord = selectedLibraryScope == .personal ? "your" : "the team's"
-        return "\(count) \(principleNoun)\nabout \(scopeWord) taste."
+        return "\(count) \(noteNoun)\nabout \(scopeWord) taste."
     }
 
     private var scopePillTabs: some View {
@@ -429,8 +429,8 @@ struct TasteLibraryView: View {
             .frame(height: 200)
 
             Text(isPersonalScope
-                 ? "Switch to Teach mode and narrate while you work. Sticky will start filling this in with the principles behind your decisions."
-                 : "Add a team-profile.json to ~/Library/Application Support/com.learning-buddy.clicky/ to share principles across the team.")
+                 ? "Hit Show & tell and narrate while you work. Sticky will start filling this in with notes on what's behind your decisions."
+                 : "Add a team-profile.json to ~/Library/Application Support/com.learning-buddy.clicky/ to share notes across the team.")
                 .font(ElevenLabsBrand.Typography.body)
                 .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -538,12 +538,12 @@ struct TasteLibraryView: View {
         case .some(.success(let importSummary)):
             loadedPersonalProfile = importSummary.mergedProfile
             let addedCount = importSummary.newPrinciplesAdded
-            let principleNoun = addedCount == 1 ? "principle" : "principles"
+            let noteNoun = addedCount == 1 ? "note" : "notes"
             withAnimation(.easeInOut(duration: 0.2)) {
                 if addedCount > 0 {
-                    importToastMessage = "Imported \(addedCount) new \(principleNoun)"
+                    importToastMessage = "Imported \(addedCount) new \(noteNoun)"
                 } else {
-                    importToastMessage = "No new principles to import — they were already in your profile."
+                    importToastMessage = "No new notes to import — they were already in your profile."
                 }
             }
             scheduleImportToastAutoFade()
@@ -627,7 +627,7 @@ private struct PrincipleCardView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .nativeTooltip("Forget this principle")
+                .nativeTooltip("Forget this note")
                 .opacity(isHovering ? 1.0 : 0.0)
                 .animation(.easeOut(duration: 0.12), value: isHovering)
             }

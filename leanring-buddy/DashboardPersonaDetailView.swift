@@ -31,6 +31,8 @@ struct DashboardPersonaDetailView: View {
     /// without waiting for `PersonaStore.myCurrentBundle()` to refresh.
     @State private var displayedBundle: PersonaBundle
 
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
     init(personaBundle: PersonaBundle, isEditable: Bool, onClose: @escaping () -> Void) {
         self.personaBundle = personaBundle
         self.isEditable = isEditable
@@ -72,7 +74,11 @@ struct DashboardPersonaDetailView: View {
 
     private var personaHeaderCard: some View {
         HStack(alignment: .top, spacing: ElevenLabsBrand.Spacing.md) {
-            PersonaAvatarView(avatar: displayedBundle.avatar, diameter: 88)
+            PersonaAvatarView(
+                avatar: displayedBundle.avatar,
+                diameter: 88,
+                uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: displayedBundle.id)
+            )
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(displayedBundle.displayName)
@@ -173,7 +179,7 @@ struct DashboardPersonaDetailView: View {
 
     private var tasteSection: some View {
         VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
-            ElevenLabsEyebrow("TASTE — \(displayedBundle.taste.principles.count) principles")
+            ElevenLabsEyebrow("TASTE — \(displayedBundle.taste.principles.count) notes")
 
             if displayedBundle.taste.principles.isEmpty {
                 emptyTasteState
@@ -190,7 +196,7 @@ struct DashboardPersonaDetailView: View {
     }
 
     private var emptyTasteState: some View {
-        Text("No principles yet. Use Teach mode to start adding some.")
+        Text("No notes yet. Use Show & tell to start adding some.")
             .font(ElevenLabsBrand.Typography.body)
             .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
             .padding(ElevenLabsBrand.Spacing.md)
@@ -236,7 +242,7 @@ struct DashboardPersonaDetailView: View {
                     }
                     .buttonStyle(InteractivePressStyle(pressScale: 0.92))
                     .pointerCursor()
-                    .nativeTooltip("Remove this principle")
+                    .nativeTooltip("Remove this note")
                 }
             }
 

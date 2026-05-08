@@ -19,6 +19,12 @@ struct PersonaAvatarView: View {
     /// container needs — the symbol/text inside scales proportionally.
     let diameter: CGFloat
 
+    /// When non-nil, this absolute file path takes precedence over
+    /// `avatar` and is rendered as the avatar image. Used to surface a
+    /// user-uploaded profile picture (from the Profile tab) wherever
+    /// the user's own persona is rendered.
+    var uploadedImageOverridePath: String? = nil
+
     /// Whether to draw a soft white ring around the circle. Used by the
     /// wheel picker for the highlighted spoke and by the cursor orb so
     /// the avatar reads cleanly over busy desktop wallpapers.
@@ -35,8 +41,16 @@ struct PersonaAvatarView: View {
 
     var body: some View {
         ZStack {
-            backgroundCircle
-            foregroundContent
+            if let overridePath = uploadedImageOverridePath,
+               let nsImage = NSImage(contentsOfFile: overridePath) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: diameter, height: diameter)
+            } else {
+                backgroundCircle
+                foregroundContent
+            }
         }
         .frame(width: diameter, height: diameter)
         .clipShape(Circle())

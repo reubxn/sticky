@@ -618,6 +618,13 @@ final class CompanionManager: ObservableObject {
             conversationHistory.removeAll()
             currentResponseTask?.cancel()
             currentResponseTask = nil
+            // If the cursor was parked at a multi-step waypoint when the
+            // user switched persona, clear it so the new persona's first
+            // reply doesn't appear next to a stale bubble from the
+            // previous one. Audio queued behind the cancelled task will
+            // still drain (intentional — feels less abrupt) but the
+            // visual pointing state should reset cleanly.
+            clearDetectedElementLocation()
             // Switching personas is a real conversational reset — start
             // a brand-new on-disk voice session so the next press doesn't
             // append the new persona's replies to the old persona's chat
@@ -665,6 +672,21 @@ final class CompanionManager: ObservableObject {
             return PersonaStore.teamPseudoPersona.avatar
         case .teammate:
             return activeTeammateBundle?.avatar
+        }
+    }
+
+    /// Companion to `activePersonaAvatar`. Returns the user-uploaded
+    /// profile picture path for `.me`, otherwise nil. Surfaced so the
+    /// cursor orb can prefer the uploaded picture over the bundled
+    /// avatar when the user is wearing their own persona.
+    var activePersonaUploadedImagePath: String? {
+        switch personaSelection {
+        case .me:
+            return PersonaStore.uploadedProfilePicturePath(forPersonaId: PersonaStore.mePseudoPersona.id)
+        case .team:
+            return nil
+        case .teammate(let id):
+            return PersonaStore.uploadedProfilePicturePath(forPersonaId: id)
         }
     }
 
@@ -1088,6 +1110,40 @@ final class CompanionManager: ObservableObject {
         print("🎓 Teach session stopping — frames captured: \(teachSessionFrames.count)")
     }
 
+    /// Hard cap on how long we wait for the spoken acknowledgement to
+    /// finish playing before firing a voice-triggered [ACTION:...]. Past
+    /// this point we fire anyway so the user isn't left hanging if TTS
+    /// stalls or their reply was unusually long.
+    private static let voiceActionAcknowledgementMaxWaitSeconds: Double = 4.0
+
+    /// Polling cadence for `isProducingAudio` while waiting for the
+    /// spoken acknowledgement to drain.
+    private static let voiceActionAcknowledgementPollIntervalSeconds: Double = 0.1
+
+    /// Defers a voice-triggered action (start / stop notes session) until
+    /// the spoken acknowledgement clip has finished playing — then fires
+    /// it. Without this delay, `startTeachSession` would call
+    /// `stopPlayback()` and cut Claude off mid-word.
+    private func scheduleVoiceActionAfterAcknowledgement(_ requestedAction: CompanionVoiceAction) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            let waitDeadline = Date().addingTimeInterval(Self.voiceActionAcknowledgementMaxWaitSeconds)
+            while self.elevenLabsTTSClient.isProducingAudio && Date() < waitDeadline {
+                try? await Task.sleep(for: .seconds(Self.voiceActionAcknowledgementPollIntervalSeconds))
+            }
+
+            switch requestedAction {
+            case .startNotes:
+                print("🎙️ Voice action: start_notes")
+                self.startTeachSession()
+            case .stopNotes:
+                print("🎙️ Voice action: stop_notes")
+                self.stopTeachSession()
+            }
+        }
+    }
+
     private func tickTeachSessionElapsedClock() {
         guard teachSessionState == .recording else { return }
         guard let startedAt = teachSessionStartedAt else { return }
@@ -1178,7 +1234,7 @@ final class CompanionManager: ObservableObject {
                     claudeAPI: analyzerClaudeAPI
                 )
 
-                self?.teachAnalyzingStatus = "Pulling out principles…"
+                self?.teachAnalyzingStatus = "Pulling out notes…"
                 self?.lastTeachSessionResult = analysis.result
                 Self.printTeachSessionResultForDebugging(analysis.result)
 
@@ -1838,14 +1894,38 @@ final class CompanionManager: ObservableObject {
 
     if pointing genuinely wouldn't help, append [POINT:none] — but use this sparingly. when in doubt, point.
 
+    whenever you include a [POINT:x,y:label] tag (i.e. you're actually pointing at something, not [POINT:none]), you MUST also include a [BUBBLE:caption] tag immediately after it. the caption is a tiny speech bubble that pops out of the cursor at the target — it's the single sharpest line of your reply, in your own voice, all lowercase, no quotes, no emojis, max 6 words. it should land like a callout, not a label. punchy verbs ("crop the feet", "needs the flag here", "double this"), reactions ("too small", "throws the eye"), or imperatives ("click here", "open this") all work. don't just restate the element name — say the *thing about it* that you said in your spoken reply, compressed. skip [BUBBLE:...] entirely when [POINT:none] — there's nothing to caption.
+
+    the order at the end of your reply for a single-pointer answer is: spoken text, then [POINT:...], then [BUBBLE:...] (only when pointing).
+
+    multi-step pointing (walking the user through a sequence):
+    when you're explaining a multi-step action — "first click here, then drag it over there, then hit save" — emit a [POINT:x,y:label][BUBBLE:caption] pair after EACH sentence that introduces a new step, inline within your reply. the cursor will fly to each waypoint in sync with the matching sentence's audio, so the user sees the cursor land exactly where you're talking about as you say it. cap a single reply at 4 waypoints — past that the cursor feels frantic, and the user has stopped tracking it anyway. each step still needs its own [BUBBLE:caption] partner, same rules as the single-step case.
+
+    use multi-step pointing only when the steps are spatially distinct and the user has to find each one — not when the action stays in the same place ("click this button, then click it again" is one waypoint, not two). also skip multi-step when the steps are conceptual rather than spatial ("first commit your code, then write a good message" — that's one POINT or none).
+
     examples:
-    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
+    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector][BUBBLE:open this]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
-    - critique on a poster: "the feet are throwing me off — crop them above the ankles or shoot from a higher angle. [POINT:640,1180:feet]"
-    - flagging what's missing: "this could be any sauna company. it needs *Made in Sweden* and the flag, somewhere down here in the empty space under the headline. [POINT:520,940:empty space below headline]"
-    - recommending a specific change: "the logo is too small — needs to be at least double this size to earn the brand presence. [POINT:120,80:logo]"
+    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control][BUBBLE:click here to commit]"
+    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2][BUBBLE:over on your other screen]"
+    - critique on a poster: "the feet are throwing me off — crop them above the ankles or shoot from a higher angle. [POINT:640,1180:feet][BUBBLE:crop above the ankles]"
+    - flagging what's missing: "this could be any sauna company. it needs *Made in Sweden* and the flag, somewhere down here in the empty space under the headline. [POINT:520,940:empty space below headline][BUBBLE:swedish flag goes here]"
+    - recommending a specific change: "the logo is too small — needs to be at least double this size to earn the brand presence. [POINT:120,80:logo][BUBBLE:double this size]"
+    - multi-step in figma: "first, grab the rectangle tool from the toolbar at the top. [POINT:480,32:rectangle tool][BUBBLE:grab this] then drag a frame across the empty area in the middle of the canvas. [POINT:760,440:empty canvas area][BUBBLE:drag a frame here] and finally drop a fill on it from the right panel. [POINT:1340,220:fill swatch][BUBBLE:set the fill]"
+    - multi-step in xcode: "open the source control menu up top. [POINT:285,11:source control menu][BUBBLE:click here] then pick commit from the dropdown. [POINT:300,90:commit menu item][BUBBLE:then this]"
+
+    starting and stopping a notes session:
+    you can start and stop a "notes" session for the user — this is the same thing as a teach session: sticky watches the screen and listens to the user narrate, then later turns what it learned into saved taste principles. trigger this when the user asks for it in plain language, e.g. "start taking notes", "take notes for me", "start a notes session", "watch what i'm doing", "start a teach session", "start recording", "i want to teach you something" — or the inverse: "stop taking notes", "stop the notes session", "stop recording", "you can stop now", "i'm done".
+
+    when the user asks you to start, append [ACTION:start_notes] at the very end of your reply. when they ask you to stop, append [ACTION:stop_notes]. only fire the action when the user clearly asked for it in this turn — don't infer it from ambient context, and never start one unprompted. do not fire start_notes if a notes session is already running, and do not fire stop_notes if one isn't running (you won't always know — if unsure, just fire it and trust the app to no-op).
+
+    keep the spoken acknowledgement extremely short — one short clause, like "on it.", "starting now.", "got it, taking notes.", "stopped." — because the action will interrupt your own speech once it fires. don't explain what you're doing or describe the screen. don't add a [POINT:...] when firing an action. the order at end of reply is: short text, then [ACTION:...].
+
+    examples:
+    - user: "start taking notes for me" → "on it. [ACTION:start_notes]"
+    - user: "watch what i'm doing here" → "got it, taking notes. [ACTION:start_notes]"
+    - user: "okay you can stop now" → "stopped. [ACTION:stop_notes]"
+    - user: "stop the notes session" → "done. [ACTION:stop_notes]"
     """
 
     /// Builds the system prompt for the existing voice flow with the user's
@@ -2079,6 +2159,12 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        // If the previous reply was a multi-step pointing chain that had
+        // already landed on an element, the cursor is still visible at
+        // that element with its bubble. Clear it so the new request
+        // starts cleanly — without this the buddy stays parked at the
+        // previous waypoint until the new reply's first flight kicks in.
+        clearDetectedElementLocation()
 
         // Idle-rollover happens *before* we read the system prompt below,
         // so a fresh-session hint can be included on the very first
@@ -2162,9 +2248,21 @@ final class CompanionManager: ObservableObject {
                 // speak in their voice. Falls back to the user's voice
                 // (or the bundled default) when persona is .me / .team.
                 let effectiveTTSVoiceID = activeTeammateBundle?.voiceId ?? selectedVoiceID
+                // Snapshot the screen captures at request start so any
+                // inline waypoint that fires during streaming maps its
+                // image-pixel coords against the same screenshot Claude
+                // was shown — even if the user switched displays mid-reply.
+                let screenCapturesForResponse = screenCaptures
                 let streamingResponseState = StreamingResponseState(
                     ttsClient: elevenLabsTTSClient,
-                    overrideVoiceID: effectiveTTSVoiceID
+                    overrideVoiceID: effectiveTTSVoiceID,
+                    onInlineWaypointReady: { [weak self] waypoint in
+                        guard let self else { return }
+                        self.flyCursorToWaypoint(
+                            waypoint,
+                            screenCapturesForWaypoint: screenCapturesForResponse
+                        )
+                    }
                 )
                 streamingResponseState.beginNewChain()
 
@@ -2180,21 +2278,50 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                // Strip the trailing [USED:...] tag FIRST so the existing
+                // Strip the trailing [ACTION:...] tag FIRST. The system
+                // prompt tells Claude to put [ACTION:...] at the very end
+                // of the reply (after any [POINT:...] / [BUBBLE:...] /
+                // [USED:...]), so peeling it off here leaves the next-most
+                // trailing tag at end-of-string for its own end-anchored
+                // regex. Side effect (start / stop notes session) is
+                // deferred to after the spoken acknowledgement plays.
+                let actionTagParseResult = Self.parseActionTag(from: fullResponseText)
+                let responseTextWithoutActionTag = actionTagParseResult.cleanText
+                let requestedVoiceAction = actionTagParseResult.requestedAction
+
+                // Strip the trailing [USED:...] tag NEXT so the existing
                 // [POINT:...] parser (which anchors to end-of-string) still
                 // matches correctly. The taste-context block tells Claude
                 // to put [USED:...] AFTER any [POINT:...] tag, so the order
                 // is:
-                //   <reply text> <[POINT:...]?> <[USED:...]>
+                //   <reply text> <[POINT:...]?> <[USED:...]> <[ACTION:...]?>
                 // We unwrap the inner [POINT:...] from the cleaned text
                 // below, after the USED tag has been removed.
-                let usedTagParseResult = TastePromptBuilder.parseUsedTag(from: fullResponseText)
+                let usedTagParseResult = TastePromptBuilder.parseUsedTag(from: responseTextWithoutActionTag)
                 let responseTextWithoutUsedTag = usedTagParseResult.cleanText
                 let usedShortLabels = usedTagParseResult.usedShortLabels
 
+                // Parse the [BUBBLE:caption] tag (if any) — sits between
+                // the optional [POINT:...] tag and the [USED:...] tag in
+                // Claude's reply, so we strip it after USED is gone but
+                // before POINT so each end-anchored regex sees its tag
+                // at end-of-string.
+                let bubbleParseResult = Self.parseBubbleTag(from: responseTextWithoutUsedTag)
+                let responseTextWithoutBubbleAndUsedTags = bubbleParseResult.cleanText
+                let bubbleCaption = bubbleParseResult.bubbleCaption
+
                 // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutUsedTag)
-                let spokenText = parseResult.spokenText
+                let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutBubbleAndUsedTags)
+                // Strip any *inline* [POINT:...][BUBBLE:...] pairs that
+                // appeared mid-reply — those were already consumed by the
+                // streaming parser as multi-step waypoints, but the raw
+                // text still contains them. Without this step the un-spoken
+                // trailing fragment passed to dispatchAnyTrailingText could
+                // contain a tag string and ship `[POINT:...]` to ElevenLabs
+                // as audio.
+                let spokenText = Self.stripAllInlinePointBubblePairs(
+                    from: parseResult.spokenText
+                )
 
                 // Resolve [USED:...] short labels back into TastePrinciple
                 // objects via the cached TasteContextBlock mapping. Only
@@ -2246,56 +2373,37 @@ final class CompanionManager: ObservableObject {
                 // went out during streaming.
                 streamingResponseState.dispatchAnyTrailingText(of: spokenText)
 
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
+                // Fire any [ACTION:...] Claude requested (e.g. start / stop a
+                // notes session). Deferred to a separate task so the spoken
+                // acknowledgement has time to play before the action — which
+                // for start_notes will stop TTS playback and cancel this
+                // response task — interrupts it.
+                if let requestedVoiceAction {
+                    scheduleVoiceActionAfterAcknowledgement(requestedVoiceAction)
                 }
 
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                // Handle the trailing-tag pointing waypoint, if any. The
+                // streaming parser may have already consumed every POINT/
+                // BUBBLE pair inline (including the trailing one) and
+                // attached each to its preceding speech segment via the
+                // per-segment onSegmentStart hook — in that case the
+                // trailing-tag parsers above still extracted the final
+                // pair's data, but flying it here would double-fire the
+                // last waypoint. Only fall back to flying the trailing
+                // tag when streaming didn't consume anything inline.
+                if streamingResponseState.didConsumeAnyInlineWaypoint {
+                    // Multi-step inline waypoints already fired (or are
+                    // queued to fire) via the per-segment hook.
+                } else if let pointCoordinate = parseResult.coordinate {
+                    flyCursorToWaypoint(
+                        PointingWaypoint(
+                            coordinate: pointCoordinate,
+                            elementLabel: parseResult.elementLabel,
+                            bubbleCaption: bubbleCaption,
+                            screenNumber: parseResult.screenNumber
+                        ),
+                        screenCapturesForWaypoint: screenCaptures
                     )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
@@ -2523,17 +2631,39 @@ final class CompanionManager: ObservableObject {
         private weak var ttsClient: ElevenLabsTTSClient?
         private let overrideVoiceID: String?
 
-        /// Number of Characters of `accumulatedText` we've already dispatched
-        /// to TTS. Each new chunk only sees text past this cursor.
-        private var dispatchedCharacterCount: Int = 0
+        /// Closure that flies the cursor to a single waypoint, plumbed in
+        /// from `CompanionManager` so the streaming state can trigger an
+        /// inline cursor flight (synchronized to a sentence's playback)
+        /// without depending on the manager directly. Captures
+        /// `screenCaptures` snapshotted at request start so a follow-up
+        /// waypoint that fires after the response task ends still maps
+        /// against the right capture set.
+        private let onInlineWaypointReady: (PointingWaypoint) -> Void
 
-        /// Goes true the first time we observe EITHER a "[POINT:" or
-        /// "[USED:" tag start in the stream. Once set, no further streaming
-        /// dispatch happens — both tags are un-spoken markers (POINT drives
-        /// the cursor flight, USED drives the Apply-transparency chip)
-        /// and neither should reach ElevenLabs. Anything spoken before
-        /// the tag has already been dispatched.
-        private var hasSeenPointTagStart: Bool = false
+        /// Number of characters of `accumulatedStreamedText` we've already
+        /// processed — counts both *spoken* characters that were enqueued
+        /// to TTS and *tag* characters that were stripped inline (POINT,
+        /// BUBBLE pairs consumed mid-stream as multi-step waypoints).
+        /// Each new SSE delta only scans text past this cursor.
+        private var processedCharacterCount: Int = 0
+
+        /// Goes true the first time we observe a `[USED:` or `[ACTION:` tag
+        /// start in the stream. Once set, no further streaming dispatch
+        /// happens — both tags are reply-level un-spoken markers (USED
+        /// drives the Apply-transparency chip, ACTION triggers an app-level
+        /// side effect like starting a notes session) and anything beyond
+        /// them is not part of the spoken reply. POINT/BUBBLE pairs are
+        /// NOT terminal: they're consumed inline as multi-step waypoints
+        /// and streaming continues past them.
+        private var hasSeenTerminalTag: Bool = false
+
+        /// Goes true the first time we successfully consume a `[POINT:...]`
+        /// `[BUBBLE:...]` pair as an inline multi-step waypoint. The parent
+        /// response handler reads this to decide whether to also fly the
+        /// trailing-tag waypoint — when streaming already handled the
+        /// waypoints inline, the trailing parser's match would be a
+        /// re-fly of the final inline waypoint and gets skipped.
+        private(set) var didConsumeAnyInlineWaypoint: Bool = false
 
         /// Epoch returned by `ElevenLabsTTSClient.resetPlaybackChain`. Each
         /// enqueue passes this so a stale fetch from the previous response
@@ -2546,9 +2676,14 @@ final class CompanionManager: ObservableObject {
         /// when the underlying ElevenLabs fetches finish out of order.
         private var previousEnqueueTask: Task<Void, Never> = Task {}
 
-        init(ttsClient: ElevenLabsTTSClient, overrideVoiceID: String?) {
+        init(
+            ttsClient: ElevenLabsTTSClient,
+            overrideVoiceID: String?,
+            onInlineWaypointReady: @escaping (PointingWaypoint) -> Void
+        ) {
             self.ttsClient = ttsClient
             self.overrideVoiceID = overrideVoiceID
+            self.onInlineWaypointReady = onInlineWaypointReady
         }
 
         /// Resets the playback queue and remembers the new epoch. Must be
@@ -2556,78 +2691,155 @@ final class CompanionManager: ObservableObject {
         func beginNewChain() {
             guard let ttsClient else { return }
             playbackChainEpoch = ttsClient.resetPlaybackChain(onFirstPlaybackStart: { })
-            dispatchedCharacterCount = 0
-            hasSeenPointTagStart = false
+            processedCharacterCount = 0
+            spokenCharactersDispatched = 0
+            hasSeenTerminalTag = false
+            didConsumeAnyInlineWaypoint = false
             previousEnqueueTask = Task {}
         }
 
         /// Called on each Claude SSE delta with the FULL accumulated reply.
-        /// Finds sentence boundaries past the dispatch cursor and ships each
-        /// completed sentence off to ElevenLabs.
+        /// Walks the pending text, dispatching speech segments at sentence
+        /// boundaries and consuming any inline `[POINT:...][BUBBLE:...]`
+        /// pairs as multi-step waypoints. Stops on the first `[USED:` or
+        /// `[ACTION:` tag — those are reply-level and end-of-spoken.
         func handleStreamedText(_ accumulatedStreamedText: String) {
-            guard !hasSeenPointTagStart else { return }
+            guard !hasSeenTerminalTag else { return }
 
-            let dispatchCursorIndex = accumulatedStreamedText.index(
-                accumulatedStreamedText.startIndex,
-                offsetBy: min(dispatchedCharacterCount, accumulatedStreamedText.count)
-            )
-            let pendingText = String(accumulatedStreamedText[dispatchCursorIndex...])
-
-            // If either "[POINT:" or "[USED:" appears in the new text,
-            // dispatch the spoken portion (everything before the earliest
-            // tag) immediately and stop streaming further dispatches —
-            // both tags are un-spoken markers and neither should reach
-            // ElevenLabs. We pick whichever tag opens earliest so we
-            // don't miss the cutoff when Claude emits BOTH tags
-            // back-to-back at the end of the response.
-            let pointTagStartRange = pendingText.range(of: "[POINT:")
-            let usedTagStartRange = pendingText.range(of: "[USED:")
-            let earliestTagStartRange: Range<String.Index>?
-            switch (pointTagStartRange, usedTagStartRange) {
-            case (nil, nil):
-                earliestTagStartRange = nil
-            case (let pointRange?, nil):
-                earliestTagStartRange = pointRange
-            case (nil, let usedRange?):
-                earliestTagStartRange = usedRange
-            case (let pointRange?, let usedRange?):
-                earliestTagStartRange = pointRange.lowerBound < usedRange.lowerBound
-                    ? pointRange
-                    : usedRange
-            }
-            if let earliestTagStartRange {
-                let spokenPortion = pendingText[..<earliestTagStartRange.lowerBound]
-                let trimmedSpokenPortion = String(spokenPortion).trimmingCharacters(in: .whitespacesAndNewlines)
-                let charactersConsumed = pendingText.distance(
-                    from: pendingText.startIndex,
-                    to: earliestTagStartRange.lowerBound
+            // Loop because a single delta can carry both a sentence
+            // boundary AND an inline POINT/BUBBLE pair AND another
+            // sentence — we want to consume them in order rather than
+            // bailing after the first match.
+            while !hasSeenTerminalTag {
+                let processedCursorIndex = accumulatedStreamedText.index(
+                    accumulatedStreamedText.startIndex,
+                    offsetBy: min(processedCharacterCount, accumulatedStreamedText.count)
                 )
-                dispatchedCharacterCount += charactersConsumed
-                hasSeenPointTagStart = true
-                if !trimmedSpokenPortion.isEmpty {
-                    enqueueSpeechSegment(trimmedSpokenPortion)
-                }
-                return
-            }
+                let pendingText = String(accumulatedStreamedText[processedCursorIndex...])
+                if pendingText.isEmpty { return }
 
-            // No tag yet — dispatch everything up to the latest sentence
-            // boundary in the pending text. We dispatch as much as possible
-            // per chunk so multi-sentence chunks aren't artificially split
-            // across multiple ElevenLabs round-trips.
-            guard let latestSentenceEndIndex = Self.indexAfterLatestSentenceBoundary(in: pendingText) else {
-                return
+                // Find the earliest tag start in the pending region. POINT
+                // is consumed inline; BUBBLE is only valid as the partner
+                // of a POINT — a bare BUBBLE that isn't preceded by a POINT
+                // is treated as a terminal sentinel (defensive — Claude
+                // shouldn't emit one but stripping it would be more harmful
+                // than freezing).
+                let pointTagStartRange = pendingText.range(of: "[POINT:")
+                let usedTagStartRange = pendingText.range(of: "[USED:")
+                let actionTagStartRange = pendingText.range(of: "[ACTION:")
+                let bareBubbleTagStartRange = pendingText.range(of: "[BUBBLE:")
+
+                // POINT is non-terminal but still a tag boundary — dispatch
+                // any complete sentences in [cursor..pointStart) before
+                // attempting to consume the pair.
+                let earliestTerminalTagStartRange = [
+                    usedTagStartRange,
+                    actionTagStartRange,
+                    // A BUBBLE NOT preceded by a POINT in the same pending
+                    // window is only "terminal" if there's no POINT before
+                    // it — otherwise it's the partner of a POINT we'll
+                    // handle on the next loop iteration.
+                    (pointTagStartRange == nil ? bareBubbleTagStartRange : nil)
+                ].compactMap { $0 }.min(by: { $0.lowerBound < $1.lowerBound })
+
+                let earliestTagStartRange: Range<String.Index>? = {
+                    let candidates = [pointTagStartRange, earliestTerminalTagStartRange].compactMap { $0 }
+                    return candidates.min(by: { $0.lowerBound < $1.lowerBound })
+                }()
+
+                if let earliestTagStartRange {
+                    // Dispatch any *complete sentences* in the spoken
+                    // portion before the tag — but NOT a partial trailing
+                    // sentence, because that partial sentence is the one
+                    // Claude is about to point at and we want it dispatched
+                    // *with* the waypoint attached so the flight syncs to
+                    // its playback.
+                    let spokenPortion = String(pendingText[..<earliestTagStartRange.lowerBound])
+                    let isPointTag = (earliestTagStartRange == pointTagStartRange)
+
+                    if isPointTag {
+                        // For POINT: dispatch the sentence the waypoint
+                        // belongs to (everything spoken since the last
+                        // sentence boundary up through the tag) and attach
+                        // the waypoint to it. If there's no spoken text at
+                        // all between the previous tag and this one (e.g.
+                        // back-to-back POINT tags), we still record the
+                        // waypoint so it fires on the next dispatched
+                        // sentence.
+                        if let parsedTag = Self.tryConsumeInlinePointAndBubble(in: pendingText, pointTagStartRange: earliestTagStartRange) {
+                            if !spokenPortion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                enqueueSpeechSegment(
+                                    spokenPortion,
+                                    waypointAttachedToThisSegment: parsedTag.waypoint
+                                )
+                            } else if let waypoint = parsedTag.waypoint {
+                                // No new spoken text since the prior tag —
+                                // fire the waypoint immediately so it
+                                // doesn't get lost. Slightly out of natural
+                                // flow but better than dropping the
+                                // cursor flight entirely.
+                                onInlineWaypointReady(waypoint)
+                            }
+                            if parsedTag.waypoint != nil {
+                                didConsumeAnyInlineWaypoint = true
+                            }
+                            processedCharacterCount += pendingText.distance(
+                                from: pendingText.startIndex,
+                                to: parsedTag.consumedThroughIndex
+                            )
+                            continue
+                        } else {
+                            // POINT tag is open but its closing `]` (or its
+                            // partner BUBBLE) hasn't fully arrived yet.
+                            // Wait for the next delta — don't dispatch the
+                            // partial-sentence spoken portion yet, because
+                            // we want to attach the waypoint to it.
+                            return
+                        }
+                    } else {
+                        // Terminal tag: dispatch spoken portion as-is and
+                        // freeze. This matches the original behavior.
+                        let charactersConsumed = pendingText.distance(
+                            from: pendingText.startIndex,
+                            to: earliestTagStartRange.lowerBound
+                        )
+                        processedCharacterCount += charactersConsumed
+                        hasSeenTerminalTag = true
+                        if !spokenPortion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            enqueueSpeechSegment(spokenPortion, waypointAttachedToThisSegment: nil)
+                        }
+                        return
+                    }
+                }
+
+                // No tag in the pending region — dispatch everything up to
+                // the latest sentence boundary. Multi-sentence chunks ship
+                // as one segment so they share an ElevenLabs round-trip.
+                guard let latestSentenceEndIndex = Self.indexAfterLatestSentenceBoundary(in: pendingText) else {
+                    return
+                }
+                let segmentToDispatch = String(pendingText[..<latestSentenceEndIndex])
+                processedCharacterCount += segmentToDispatch.count
+                enqueueSpeechSegment(segmentToDispatch, waypointAttachedToThisSegment: nil)
             }
-            let segmentToDispatch = String(pendingText[..<latestSentenceEndIndex])
-            dispatchedCharacterCount += segmentToDispatch.count
-            enqueueSpeechSegment(segmentToDispatch)
         }
 
         /// Called once Claude's stream is fully complete. Dispatches any
         /// remaining un-spoken text — typically a final fragment without
         /// trailing punctuation, or all of `cleanSpokenText` if the response
         /// happened to be a single short clause with no period.
+        ///
+        /// When streaming hit a terminal tag (USED/ACTION) the spoken
+        /// portion was cut cleanly at that boundary and there's nothing
+        /// more to dispatch — short-circuit. Otherwise we slice
+        /// `cleanSpokenText` past the prefix length we've already
+        /// enqueued. The offset is approximate (off by a few characters
+        /// per consumed inline POINT/BUBBLE pair due to whitespace
+        /// collapse during stripping), but the trailing fragment is
+        /// always short and the trim+empty-check below absorbs the slack.
         func dispatchAnyTrailingText(of cleanSpokenText: String) {
-            let alreadyDispatchedCount = min(dispatchedCharacterCount, cleanSpokenText.count)
+            guard !hasSeenTerminalTag else { return }
+            let alreadyDispatchedCount = min(spokenCharactersDispatched, cleanSpokenText.count)
             let trailingStartIndex = cleanSpokenText.index(
                 cleanSpokenText.startIndex,
                 offsetBy: alreadyDispatchedCount
@@ -2635,17 +2847,36 @@ final class CompanionManager: ObservableObject {
             let trailingText = String(cleanSpokenText[trailingStartIndex...])
             let trimmedTrailingText = trailingText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedTrailingText.isEmpty else { return }
-            dispatchedCharacterCount = cleanSpokenText.count
-            enqueueSpeechSegment(trimmedTrailingText)
+            spokenCharactersDispatched = cleanSpokenText.count
+            enqueueSpeechSegment(trimmedTrailingText, waypointAttachedToThisSegment: nil)
         }
 
-        private func enqueueSpeechSegment(_ speechSegment: String) {
+        /// Total length of *spoken* text we've enqueued to TTS so far.
+        /// Used by `dispatchAnyTrailingText` to compute the trailing
+        /// fragment relative to `cleanSpokenText` (which excludes all
+        /// tag characters).
+        private var spokenCharactersDispatched: Int = 0
+
+        private func enqueueSpeechSegment(
+            _ speechSegment: String,
+            waypointAttachedToThisSegment: PointingWaypoint?
+        ) {
             guard let ttsClient else { return }
             let trimmedSpeechSegment = speechSegment.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedSpeechSegment.isEmpty else { return }
 
+            // Track how much of the spoken-text raw character span we've
+            // dispatched. Counts the *raw* (untrimmed) segment so the
+            // count stays aligned with offsets into `cleanSpokenText` —
+            // which preserves inter-sentence whitespace. Without this
+            // alignment the trailing-fragment dispatch could re-send
+            // already-spoken sentences.
+            spokenCharactersDispatched += speechSegment.count
+
             let voiceIDForFetch = overrideVoiceID
             let epochForEnqueue = playbackChainEpoch
+            let waypointForCallback = waypointAttachedToThisSegment
+            let waypointFlightCallback = onInlineWaypointReady
 
             // Kick off the ElevenLabs fetch right now so multiple sentences'
             // audio is fetched in parallel.
@@ -2663,11 +2894,141 @@ final class CompanionManager: ObservableObject {
                 _ = await priorEnqueueTask.value
                 do {
                     let audioData = try await audioFetchTask.value
-                    ttsClient?.enqueueAudioData(audioData, forEpoch: epochForEnqueue)
+                    let onSegmentStart: (() -> Void)? = waypointForCallback.map { waypoint in
+                        return { waypointFlightCallback(waypoint) }
+                    }
+                    ttsClient?.enqueueAudioData(
+                        audioData,
+                        forEpoch: epochForEnqueue,
+                        onSegmentStart: onSegmentStart
+                    )
                 } catch {
                     print("⚠️ TTS sentence fetch failed (segment dropped): \(error)")
+                    // The segment failed to fetch but its waypoint should
+                    // still fly — otherwise a single ElevenLabs hiccup mid-
+                    // reply would silently drop a multi-step pointing step.
+                    if let waypoint = waypointForCallback {
+                        waypointFlightCallback(waypoint)
+                    }
                 }
             }
+        }
+
+        /// Result of trying to consume an inline `[POINT:...][BUBBLE:...]`
+        /// pair (or `[POINT:none]`) from the pending stream window. Returns
+        /// nil when the tag(s) haven't fully arrived yet — caller should
+        /// wait for the next delta.
+        private struct InlinePointBubbleParse {
+            /// The waypoint to fly, or nil for `[POINT:none]` (parsed but
+            /// no flight needed).
+            let waypoint: PointingWaypoint?
+            /// Index in the original `pendingText` immediately after the
+            /// last consumed tag character. The caller advances the
+            /// processed cursor to this position.
+            let consumedThroughIndex: String.Index
+        }
+
+        /// Attempts to parse `[POINT:...]` (and the immediately-following
+        /// `[BUBBLE:...]` when the POINT isn't `:none`) starting at
+        /// `pointTagStartRange.lowerBound`. Returns nil if either tag is
+        /// open but not yet closed in the stream — the caller waits for
+        /// the next delta in that case so we don't dispatch the partial
+        /// sentence without its waypoint attached.
+        private static func tryConsumeInlinePointAndBubble(
+            in pendingText: String,
+            pointTagStartRange: Range<String.Index>
+        ) -> InlinePointBubbleParse? {
+            // Find the closing `]` of the POINT tag.
+            guard let pointTagCloseIndex = pendingText.range(of: "]", range: pointTagStartRange.upperBound..<pendingText.endIndex)?.lowerBound else {
+                return nil
+            }
+            let pointTagClosePastIndex = pendingText.index(after: pointTagCloseIndex)
+            let pointTagBodyStartIndex = pointTagStartRange.upperBound
+            let pointTagBody = String(pendingText[pointTagBodyStartIndex..<pointTagCloseIndex])
+
+            // [POINT:none] — no waypoint, no BUBBLE expected. Strip and
+            // continue.
+            if pointTagBody.trimmingCharacters(in: .whitespaces).lowercased() == "none" {
+                return InlinePointBubbleParse(
+                    waypoint: nil,
+                    consumedThroughIndex: pointTagClosePastIndex
+                )
+            }
+
+            // [POINT:x,y:label[:screenN]] — parse coordinate + optional
+            // screen number, then look for the partner [BUBBLE:caption].
+            let bodyComponents = pointTagBody.split(separator: ":", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard let coordinateComponent = bodyComponents.first else { return nil }
+            let coordinatePieces = coordinateComponent.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard coordinatePieces.count == 2,
+                  let x = Double(coordinatePieces[0]),
+                  let y = Double(coordinatePieces[1]) else {
+                // Malformed — treat the tag as consumed-but-skipped so we
+                // don't loop on it forever.
+                return InlinePointBubbleParse(
+                    waypoint: nil,
+                    consumedThroughIndex: pointTagClosePastIndex
+                )
+            }
+            var elementLabel: String? = bodyComponents.count >= 2 ? bodyComponents[1] : nil
+            var screenNumber: Int? = nil
+            if bodyComponents.count >= 3 {
+                let screenComponent = bodyComponents[2]
+                if screenComponent.lowercased().hasPrefix("screen"),
+                   let parsedScreen = Int(screenComponent.dropFirst("screen".count)) {
+                    screenNumber = parsedScreen
+                } else {
+                    // Treat it as a continuation of the label (rare — labels
+                    // shouldn't contain colons but the trailing-tag regex is
+                    // lenient about it, so mirror that here).
+                    elementLabel = (elementLabel ?? "") + ":" + screenComponent
+                }
+            }
+            if let label = elementLabel, label.isEmpty { elementLabel = nil }
+
+            // Now expect [BUBBLE:caption] immediately after the POINT tag,
+            // tolerant of one space between them.
+            var lookaheadIndex = pointTagClosePastIndex
+            while lookaheadIndex < pendingText.endIndex && pendingText[lookaheadIndex].isWhitespace {
+                lookaheadIndex = pendingText.index(after: lookaheadIndex)
+            }
+            let bubbleOpener = "[BUBBLE:"
+            let bubbleOpenerEndIndex = pendingText.index(lookaheadIndex, offsetBy: bubbleOpener.count, limitedBy: pendingText.endIndex)
+            let hasBubbleOpener = bubbleOpenerEndIndex.map { pendingText[lookaheadIndex..<$0] == bubbleOpener } ?? false
+
+            if !hasBubbleOpener {
+                // BUBBLE not present at all (malformed reply, or text
+                // arriving in an order Claude shouldn't be using). Still
+                // fly the waypoint with just the element label as caption.
+                let waypoint = PointingWaypoint(
+                    coordinate: CGPoint(x: x, y: y),
+                    elementLabel: elementLabel,
+                    bubbleCaption: nil,
+                    screenNumber: screenNumber
+                )
+                return InlinePointBubbleParse(
+                    waypoint: waypoint,
+                    consumedThroughIndex: pointTagClosePastIndex
+                )
+            }
+            // Wait for the BUBBLE tag to fully arrive.
+            guard let bubbleOpenerEndIndex,
+                  let bubbleCloseIndex = pendingText.range(of: "]", range: bubbleOpenerEndIndex..<pendingText.endIndex)?.lowerBound else {
+                return nil
+            }
+            let bubbleClosePastIndex = pendingText.index(after: bubbleCloseIndex)
+            let caption = String(pendingText[bubbleOpenerEndIndex..<bubbleCloseIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let waypoint = PointingWaypoint(
+                coordinate: CGPoint(x: x, y: y),
+                elementLabel: elementLabel,
+                bubbleCaption: caption.isEmpty ? nil : caption,
+                screenNumber: screenNumber
+            )
+            return InlinePointBubbleParse(
+                waypoint: waypoint,
+                consumedThroughIndex: bubbleClosePastIndex
+            )
         }
 
         /// Scans a string for the rightmost ".", "!", or "?" that's followed
@@ -2696,6 +3057,217 @@ final class CompanionManager: ObservableObject {
             }
             return latestBoundaryEndIndex
         }
+    }
+
+    // MARK: - Pointing Waypoints
+
+    /// A single pointing instruction Claude embedded in a reply — the
+    /// pixel coordinate to fly the cursor to, the short label for that
+    /// element, the speech-bubble caption to display once the cursor
+    /// lands, and (optionally) which screen the coordinate refers to.
+    ///
+    /// A reply may contain multiple waypoints when Claude is walking the
+    /// user through a multi-step instruction ("first click here, then
+    /// drag it over here"). Each waypoint is anchored to the speech
+    /// segment immediately preceding its `[POINT:...]` tag and fires when
+    /// that segment begins playing through ElevenLabs, so the cursor's
+    /// flight stays locked to the spoken sentence.
+    struct PointingWaypoint: Equatable {
+        let coordinate: CGPoint
+        let elementLabel: String?
+        let bubbleCaption: String?
+        let screenNumber: Int?
+    }
+
+    /// Flies the cursor to a single waypoint by translating its image-pixel
+    /// coordinate into AppKit global screen coordinates and publishing the
+    /// trio of overlay state vars that BlueCursorView watches. Safe to call
+    /// repeatedly — when a second waypoint arrives mid-flight the existing
+    /// arc animation timer is invalidated and the new arc starts from the
+    /// cursor's current position, so multi-step pointing chains feel like
+    /// one continuous cursor across the screen rather than ping-ponging
+    /// back to the user's mouse between steps.
+    ///
+    /// `screenCapturesForWaypoint` is the screenshot set Claude was shown
+    /// when this waypoint was generated. We pass it explicitly (rather
+    /// than reading `self.screenCaptures`) so a follow-up waypoint that
+    /// fires after the response task ended still maps coordinates against
+    /// the right capture set.
+    func flyCursorToWaypoint(
+        _ waypoint: PointingWaypoint,
+        screenCapturesForWaypoint: [CompanionScreenCapture]
+    ) {
+        // Pick the screen capture matching Claude's screen number, falling
+        // back to the cursor screen if not specified or out of range.
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber = waypoint.screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCapturesForWaypoint.count {
+                return screenCapturesForWaypoint[screenNumber - 1]
+            }
+            return screenCapturesForWaypoint.first(where: { $0.isCursorScreen })
+        }()
+
+        guard let targetScreenCapture else {
+            print("🎯 Element pointing: \(waypoint.elementLabel ?? "no element") (no matching screen capture, skipping)")
+            return
+        }
+
+        // Switch to idle BEFORE setting the location so the triangle is
+        // visible and can fly to the target. Without this the spinner hides
+        // the triangle and the flight animation is invisible.
+        voiceState = .idle
+
+        // Claude's coordinates are in the screenshot's pixel space (top-
+        // left origin). Scale to the display's point space, then convert
+        // to AppKit global coords (bottom-left origin).
+        let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+        let displayFrame = targetScreenCapture.displayFrame
+
+        let clampedX = max(0, min(waypoint.coordinate.x, screenshotWidth))
+        let clampedY = max(0, min(waypoint.coordinate.y, screenshotHeight))
+
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+
+        let appKitY = displayHeight - displayLocalY
+        let globalLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+
+        // BlueCursorView's .onChange(of: detectedElementScreenLocation)
+        // observer only fires when the value actually changes. When two
+        // consecutive waypoints happen to land on the exact same pixel
+        // (rare but possible) the second flight wouldn't trigger. Force
+        // the observer by clearing first when the new location matches
+        // the current one — the observer ignores nil so this is a no-op
+        // when nothing was set.
+        if detectedElementScreenLocation == globalLocation {
+            detectedElementScreenLocation = nil
+        }
+
+        // Set bubble caption BEFORE the location so the observer that
+        // drives the flight animation reads a fresh caption, not a stale
+        // one from a prior waypoint.
+        detectedElementBubbleText = waypoint.bubbleCaption ?? waypoint.elementLabel
+        detectedElementScreenLocation = globalLocation
+        detectedElementDisplayFrame = displayFrame
+        print("🎯 Element pointing: (\(Int(waypoint.coordinate.x)), \(Int(waypoint.coordinate.y))) → \"\(waypoint.elementLabel ?? "element")\" • bubble: \"\(waypoint.bubbleCaption ?? "—")\"")
+    }
+
+    // MARK: - Inline Tag Stripping
+
+    /// Removes any `[POINT:x,y:label[:screenN]]` or `[POINT:none]` tags
+    /// (and their immediately-following `[BUBBLE:caption]` partners) from
+    /// `responseText`. Used to clean inline multi-step waypoints out of
+    /// the spoken text before it's forwarded to TTS or saved to history —
+    /// the streaming parser already consumed them as cursor flights, so
+    /// they shouldn't be spoken or stored.
+    ///
+    /// Run BEFORE the four end-anchored trailing parsers (ACTION/USED/
+    /// BUBBLE/POINT) so any single-trailing waypoint that the streaming
+    /// parser handled as an inline pair is also cleaned out, leaving the
+    /// trailing parsers to find genuinely-trailing tags only.
+    static func stripAllInlinePointBubblePairs(from responseText: String) -> String {
+        let pattern = #"\s*\[POINT:(?:none|\d+\s*,\s*\d+(?::[^\]]+)?(?::screen\d+)?)\]\s*(?:\[BUBBLE:[^\]]*\])?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return responseText
+        }
+        let fullRange = NSRange(responseText.startIndex..., in: responseText)
+        return regex.stringByReplacingMatches(
+            in: responseText,
+            options: [],
+            range: fullRange,
+            withTemplate: " "
+        ).replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Action Tag Parsing
+
+    /// App-level side effect Claude can request by appending an
+    /// [ACTION:...] tag to a voice reply. Parsed off the response text and
+    /// fired by the response handler after the spoken acknowledgement has
+    /// had a chance to play.
+    enum CompanionVoiceAction: String {
+        case startNotes = "start_notes"
+        case stopNotes = "stop_notes"
+    }
+
+    /// Result of parsing an [ACTION:name] tag from Claude's response.
+    /// Stripped from the spoken text — never reaches TTS — and triggers
+    /// an app-level side effect (currently: start / stop a teach session).
+    struct ActionParseResult {
+        /// Response text with the [ACTION:...] tag removed.
+        let cleanText: String
+        /// Action Claude requested, or nil if no recognized tag was present.
+        let requestedAction: CompanionVoiceAction?
+    }
+
+    /// Parses an [ACTION:name] tag from the end of Claude's response. Run
+    /// this BEFORE the [USED:...] / [BUBBLE:...] / [POINT:...] strippers so
+    /// each of those tags is sitting at end-of-string for its own
+    /// end-anchored regex by the time it runs.
+    static func parseActionTag(from responseText: String) -> ActionParseResult {
+        let pattern = #"\[ACTION:([a-z_]+)\]\s*$"#
+
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              match.numberOfRanges >= 2,
+              let actionNameRange = Range(match.range(at: 1), in: responseText),
+              let tagRange = Range(match.range, in: responseText) else {
+            return ActionParseResult(cleanText: responseText, requestedAction: nil)
+        }
+
+        let actionName = String(responseText[actionNameRange])
+        let cleanText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ActionParseResult(
+            cleanText: cleanText,
+            requestedAction: CompanionVoiceAction(rawValue: actionName)
+        )
+    }
+
+    // MARK: - Bubble Tag Parsing
+
+    /// Result of parsing a [BUBBLE:caption] tag from Claude's response.
+    /// Stripped from the spoken text — never reaches TTS — and surfaces
+    /// in the cursor speech bubble at the pointed element.
+    struct BubbleParseResult {
+        /// Response text with the [BUBBLE:...] tag removed.
+        let cleanText: String
+        /// Caption Claude wrote for the cursor speech bubble, or nil if no
+        /// tag was present.
+        let bubbleCaption: String?
+    }
+
+    /// Parses a [BUBBLE:caption] tag from the end of Claude's response.
+    /// Run this BEFORE parsePointingCoordinates so the [POINT:...] tag is
+    /// then sitting at end-of-string for its own end-anchored regex.
+    static func parseBubbleTag(from responseText: String) -> BubbleParseResult {
+        // Caption is anything that isn't a closing bracket. Trimmed when
+        // captured so leading/trailing whitespace inside the tag is forgiven.
+        let pattern = #"\[BUBBLE:([^\]]+)\]\s*$"#
+
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)),
+              match.numberOfRanges >= 2,
+              let captionRange = Range(match.range(at: 1), in: responseText),
+              let tagRange = Range(match.range, in: responseText) else {
+            return BubbleParseResult(cleanText: responseText, bubbleCaption: nil)
+        }
+
+        let caption = String(responseText[captionRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return BubbleParseResult(
+            cleanText: cleanText,
+            bubbleCaption: caption.isEmpty ? nil : caption
+        )
     }
 
     // MARK: - Point Tag Parsing

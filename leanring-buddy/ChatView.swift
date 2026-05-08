@@ -416,6 +416,8 @@ private struct ChatMessageCard: View {
     /// snapshot (older messages from before persona-aware chat landed).
     let fallbackAssistantAvatar: PersonaAvatar
 
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
     var body: some View {
         HStack(alignment: .top, spacing: ElevenLabsBrand.Spacing.sm) {
             switch message.role {
@@ -446,6 +448,7 @@ private struct ChatMessageCard: View {
                 attachedScreenshotThumbnail(nsImage: nsImage)
             }
         }
+        .frame(maxWidth: 460, alignment: .trailing)
     }
 
     private var userCard: some View {
@@ -457,7 +460,6 @@ private struct ChatMessageCard: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, ElevenLabsBrand.Spacing.md)
             .padding(.vertical, ElevenLabsBrand.Spacing.sm)
-            .frame(maxWidth: 460, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
                     .fill(ElevenLabsBrand.Colors.inkPure)
@@ -497,7 +499,8 @@ private struct ChatMessageCard: View {
     private var assistantPersonaAvatar: some View {
         PersonaAvatarView(
             avatar: resolvedAssistantAvatar,
-            diameter: 28
+            diameter: 28,
+            uploadedImageOverridePath: resolvedAssistantUploadedImagePath
         )
         .padding(.top, 4)
     }
@@ -508,6 +511,14 @@ private struct ChatMessageCard: View {
             return wheelPersona.avatar
         }
         return fallbackAssistantAvatar
+    }
+
+    private var resolvedAssistantUploadedImagePath: String? {
+        if let personaSelection = message.personaSelectionAtCreation,
+           let wheelPersona = PersonaStore.wheelPersonaForSelection(personaSelection) {
+            return PersonaStore.uploadedProfilePicturePath(forPersonaId: wheelPersona.id)
+        }
+        return PersonaStore.uploadedProfilePicturePath(forPersonaId: PersonaStore.mePseudoPersona.id)
     }
 
     @ViewBuilder

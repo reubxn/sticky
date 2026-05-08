@@ -15,6 +15,8 @@
 import SwiftUI
 
 struct ChatHistorySidebar: View {
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
     /// The same ChatViewModel the live ChatView is bound to. The sidebar
     /// reads `currentChatHistorySessionId` from it to highlight the
     /// active row, calls `loadArchivedSession(_:)` on tap, and calls
@@ -108,7 +110,8 @@ struct ChatHistorySidebar: View {
             HStack(spacing: 8) {
                 PersonaAvatarView(
                     avatar: activePersonaBundle.avatar,
-                    diameter: 22
+                    diameter: 22,
+                    uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: activePersonaBundle.id)
                 )
                 VStack(alignment: .leading, spacing: 1) {
                     Text(activePersonaBundle.displayName)
@@ -396,7 +399,11 @@ private struct SidebarPersonaPickerRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
-                PersonaAvatarView(avatar: persona.avatar, diameter: 28)
+                PersonaAvatarView(
+                    avatar: persona.avatar,
+                    diameter: 28,
+                    uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: persona.id)
+                )
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(persona.displayName)

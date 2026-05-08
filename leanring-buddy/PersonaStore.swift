@@ -147,6 +147,17 @@ enum PersonaStore {
         case .teammate(let id): return teammate(withId: id)
         }
     }
+
+    /// Returns the absolute path to the user-uploaded profile picture
+    /// when the given persona bundle is the user's own (the local
+    /// persona or the `Me` pseudo-persona). Otherwise nil. Used by
+    /// `PersonaAvatarView` to override the bundle's static avatar with
+    /// whatever the user uploaded in the Profile tab.
+    @MainActor
+    static func uploadedProfilePicturePath(forPersonaId personaId: String) -> String? {
+        guard personaId == myPersonaId || personaId == mePseudoPersona.id else { return nil }
+        return DashboardMockAuthState.shared.profilePicturePath
+    }
 }
 
 // MARK: - Sample Persona Bundles

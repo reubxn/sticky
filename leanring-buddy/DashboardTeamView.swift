@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 
 struct DashboardTeamView: View {
     @StateObject private var dashboardNavigationState = DashboardNavigationState.shared
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
 
     @State private var pendingInviteEmailText: String = ""
     @State private var showingInviteFormCard: Bool = false
@@ -417,7 +418,11 @@ struct DashboardTeamView: View {
             dashboardNavigationState.selectedSection = .tastes
         }) {
             HStack(spacing: ElevenLabsBrand.Spacing.md) {
-                PersonaAvatarView(avatar: bundle.avatar, diameter: 48)
+                PersonaAvatarView(
+                    avatar: bundle.avatar,
+                    diameter: 48,
+                    uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: bundle.id)
+                )
 
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
@@ -447,7 +452,7 @@ struct DashboardTeamView: View {
                             .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                     }
 
-                    Text("\(bundle.taste.principles.count) principle\(bundle.taste.principles.count == 1 ? "" : "s") · \(domainsSummary(forBundle: bundle))")
+                    Text("\(bundle.taste.principles.count) note\(bundle.taste.principles.count == 1 ? "" : "s") · \(domainsSummary(forBundle: bundle))")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
                 }

@@ -98,7 +98,7 @@ struct AppliedPrinciplesChip: View {
     /// — small thing but reads as more polished in the demo screenshot.
     private var headerLabelText: String {
         let principleCount = lastAppliedPrinciples.count
-        let pluralizedNoun = principleCount == 1 ? "principle" : "principles"
+        let pluralizedNoun = principleCount == 1 ? "note" : "notes"
         return "used \(principleCount) of your \(pluralizedNoun)"
     }
 

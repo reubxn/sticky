@@ -149,7 +149,8 @@ struct CompanionPanelView: View {
             HStack(spacing: 6) {
                 PersonaAvatarView(
                     avatar: activePersonaBundle.avatar,
-                    diameter: 20
+                    diameter: 20,
+                    uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: activePersonaBundle.id)
                 )
                 Text(activePersonaBundle.displayName)
                     .font(.system(size: 12, weight: .semibold))
@@ -210,6 +211,13 @@ struct CompanionPanelView: View {
         }) {
             HStack(spacing: 8) {
                 StickyOrbGlyph(size: 18, color: ElevenLabsBrand.Colors.inkPure)
+                    .offset(y: isHoveringOpenAppRow ? -4 : 0)
+                    .animation(
+                        isHoveringOpenAppRow
+                            ? .spring(response: 0.32, dampingFraction: 0.42)
+                            : .spring(response: 0.28, dampingFraction: 0.7),
+                        value: isHoveringOpenAppRow
+                    )
 
                 Text("Sticky")
                     .font(.system(size: 16, weight: .bold))
@@ -430,7 +438,15 @@ struct CompanionPanelView: View {
     private var primaryActionRow: some View {
         switch companionManager.teachSessionState {
         case .idle:
-            teachSessionStartButton
+            VStack(spacing: 6) {
+                teachSessionStartButton
+                Text("Narrate a task while you do it. Sticky turns it into notes your team can borrow.")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, ElevenLabsBrand.Spacing.sm)
+            }
         case .recording:
             teachSessionRecordingButton
         case .analyzing:
@@ -446,7 +462,7 @@ struct CompanionPanelView: View {
                 Circle()
                     .fill(ElevenLabsBrand.Colors.tasteAccent)
                     .frame(width: 8, height: 8)
-                Text("Start Teach Session")
+                Text("Show & tell")
             }
         }
         .elevenLabsPrimaryButtonStyle()
@@ -507,14 +523,14 @@ struct CompanionPanelView: View {
     /// session starts.
     private var teachSessionSavedSummary: some View {
         let savedCount = companionManager.lastTeachSessionSavedPrincipleCount
-        let principleNoun = savedCount == 1 ? "principle" : "principles"
+        let noteNoun = savedCount == 1 ? "note" : "notes"
 
         return HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(ElevenLabsBrand.Colors.ink)
 
-            Text("Saved \(savedCount) new \(principleNoun)")
+            Text("Saved \(savedCount) new \(noteNoun)")
                 .font(ElevenLabsBrand.Typography.bodyStrong)
                 .foregroundColor(ElevenLabsBrand.Colors.ink)
 
@@ -812,7 +828,11 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var miniSignedInAvatar: some View {
         if let localBundle = PersonaStore.myOwnBundle {
-            PersonaAvatarView(avatar: localBundle.avatar, diameter: 16)
+            PersonaAvatarView(
+                avatar: localBundle.avatar,
+                diameter: 16,
+                uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: localBundle.id)
+            )
         } else {
             Circle()
                 .fill(ElevenLabsBrand.Colors.gradientSky)
@@ -1002,7 +1022,11 @@ private struct PersonaPickerRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
-                PersonaAvatarView(avatar: persona.avatar, diameter: 28)
+                PersonaAvatarView(
+                    avatar: persona.avatar,
+                    diameter: 28,
+                    uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: persona.id)
+                )
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(persona.displayName)
