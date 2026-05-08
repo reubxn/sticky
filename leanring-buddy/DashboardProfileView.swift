@@ -10,7 +10,9 @@
 //  mini panel's voice picker already does.
 //
 
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DashboardProfileView: View {
     /// Optional shared CompanionManager. Threaded in from
@@ -47,6 +49,12 @@ struct DashboardProfileView: View {
     @State private var draftVoiceId: String?
     @State private var customVoiceIdInput: String = ""
 
+    /// Bumped after a profile picture is saved or removed so the avatar
+    /// preview re-reads the file from disk instead of caching the old
+    /// NSImage. Without this the AsyncImage-style cache holds onto the
+    /// previous bytes after an in-place replacement.
+    @State private var profilePictureReloadCounter: Int = 0
+
     var body: some View {
         DashboardContentScrollContainer {
             DashboardSectionHeader(
@@ -73,6 +81,9 @@ struct DashboardProfileView: View {
             ElevenLabsEyebrow("IDENTITY")
 
             VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
+                fieldLabel("Profile picture")
+                profilePictureRow
+
                 fieldLabel("Display name")
                 TextField("Your name", text: $draftDisplayName)
                     .textFieldStyle(.plain)
@@ -150,6 +161,145 @@ struct DashboardProfileView: View {
             .font(.system(size: 9, weight: .bold))
             .tracking(0.4)
             .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+    }
+
+    // MARK: - Profile picture row
+
+    private var profilePictureRow: some View {
+        HStack(spacing: ElevenLabsBrand.Spacing.md) {
+            profilePictureAvatar
+                .id(profilePictureReloadCounter)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Button(action: pickAndSaveProfilePicture) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11, weight: .bold))
+                            Text(dashboardMockAuthState.profilePicturePath == nil ? "Upload" : "Change")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                    }
+                    .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+
+                    if dashboardMockAuthState.profilePicturePath != nil {
+                        Button(action: removeProfilePicture) {
+                            Text("Remove")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
+                }
+
+                Text("PNG or JPEG. Square images look best.")
+                    .font(.system(size: 11))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+            }
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var profilePictureAvatar: some View {
+        if let path = dashboardMockAuthState.profilePicturePath,
+           let nsImage = NSImage(contentsOfFile: path) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 56, height: 56)
+                .clipShape(Circle())
+                .overlay(
+                    Circle().stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                )
+        } else {
+            ZStack {
+                Circle()
+                    .fill(ElevenLabsBrand.Colors.paperRecessed)
+                    .overlay(
+                        Circle().stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
+                    )
+                Text(initialsFromDisplayName(draftDisplayName))
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+            .frame(width: 56, height: 56)
+        }
+    }
+
+    private func initialsFromDisplayName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "?" }
+        let parts = trimmed.split(separator: " ")
+        if parts.count >= 2,
+           let first = parts.first?.first,
+           let last = parts.last?.first {
+            return String([first, last]).uppercased()
+        }
+        return String(trimmed.prefix(1)).uppercased()
+    }
+
+    private func pickAndSaveProfilePicture() {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.allowedContentTypes = [.png, .jpeg, .image]
+        openPanel.prompt = "Choose"
+        openPanel.message = "Pick a profile picture"
+
+        guard openPanel.runModal() == .OK, let sourceURL = openPanel.url else { return }
+
+        do {
+            let savedPath = try saveProfilePictureFile(sourceURL: sourceURL)
+            dashboardMockAuthState.profilePicturePath = savedPath
+            profilePictureReloadCounter += 1
+        } catch {
+            NSLog("Failed to save profile picture: \(error)")
+        }
+    }
+
+    private func removeProfilePicture() {
+        if let existingPath = dashboardMockAuthState.profilePicturePath {
+            try? FileManager.default.removeItem(atPath: existingPath)
+        }
+        dashboardMockAuthState.profilePicturePath = nil
+        profilePictureReloadCounter += 1
+    }
+
+    /// Copies the picked image into Application Support so the file
+    /// survives the original being moved/deleted, and so we own a
+    /// stable path. Overwrites any existing profile picture on disk.
+    private func saveProfilePictureFile(sourceURL: URL) throws -> String {
+        let fileManager = FileManager.default
+        guard let applicationSupportDirectoryURL = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw NSError(domain: "DashboardProfileView", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Could not locate Application Support directory."
+            ])
+        }
+
+        let directoryURL = applicationSupportDirectoryURL
+            .appendingPathComponent("com.learning-buddy.clicky", isDirectory: true)
+        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let fileExtension = sourceURL.pathExtension.isEmpty ? "png" : sourceURL.pathExtension
+        let destinationURL = directoryURL.appendingPathComponent("profile-picture.\(fileExtension)", isDirectory: false)
+
+        // Clear any old profile picture (any extension) before writing
+        // the new one so we don't leave stale files behind.
+        if let existingFiles = try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil) {
+            for fileURL in existingFiles where fileURL.lastPathComponent.hasPrefix("profile-picture.") {
+                try? fileManager.removeItem(at: fileURL)
+            }
+        }
+
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        return destinationURL.path
     }
 
     // MARK: - Voice card
@@ -312,7 +462,7 @@ struct DashboardProfileView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(ElevenLabsBrand.Colors.ink)
 
-                Text("Writes a markdown file with your soul + every approved principle, grouped by domain. The file is named TASTE.md so it drops cleanly into a personas folder.")
+                Text("Writes a markdown file with your soul + every approved note, grouped by domain. The file is named TASTE.md so it drops cleanly into a personas folder.")
                     .font(.system(size: 12))
                     .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)

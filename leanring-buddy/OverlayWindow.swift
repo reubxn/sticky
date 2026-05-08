@@ -88,6 +88,7 @@ struct BlueCursorView: View {
     let screenFrame: CGRect
     let isFirstAppearance: Bool
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
 
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool
@@ -467,7 +468,8 @@ struct BlueCursorView: View {
             // comes from buddyFlightScale (grows mid-arc, shrinks on landing).
             MysticalOrbView(
                 bodyColor: companionManager.stickyVoiceColor,
-                personaAvatar: companionManager.activePersonaAvatar
+                personaAvatar: companionManager.activePersonaAvatar,
+                personaUploadedImagePath: companionManager.activePersonaUploadedImagePath
             )
                 .shadow(color: companionManager.stickyVoiceColor.opacity(0.6), radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
@@ -1580,6 +1582,11 @@ private struct MysticalOrbView: View {
     /// for the active teammate persona. Nil for the default Sticky look.
     let personaAvatar: PersonaAvatar?
 
+    /// Optional absolute path to a user-uploaded profile picture. When
+    /// set, takes precedence over `personaAvatar` so the cursor reflects
+    /// what the user uploaded in the Profile tab.
+    var personaUploadedImagePath: String? = nil
+
     @State private var pulseScale: CGFloat = 1.0
 
     /// Diameter of the orb body / avatar. Slightly larger when wearing
@@ -1610,6 +1617,7 @@ private struct MysticalOrbView: View {
                 PersonaAvatarView(
                     avatar: personaAvatar,
                     diameter: bodyDiameter,
+                    uploadedImageOverridePath: personaUploadedImagePath,
                     showsRing: true,
                     ringColor: Color.white.opacity(0.85),
                     ringLineWidth: 1.5

@@ -340,7 +340,7 @@ struct ReviewCardStack: View {
     /// and advances the queue.
     private var customAnswerComposer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("phrase the principle in your own words")
+            Text("phrase the note in your own words")
                 .font(.system(size: 9, weight: .semibold))
                 .tracking(2.0)
                 .textCase(.uppercase)

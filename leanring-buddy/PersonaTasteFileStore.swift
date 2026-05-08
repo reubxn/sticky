@@ -333,8 +333,17 @@ enum PersonaTasteFileStore {
         let voiceId = metadata["voice"] ?? ""
         let accentHex = metadata["accent"] ?? "#1F6FEB"
         let avatarFilename = metadata["avatar"]
-        let resolvedAvatar: PersonaAvatar = avatarFilename.map { PersonaAvatar.imageFile(filename: $0) }
-            ?? .systemSymbol(name: "person.fill", hexColor: accentHex)
+        // If the TASTE.md names an avatar file but that file isn't actually
+        // present (bundled photos were intentionally excluded from this repo),
+        // fall back to initials over the accent color so the picker stays
+        // legible instead of showing an empty pale circle.
+        let resolvedAvatar: PersonaAvatar = {
+            if let filename = avatarFilename,
+               PersonaImageLoader.bundledOrDiskImage(forFilename: filename) != nil {
+                return .imageFile(filename: filename)
+            }
+            return .initials(text: Self.initialsForFallback(displayName: displayName), hexColor: accentHex)
+        }()
 
         // ---- Soul section (free prose between '## Soul' and next H2) ------
         let soulProse = extractH2Section(named: "Soul", from: allLines)
@@ -363,6 +372,20 @@ enum PersonaTasteFileStore {
     /// ("Magdalena", "Co-Founder · Middle Bridge"). Tolerates both em-
     /// dash (—) and en-dash (–) and a plain hyphen as separators since
     /// the file is hand-edited and the user might type any of them.
+    /// Picks 1–2 letters to render inside the circular avatar when no
+    /// real photo is available. Uses the first letter of the first two
+    /// whitespace-separated tokens in the display name (so "Magdalena
+    /// Brzezińska" → "MB"); falls back to the first character alone for
+    /// single-word names, and a neutral "?" for empty input.
+    private static func initialsForFallback(displayName: String) -> String {
+        let tokens = displayName
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { String($0) }
+        let firstLetters = tokens.prefix(2).compactMap { $0.first.map { String($0) } }
+        let combined = firstLetters.joined().uppercased()
+        return combined.isEmpty ? "?" : combined
+    }
+
     private static func parseDisplayNameAndRole(fromH1 line: String) -> (displayName: String, role: String?) {
         let withoutHashes = line
             .replacingOccurrences(of: "# ", with: "")

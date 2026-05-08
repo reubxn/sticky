@@ -19,6 +19,8 @@
 import SwiftUI
 
 struct PersonaWheelView: View {
+    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+
     /// All personas to render around the wheel — usually
     /// `PersonaStore.allWheelPersonas` (Me, Team, then teammates).
     let personas: [PersonaBundle]
@@ -95,6 +97,7 @@ struct PersonaWheelView: View {
             PersonaAvatarView(
                 avatar: persona.avatar,
                 diameter: Self.spokeDiameter,
+                uploadedImageOverridePath: PersonaStore.uploadedProfilePicturePath(forPersonaId: persona.id),
                 showsRing: isHovered || isActive,
                 ringColor: isHovered ? Color.white : Color.white.opacity(0.45),
                 ringLineWidth: isHovered ? 3.0 : 1.5

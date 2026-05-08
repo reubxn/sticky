@@ -108,7 +108,7 @@ struct MiniPanelActivityFeed: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
 
-            Text("Use teach mode or open chat to start filling this in.")
+            Text("Try Show & tell or open chat to start filling this in.")
                 .font(.system(size: 11))
                 .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                 .lineLimit(2)
