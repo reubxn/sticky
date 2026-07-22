@@ -166,3 +166,40 @@ callbacks, unrelated URL rejection, restart-required after rewriting
 `secrets.plist`, account switching, publisher-driven sign-out and retry, and
 that every legacy product surface remains inaccessible after authentication.
 Restart the app before validating newly written runtime values.
+
+## Onboarding Worker request tickets
+
+`requestTickets:issueOnboarding` is the only public ticket function in PR 4A.
+It authenticates through Convex, accepts only a persona ID, one of the three
+onboarding scopes, the lowercase SHA-256 digest of the exact future Worker
+request body, and that body's byte count. It generates 32 random bytes in the
+action, returns the base64url bearer once, and persists only its digest through
+an internal mutation. It never accepts a profile, workspace, membership, role,
+model, system prompt, voice, output limit, or provider setting from a client.
+
+Internal issuance and consumption revalidate the canonical active profile,
+workspace, membership, persona ownership, and incomplete onboarding state.
+Tickets are short-lived, single-use, scope- and body-bound, and subject to
+bounded indexed outstanding, short-window, daily-request, and daily-payload
+limits. Consumption returns versioned server policy for the provider request.
+Consume and completion validate that the ticket's single audit row exactly
+matches its denormalized actor, workspace, membership, persona, scope, policy
+version, and issuance time before writing. A mismatch fails with
+`DATA_INTEGRITY` and the transaction rolls back.
+
+Three hourly cron triggers run separate bounded cleanup mutations. Issued
+tickets remain until at least 24 hours after their short TTL expires, preserving
+the full daily quota window with a conservative TTL margin. Consumed ticket
+tombstones remain for at least 24 hours after consumption. Sanitized audits
+remain for 30 days independently of ticket deletion. Each cleanup reads through
+its exact retention index, deletes at most 50 rows, and schedules a zero-delay
+continuation with the original cutoff only when a full batch was found. Audit
+metadata contains no ticket plaintext or digest, prompt, answer, transcript,
+TTS text or audio, raw IP, or user-agent.
+
+PR 4A intentionally defines internal consume and completion mutations only.
+There is no public Convex HTTP endpoint for the Worker. PR 4B must configure
+and verify timestamped Worker-to-Convex HMAC service authentication before
+adding HTTP consume or completion. Do not expose the internal mutation
+contracts through a public action or accept a Clerk client token as Worker
+service authentication.

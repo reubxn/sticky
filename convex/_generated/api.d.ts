@@ -10,9 +10,14 @@
 
 import type * as accounts from "../accounts.js";
 import type * as authorization from "../authorization.js";
+import type * as crons from "../crons.js";
 import type * as health from "../health.js";
 import type * as identity from "../identity.js";
+import type * as requestTickets from "../requestTickets.js";
 import type * as validators from "../validators.js";
+import type * as workerRequestPolicy from "../workerRequestPolicy.js";
+import type * as workerRequestTicketCleanup from "../workerRequestTicketCleanup.js";
+import type * as workerRequestTicketMutations from "../workerRequestTicketMutations.js";
 
 import type {
   ApiFromModules,
@@ -23,9 +28,14 @@ import type {
 declare const fullApi: ApiFromModules<{
   accounts: typeof accounts;
   authorization: typeof authorization;
+  crons: typeof crons;
   health: typeof health;
   identity: typeof identity;
+  requestTickets: typeof requestTickets;
   validators: typeof validators;
+  workerRequestPolicy: typeof workerRequestPolicy;
+  workerRequestTicketCleanup: typeof workerRequestTicketCleanup;
+  workerRequestTicketMutations: typeof workerRequestTicketMutations;
 }>;
 
 /**

@@ -3,6 +3,8 @@ import { defineSchema, defineTable } from "convex/server";
 import {
   personaValidator,
   profileValidator,
+  workerRequestAuditValidator,
+  workerRequestTicketValidator,
   workspaceMemberValidator,
   workspaceValidator,
 } from "./validators";
@@ -39,4 +41,31 @@ export default defineSchema({
       "status",
     ])
     .index("by_workspaceId_and_status", ["workspaceId", "status"]),
+
+  workerRequestTickets: defineTable(workerRequestTicketValidator)
+    .index("by_ticketDigest", ["ticketDigest"])
+    .index("by_actorProfileId_and_scope_and_issuedAt", [
+      "actorProfileId",
+      "scope",
+      "issuedAt",
+    ])
+    .index("by_actorProfileId_and_scope_and_status_and_expiresAt", [
+      "actorProfileId",
+      "scope",
+      "status",
+      "expiresAt",
+    ])
+    .index("by_status_and_expiresAt", ["status", "expiresAt"])
+    .index("by_status_and_purgeEligibleAt", [
+      "status",
+      "purgeEligibleAt",
+    ]),
+
+  workerRequestAudits: defineTable(workerRequestAuditValidator)
+    .index("by_ticketId", ["ticketId"])
+    .index("by_actorProfileId_and_issuedAt", [
+      "actorProfileId",
+      "issuedAt",
+    ])
+    .index("by_retentionExpiresAt", ["retentionExpiresAt"]),
 });
