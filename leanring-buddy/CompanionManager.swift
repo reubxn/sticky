@@ -22,6 +22,8 @@ enum CompanionVoiceState {
 
 @MainActor
 final class CompanionManager: ObservableObject {
+    @Published private(set) var isRunning = false
+    @Published private(set) var lifecycleGeneration: UInt64 = 0
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -430,17 +432,21 @@ final class CompanionManager: ObservableObject {
     /// Does NOT change the persisted `selectedVoiceID` — selection is a
     /// separate action.
     func previewVoice(_ voiceID: String?) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
+        let generation = lifecycleGeneration
         voicePreviewTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
 
         voicePreviewTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.isLifecycleActive(generation) else { return }
             self.previewingVoiceID = voiceID ?? Self.defaultVoicePreviewSentinel
             do {
                 let clipURL = try await self.voicePreviewCache.cachedOrDownloadedClipURL(
                     forVoiceID: voiceID,
                     using: self.elevenLabsTTSClient
                 )
+                guard self.isLifecycleActive(generation) else { return }
                 try Task.checkCancellation()
                 let audioData = try Data(contentsOf: clipURL)
                 try Task.checkCancellation()
@@ -451,12 +457,13 @@ final class CompanionManager: ObservableObject {
                 // icon visible for the full duration of the clip.
                 while self.elevenLabsTTSClient.isPlaying {
                     try? await Task.sleep(nanoseconds: 150_000_000)
+                    guard self.isLifecycleActive(generation) else { return }
                     if Task.isCancelled { return }
                 }
             } catch {
                 print("⚠️ Voice preview error: \(error)")
             }
-            if !Task.isCancelled {
+            if !Task.isCancelled, self.isLifecycleActive(generation) {
                 self.previewingVoiceID = nil
             }
         }
@@ -477,7 +484,9 @@ final class CompanionManager: ObservableObject {
     /// runs once. Failures on individual voices are logged but don't
     /// abort the rest of the prefetch.
     func prefetchAllVoicePreviewsIfNeeded() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard voicePrefetchTask == nil else { return }
+        let generation = lifecycleGeneration
 
         // Build the full list of voice IDs we want cached: the bundled
         // default (nil) first so it's ready before any specific override,
@@ -490,6 +499,7 @@ final class CompanionManager: ObservableObject {
                 voiceIDs: voiceIDs,
                 using: self.elevenLabsTTSClient
             )
+            guard self.isLifecycleActive(generation) else { return }
         }
     }
 
@@ -514,6 +524,7 @@ final class CompanionManager: ObservableObject {
     }()
 
     func setTasteScope(_ newTasteScope: TasteScope) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         tasteScope = newTasteScope
         UserDefaults.standard.set(newTasteScope.rawValue, forKey: "tasteScope")
     }
@@ -602,6 +613,7 @@ final class CompanionManager: ObservableObject {
     /// tasteScope alone — the teammate's bundle replaces both scope and
     /// taste anyway.
     func setPersonaSelection(_ newSelection: PersonaSelection) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         let isActuallyChangingPersona = (newSelection != personaSelection)
 
         personaSelection = newSelection
@@ -744,6 +756,7 @@ final class CompanionManager: ObservableObject {
     /// commit it as the new persona selection (or no-op if the user
     /// released in the dead zone).
     private func handlePersonaWheelHotkeyTransition(_ transition: PersonaWheelHotkeyMonitor.HotkeyTransition) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         switch transition {
         case .pressed:
             // Don't summon the wheel during onboarding video — the user
@@ -805,6 +818,10 @@ final class CompanionManager: ObservableObject {
     /// callback never fires after the user clicks Stop. Protects against
     /// the AssemblyAI websocket dying mid-session and leaving the UI hung.
     private var teachSessionTranscriptWatchdog: Task<Void, Never>?
+    private var teachSessionStartupTask: Task<Void, Never>?
+    private var delayedVoiceActionTask: Task<Void, Never>?
+    private var teachSessionAnalysisTask: Task<Void, Never>?
+    private var screenContentPermissionTask: Task<Void, Never>?
 
     /// Most recent teach session result, for debugging.
     @Published private(set) var lastTeachSessionResult: TeachSessionResult?
@@ -854,10 +871,13 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var teachAnalyzingStatus: String?
 
     func setClickyCursorEnabled(_ enabled: Bool) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         isClickyCursorEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
+        appliedPrinciplesChipHideTask?.cancel()
+        appliedPrinciplesChipHideTask = nil
 
         if enabled {
             overlayWindowManager.hasShownOverlayBefore = true
@@ -877,6 +897,11 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else { return }
+        guard !isRunning else { return }
+        lifecycleGeneration &+= 1
+        isRunning = true
+
         refreshAllPermissions()
         print("🔑 Sticky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
@@ -911,6 +936,7 @@ final class CompanionManager: ObservableObject {
     /// Triggers the onboarding sequence — dismisses the panel and restarts
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         // Post notification so the panel manager can dismiss the panel
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
@@ -931,6 +957,7 @@ final class CompanionManager: ObservableObject {
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
@@ -1026,7 +1053,9 @@ final class CompanionManager: ObservableObject {
     /// starts a periodic screenshot timer, and starts the elapsed-time clock.
     /// Idempotent — does nothing if a session is already running.
     func startTeachSession() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard teachSessionState == .idle else { return }
+        let generation = lifecycleGeneration
 
         // Don't tangle teach sessions with an in-flight push-to-talk response.
         // Cancel any ongoing AI work so the mic is free.
@@ -1046,17 +1075,12 @@ final class CompanionManager: ObservableObject {
         pendingAmbiguousMoments.removeAll()
         pendingReviewFrames.removeAll()
 
-        // Capture an initial frame at t=0 immediately, then on every tick.
-        Task { @MainActor [weak self] in
-            await self?.captureTeachSessionFrame()
-        }
-
         teachSessionScreenshotTimer = Timer.scheduledTimer(
             withTimeInterval: Self.teachSessionScreenshotIntervalSeconds,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.captureTeachSessionFrame()
+                await self?.captureTeachSessionFrame(generation: generation)
             }
         }
 
@@ -1069,12 +1093,27 @@ final class CompanionManager: ObservableObject {
             }
         }
 
-        Task { [weak self] in
-            await self?.buddyDictationManager.startTeachSession { [weak self] finalTranscript in
+        teachSessionStartupTask?.cancel()
+        teachSessionStartupTask = Task { [weak self] in
+            guard let self else { return }
+            await self.captureTeachSessionFrame(generation: generation)
+            guard self.isLifecycleActive(generation) else { return }
+
+            await self.buddyDictationManager.startTeachSession { [weak self] finalTranscript in
                 Task { @MainActor [weak self] in
-                    self?.handleTeachSessionFinalTranscript(finalTranscript)
+                    guard let self else { return }
+                    guard self.isLifecycleActive(generation) else { return }
+                    self.handleTeachSessionFinalTranscript(
+                        finalTranscript,
+                        generation: generation
+                    )
                 }
             }
+            guard self.isLifecycleActive(generation) else {
+                self.buddyDictationManager.cancelCurrentDictation()
+                return
+            }
+            self.teachSessionStartupTask = nil
         }
 
         print("🎓 Teach session started")
@@ -1084,7 +1123,9 @@ final class CompanionManager: ObservableObject {
     /// transcript and frames we collected, and arms a watchdog so the UI
     /// resets even if the dictation manager never delivers a transcript.
     func stopTeachSession() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard teachSessionState == .recording else { return }
+        let generation = lifecycleGeneration
 
         teachSessionScreenshotTimer?.invalidate()
         teachSessionScreenshotTimer = nil
@@ -1101,6 +1142,7 @@ final class CompanionManager: ObservableObject {
             )
             guard !Task.isCancelled else { return }
             guard let self else { return }
+            guard self.isLifecycleActive(generation) else { return }
             guard self.teachSessionState == .analyzing else { return }
             print("⚠️ Teach session: transcript watchdog fired — resetting state")
             self.resetTeachSessionState()
@@ -1124,12 +1166,16 @@ final class CompanionManager: ObservableObject {
     /// it. Without this delay, `startTeachSession` would call
     /// `stopPlayback()` and cut Claude off mid-word.
     private func scheduleVoiceActionAfterAcknowledgement(_ requestedAction: CompanionVoiceAction) {
-        Task { @MainActor [weak self] in
+        delayedVoiceActionTask?.cancel()
+        let generation = lifecycleGeneration
+        delayedVoiceActionTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.isLifecycleActive(generation) else { return }
 
             let waitDeadline = Date().addingTimeInterval(Self.voiceActionAcknowledgementMaxWaitSeconds)
             while self.elevenLabsTTSClient.isProducingAudio && Date() < waitDeadline {
                 try? await Task.sleep(for: .seconds(Self.voiceActionAcknowledgementPollIntervalSeconds))
+                guard self.isLifecycleActive(generation) else { return }
             }
 
             switch requestedAction {
@@ -1140,6 +1186,7 @@ final class CompanionManager: ObservableObject {
                 print("🎙️ Voice action: stop_notes")
                 self.stopTeachSession()
             }
+            self.delayedVoiceActionTask = nil
         }
     }
 
@@ -1158,12 +1205,15 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func captureTeachSessionFrame() async {
+    private func captureTeachSessionFrame(generation: UInt64) async {
+        guard isLifecycleActive(generation) else { return }
         guard teachSessionState == .recording else { return }
         guard let startedAt = teachSessionStartedAt else { return }
 
         do {
             let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+            guard isLifecycleActive(generation) else { return }
+            guard teachSessionState == .recording else { return }
             // Prefer the cursor screen so the frame timeline tracks the user's
             // active workspace. Fall back to the first screen if no cursor
             // screen was identified for some reason.
@@ -1181,7 +1231,11 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func handleTeachSessionFinalTranscript(_ finalTranscript: String) {
+    private func handleTeachSessionFinalTranscript(
+        _ finalTranscript: String,
+        generation: UInt64
+    ) {
+        guard isLifecycleActive(generation) else { return }
         teachSessionTranscriptWatchdog?.cancel()
         teachSessionTranscriptWatchdog = nil
 
@@ -1214,27 +1268,23 @@ final class CompanionManager: ObservableObject {
         // longer "Asking Claude…" stage takes over.
         teachAnalyzingStatus = "Reviewing \(frameCount) frame\(frameCount == 1 ? "" : "s") from your session…"
 
-        Task { @MainActor [weak self] in
+        teachSessionAnalysisTask?.cancel()
+        teachSessionAnalysisTask = Task { @MainActor [weak self] in
             do {
-                // Switch to the longer-running stage on the next runloop tick
-                // so the first message has a chance to render. Most of the
-                // analyzing wall-clock time is spent inside this call waiting
-                // on Claude's vision response, so this message dominates.
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .milliseconds(400))
-                    guard let self else { return }
-                    guard self.teachSessionState == .analyzing else { return }
-                    self.teachAnalyzingStatus = "Looking for what stood out…"
-                }
+                guard let self else { return }
+                guard self.isLifecycleActive(generation) else { return }
+                self.teachAnalyzingStatus = "Looking for what stood out…"
 
                 let analysis = try await SessionAnalyzer.analyzeTeachSession(
                     transcript: trimmedTranscript,
                     frames: capturedFrames,
                     claudeAPI: analyzerClaudeAPI
                 )
+                guard self.isLifecycleActive(generation) else { return }
+                guard self.teachSessionState == .analyzing else { return }
 
-                self?.teachAnalyzingStatus = "Pulling out notes…"
-                self?.lastTeachSessionResult = analysis.result
+                self.teachAnalyzingStatus = "Pulling out notes…"
+                self.lastTeachSessionResult = analysis.result
                 Self.printTeachSessionResultForDebugging(analysis.result)
 
                 // Don't auto-save anything yet — surface the result to the
@@ -1242,18 +1292,22 @@ final class CompanionManager: ObservableObject {
                 // principles or discard the whole session before any disk
                 // write happens. Save fires confirmTeachSessionSave; discard
                 // fires discardTeachSessionResult.
-                self?.lastTeachSessionSavedPrincipleCount = 0
-                self?.pendingAmbiguousMoments.removeAll()
-                self?.pendingReviewFrames.removeAll()
-                self?.pendingTeachSessionResult = PendingTeachSessionReview(
+                self.lastTeachSessionSavedPrincipleCount = 0
+                self.pendingAmbiguousMoments.removeAll()
+                self.pendingReviewFrames.removeAll()
+                self.pendingTeachSessionResult = PendingTeachSessionReview(
                     result: analysis.result,
                     selectedFrames: analysis.selectedFrames
                 )
 
-                self?.resetTeachSessionState()
+                self.resetTeachSessionState()
+                self.teachSessionAnalysisTask = nil
             } catch {
                 print("⚠️ Teach session analysis failed: \(error)")
-                self?.resetTeachSessionState()
+                guard let self else { return }
+                guard self.isLifecycleActive(generation) else { return }
+                self.resetTeachSessionState()
+                self.teachSessionAnalysisTask = nil
             }
         }
     }
@@ -1265,6 +1319,7 @@ final class CompanionManager: ObservableObject {
     /// then promotes any ambiguous moments into the existing review queue
     /// so the MCQ cards take over. Clears the pending result either way.
     func confirmTeachSessionSave(selectedConfidentPrincipleIds: Set<String>) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard let pendingReview = pendingTeachSessionResult else { return }
 
         let principlesToPersist = pendingReview.result.confident.filter { candidatePrinciple in
@@ -1321,6 +1376,7 @@ final class CompanionManager: ObservableObject {
     /// touching disk. Also clears the saved-toast counter so a stale
     /// "Saved 3" toast from an earlier session doesn't reappear.
     func discardTeachSessionResult() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard let discardedReview = pendingTeachSessionResult else { return }
         print("🧠 Teach session: discarded by user — nothing saved")
         // Log the discarded session in the activity archive so the
@@ -1367,6 +1423,7 @@ final class CompanionManager: ObservableObject {
     /// moment, persists it to the central mind, and advances the queue. If
     /// the queue is now empty, the panel will collapse the review UI.
     func approveOption(optionIndex: Int) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard let currentMoment = pendingAmbiguousMoments.first else { return }
         guard optionIndex >= 0 else { return }
         guard optionIndex < currentMoment.principleByOption.count else { return }
@@ -1408,6 +1465,7 @@ final class CompanionManager: ObservableObject {
     /// candidate (the "Something else" stub) so domain bookkeeping stays
     /// consistent — falls back to `.general` if no candidate is available.
     func approveCustomAnswer(_ rawAnswer: String) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         let trimmedAnswer = rawAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAnswer.isEmpty else { return }
         guard let currentMoment = pendingAmbiguousMoments.first else { return }
@@ -1451,6 +1509,7 @@ final class CompanionManager: ObservableObject {
     /// Used when the user doesn't want any of the suggested options and
     /// doesn't feel like typing a custom one.
     func skipCurrentReviewMoment() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard let currentMoment = pendingAmbiguousMoments.first else { return }
         print("🧠 Review: skipped a moment")
         // Skipped moments push onto the undo stack with a nil principle id —
@@ -1465,6 +1524,7 @@ final class CompanionManager: ObservableObject {
     /// from the on-disk taste profile so the round-trip is clean. No-op if
     /// the stack is empty (e.g. the user just opened the review).
     func unadvanceReviewQueue() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard let mostRecentlyAdvanced = recentlyAdvancedMoments.popLast() else { return }
 
         if let principleIdToDelete = mostRecentlyAdvanced.savedPrincipleId {
@@ -1497,6 +1557,7 @@ final class CompanionManager: ObservableObject {
     /// Ends the review entirely, dropping any remaining ambiguous moments.
     /// Anything already approved before this is kept.
     func endReview() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         let remainingMomentCount = pendingAmbiguousMoments.count
         if remainingMomentCount > 0 {
             print("🧠 Review: ended with \(remainingMomentCount) moment(s) remaining")
@@ -1524,6 +1585,7 @@ final class CompanionManager: ObservableObject {
     /// queue. Returns nil if the index is out of range — the review card
     /// view should handle that gracefully (no thumbnail).
     func reviewFrameData(at frameIndex: Int) -> Data? {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return nil }
         guard frameIndex >= 0 && frameIndex < pendingReviewFrames.count else { return nil }
         return pendingReviewFrames[frameIndex].data
     }
@@ -1560,11 +1622,21 @@ final class CompanionManager: ObservableObject {
     }
 
     func stop() {
+        lifecycleGeneration &+= 1
+        isRunning = false
         globalPushToTalkShortcutMonitor.stop()
         personaWheelHotkeyMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
+        elevenLabsTTSClient.stopPlayback()
+        stopVoicePreview()
         overlayWindowManager.hideOverlay()
+        isOverlayVisible = false
         transientHideTask?.cancel()
+        transientHideTask = nil
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        preflightScreenCaptureTask?.cancel()
+        preflightScreenCaptureTask = nil
 
         // Tear down any in-progress teach session so its timers don't keep
         // firing after the app shuts down.
@@ -1574,19 +1646,59 @@ final class CompanionManager: ObservableObject {
         teachSessionElapsedTimer = nil
         teachSessionTranscriptWatchdog?.cancel()
         teachSessionTranscriptWatchdog = nil
+        teachSessionStartupTask?.cancel()
+        teachSessionStartupTask = nil
+        delayedVoiceActionTask?.cancel()
+        delayedVoiceActionTask = nil
+        teachSessionAnalysisTask?.cancel()
+        teachSessionAnalysisTask = nil
+        screenContentPermissionTask?.cancel()
+        screenContentPermissionTask = nil
+        isRequestingScreenContent = false
+        resetTeachSessionState()
+        pendingTeachSessionResult = nil
+        pendingAmbiguousMoments.removeAll()
+        pendingReviewFrames.removeAll()
+        recentlyAdvancedMoments.removeAll()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        conversationHistory.removeAll()
+        hasVoiceConversationHistory = false
+        voicePrefetchTask?.cancel()
+        voicePrefetchTask = nil
         shortcutTransitionCancellable?.cancel()
+        shortcutTransitionCancellable = nil
         personaWheelHotkeyCancellable?.cancel()
+        personaWheelHotkeyCancellable = nil
         voiceStateCancellable?.cancel()
+        voiceStateCancellable = nil
         audioPowerCancellable?.cancel()
+        audioPowerCancellable = nil
         ttsPowerCancellable?.cancel()
+        ttsPowerCancellable = nil
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        stopOnboardingMusic()
+        voiceState = .idle
+        isPersonaWheelVisible = false
+        hoveredWheelPersonaId = nil
+        personaWheelCenterScreenLocation = nil
+        clearDetectedElementLocation()
+    }
+
+    private func isLifecycleActive(_ generation: UInt64) -> Bool {
+        isRunning
+            && lifecycleGeneration == generation
+            && AuthenticationManager.shared.canAccessProductionFeatures
     }
 
     func refreshAllPermissions() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else {
+            globalPushToTalkShortcutMonitor.stop()
+            personaWheelHotkeyMonitor.stop()
+            return
+        }
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
@@ -1627,13 +1739,17 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         guard !isRequestingScreenContent else { return }
+        let generation = lifecycleGeneration
         isRequestingScreenContent = true
-        Task {
+        screenContentPermissionTask?.cancel()
+        screenContentPermissionTask = Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard self.isLifecycleActive(generation) else { return }
                 guard let display = content.displays.first else {
-                    await MainActor.run { isRequestingScreenContent = false }
+                    isRequestingScreenContent = false
                     return
                 }
                 let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -1641,26 +1757,28 @@ final class CompanionManager: ObservableObject {
                 config.width = 320
                 config.height = 240
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                guard self.isLifecycleActive(generation) else { return }
                 // Verify the capture actually returned real content — a 0x0 or
                 // fully-empty image means the user denied the prompt.
                 let didCapture = image.width > 0 && image.height > 0
                 print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
-                await MainActor.run {
-                    isRequestingScreenContent = false
-                    guard didCapture else { return }
-                    hasScreenContentPermission = true
-                    UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
+                isRequestingScreenContent = false
+                guard didCapture else { return }
+                hasScreenContentPermission = true
+                UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
 
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                        isOverlayVisible = true
-                    }
+                // If onboarding was already completed, show the cursor overlay now
+                if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    overlayWindowManager.hasShownOverlayBefore = true
+                    overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                    isOverlayVisible = true
                 }
+                screenContentPermissionTask = nil
             } catch {
+                guard self.isLifecycleActive(generation) else { return }
                 print("⚠️ Screen content permission request failed: \(error)")
-                await MainActor.run { isRequestingScreenContent = false }
+                isRequestingScreenContent = false
+                screenContentPermissionTask = nil
             }
         }
     }
@@ -1670,10 +1788,13 @@ final class CompanionManager: ObservableObject {
     /// Triggers the system microphone prompt if the user has never been asked.
     /// Once granted/denied the status sticks and polling picks it up.
     private func promptForMicrophoneIfNotDetermined() {
+        let generation = lifecycleGeneration
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor [weak self] in
-                self?.hasMicrophonePermission = granted
+                guard let self else { return }
+                guard self.isLifecycleActive(generation) else { return }
+                self.hasMicrophonePermission = granted
             }
         }
     }
@@ -1684,7 +1805,9 @@ final class CompanionManager: ObservableObject {
     private func startPermissionPolling() {
         accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refreshAllPermissions()
+                guard let self else { return }
+                guard self.isLifecycleActive(self.lifecycleGeneration) else { return }
+                self.refreshAllPermissions()
             }
         }
     }
@@ -1754,6 +1877,9 @@ final class CompanionManager: ObservableObject {
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
+        let generation = lifecycleGeneration
+
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
@@ -1786,7 +1912,11 @@ final class CompanionManager: ObservableObject {
             // a new utterance always works against a fresh capture.
             preflightScreenCaptureTask?.cancel()
             preflightScreenCaptureTask = Task {
-                try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                guard self.isLifecycleActive(generation) else {
+                    throw CancellationError()
+                }
+                return captures
             }
 
             // Dismiss the onboarding prompt if it's showing
@@ -1809,11 +1939,20 @@ final class CompanionManager: ObservableObject {
                         // Partial transcripts are hidden (waveform-only UI)
                     },
                     submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
+                        guard let self else { return }
+                        guard self.isLifecycleActive(generation) else { return }
+                        self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self.sendTranscriptToClaudeWithScreenshot(
+                            transcript: finalTranscript,
+                            generation: generation
+                        )
                     }
                 )
+                guard self.isLifecycleActive(generation) else {
+                    self.buddyDictationManager.cancelCurrentDictation()
+                    return
+                }
             }
         case .released:
             // Cancel the pending start task in case the user released the shortcut
@@ -2155,7 +2294,11 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        generation: UInt64
+    ) {
+        guard isLifecycleActive(generation) else { return }
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         // If the previous reply was a multi-step pointing chain that had
@@ -2194,6 +2337,7 @@ final class CompanionManager: ObservableObject {
         appliedPrinciplesChipHideTask = nil
 
         currentResponseTask = Task {
+            guard self.isLifecycleActive(generation) else { return }
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -2207,14 +2351,16 @@ final class CompanionManager: ObservableObject {
                     do {
                         screenCaptures = try await preflightCaptureTaskForThisResponse.value
                     } catch {
+                        guard self.isLifecycleActive(generation) else { return }
                         print("⚠️ Preflight screenshot failed (\(error)); recapturing inline")
                         screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
                     }
                 } else {
+                    guard self.isLifecycleActive(generation) else { return }
                     screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
                 }
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
 
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
@@ -2257,6 +2403,7 @@ final class CompanionManager: ObservableObject {
                     overrideVoiceID: effectiveTTSVoiceID,
                     onInlineWaypointReady: { [weak self] waypoint in
                         guard let self else { return }
+                        guard self.isLifecycleActive(generation) else { return }
                         self.flyCursorToWaypoint(
                             waypoint,
                             screenCapturesForWaypoint: screenCapturesForResponse
@@ -2270,12 +2417,14 @@ final class CompanionManager: ObservableObject {
                     systemPrompt: composedSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
-                    onTextChunk: { accumulatedStreamedText in
+                    onTextChunk: { [weak self] accumulatedStreamedText in
+                        guard let self else { return }
+                        guard self.isLifecycleActive(generation) else { return }
                         streamingResponseState.handleStreamedText(accumulatedStreamedText)
                     }
                 )
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
 
                 // Strip the trailing [ACTION:...] tag FIRST. The system
                 // prompt tells Claude to put [ACTION:...] at the very end
@@ -2442,11 +2591,12 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                guard self.isLifecycleActive(generation) else { return }
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
             }
 
-            if !Task.isCancelled {
+            if !Task.isCancelled, self.isLifecycleActive(generation) {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
             }
@@ -2460,22 +2610,24 @@ final class CompanionManager: ObservableObject {
     /// principles. Cancelled by the next request so a stale fade-out
     /// can't yank the new chip away.
     private func scheduleAppliedPrinciplesChipFadeOut() {
+        let generation = lifecycleGeneration
         appliedPrinciplesChipHideTask?.cancel()
         appliedPrinciplesChipHideTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.isLifecycleActive(generation) else { return }
             // Wait for TTS to finish so the chip persists alongside the
             // entire spoken reply, not just until the first sentence
             // begins. `isProducingAudio` covers in-flight chained
             // sentences, mirroring scheduleTransientHideIfNeeded above.
             while self.elevenLabsTTSClient.isProducingAudio {
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
             }
             // Hold for ~6 seconds after speech ends — same window the
             // CompanionResponseOverlay uses for the (currently dormant)
             // response bubble fade. Long enough to read 2-3 principles.
             try? await Task.sleep(nanoseconds: 6_000_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
             self.isShowingAppliedPrinciplesChip = false
         }
     }
@@ -2486,28 +2638,30 @@ final class CompanionManager: ObservableObject {
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
         guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        let generation = lifecycleGeneration
 
         transientHideTask?.cancel()
         transientHideTask = Task {
+            guard self.isLifecycleActive(generation) else { return }
             // Wait for the entire TTS chain to drain — `isProducingAudio`
             // covers in-flight chained sentences, not just the currently
             // playing one. Without this the overlay would fade out during
             // the brief gap between sentence-streamed segments.
             while elevenLabsTTSClient.isProducingAudio {
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
             }
 
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor)
             while detectedElementScreenLocation != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
             }
 
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
@@ -2538,6 +2692,7 @@ final class CompanionManager: ObservableObject {
     /// switching personas — the prompt note will tell Sticky it doesn't
     /// remember the previous chat.
     func beginNewVoiceChat() {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         currentResponseTask?.cancel()
         currentResponseTask = nil
         beginFreshVoiceSession(reason: "user tapped New voice chat")
@@ -3096,6 +3251,7 @@ final class CompanionManager: ObservableObject {
         _ waypoint: PointingWaypoint,
         screenCapturesForWaypoint: [CompanionScreenCapture]
     ) {
+        guard isRunning, AuthenticationManager.shared.canAccessProductionFeatures else { return }
         // Pick the screen capture matching Claude's screen number, falling
         // back to the cursor screen if not specified or out of range.
         let targetScreenCapture: CompanionScreenCapture? = {

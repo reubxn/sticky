@@ -73,7 +73,12 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **Persona wheel hotkey**: separate listen-only `CGEvent` tap on `flagsChanged` for `shift + cmd` ([PersonaWheelHotkeyMonitor](leanring-buddy/PersonaWheelHotkeyMonitor.swift)). Independent of push-to-talk.
 - **Concurrency**: `@MainActor` isolation, async/await throughout.
 - **Theme**: light/dark/system via `ThemeManager.shared.mode`. Surfaces use the `ElevenLabsBrand.Colors` paper-and-ink palette which resolves dynamically per appearance.
-- **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Auth provider wiring and client integration are deferred.
+- **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Workspace provisioning and application data subscriptions are deferred.
+- **Production authentication**: Clerk provides native Google and email-link sessions in Keychain. `AuthenticationManager` bridges Clerk into `ConvexClientWithAuth`; protected UI follows Convex auth state rather than Clerk user presence. Native callbacks use exact `com.reuban.sticky://callback` matching until associated domains are available. The development issuer is exactly `https://ruling-katydid-23.clerk.accounts.dev`, and Clerk's Convex integration must issue `aud: convex`.
+- **Production-data boundary**: Authentication alone does not start the product. `productionDataReadiness` remains `.awaitingWorkspaceProvisioning` in this PR, so `CompanionManager`, Ask, Teach, personas, floating chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team stay unavailable. Readiness is valid only as `.ready(userID:authGeneration:workspaceID:)` matching the current identity, generation, and workspace. PR 3 may call `markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning production-scoped storage. Auth or readiness loss increments lifecycle generations, cancels in-flight work, clears in-memory captures/messages, stops playback/hotkeys/overlays, and hides legacy windows.
+- **Auth operation generations**: Account generations protect identity-bound retry/login work; callback epochs independently preserve a valid callback across cached-user discovery and account transitions. Explicit sign-out invalidates callbacks. Sign-out completion is publisher-driven and has a distinct bounded retry failure state.
+- **Runtime auth configuration**: ClerkKit 1.3.2 ignores a second `Clerk.configure` call. Normal Retry uses `refreshEnvironment()` and `refreshClient()`. If public runtime values changed on disk, the app must show restart-required and must not replace the Convex client in-process.
+- **Authenticated interim surface**: Authenticated users see only verified Clerk identity, the provisioning-next explanation, and sign-out. Existing Profile and Settings views remain hidden because they mix in legacy TASTE export or controls for disabled local companion features.
 
 ### API proxy (Cloudflare Worker)
 
@@ -168,9 +173,16 @@ A `PersonaBundle` is parsed from a markdown file by [PersonaTasteFileStore.swift
   team-files/<filename>               ← attached files raw bytes
   personas/<id>/TASTE.md              ← per-persona override (hot-swap)
   personas/<id>/<avatar>.png|jpg      ← optional avatar override
+  profiles/<clerk-user-id>/profile-picture.* ← temporary Clerk-user-scoped local profile image
 ```
 
 Persona bundles are loaded only from TASTE.md files in Application Support or the app bundle. There are no baked-in Swift persona fallbacks; if no files are available, the teammate list is empty.
+
+Temporary local display-name, role, and profile-picture overrides are scoped by
+verified Clerk user ID. Legacy persona, taste, team, chat-history, and
+recording-history stores are unscoped local MVP data and must never render for
+authenticated accounts. They remain on disk but inaccessible until their cloud
+replacement PRs remove them.
 
 ---
 
@@ -179,18 +191,21 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 | File | Lines | Purpose |
 |------|-------|---------|
 | [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~610 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
-| [CONVEX.md](CONVEX.md) | ~65 | Convex deployment safety, local setup, generated-file, and secret-handling instructions. |
+| [CONVEX.md](CONVEX.md) | ~140 | Convex deployment safety, Clerk authentication, local setup, generated-file, and secret-handling instructions. |
 | [convex/schema.ts](convex/schema.ts) | ~40 | Initial production tables and indexes for profiles, workspaces, memberships, and membership-owned personas. |
 | [convex/validators.ts](convex/validators.ts) | ~90 | Shared lifecycle, role, setup-state, and core-table validators. |
 | [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
+| [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
+| [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |
+| [convex/identity.test.ts](convex/identity.test.ts) | ~55 | Convex-test coverage for authenticated identity claims and unauthenticated denial. |
 | [convex/health.ts](convex/health.ts) | ~20 | Minimal public backend health query. |
 | [convex/authorization.test.ts](convex/authorization.test.ts) | ~450 | Edge-runtime Convex test harness covering health, authorization errors, lifecycle denial, relationship integrity, and cross-workspace isolation. |
 | [convex/schema.test.ts](convex/schema.test.ts) | ~65 | Runtime and inferred-type tests for personal and team workspace schema requirements. |
 | [vitest.config.ts](vitest.config.ts) | ~10 | Vitest configuration for Convex tests in the edge runtime. |
-| [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
-| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3435 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
+| [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~140 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, gates the `CompanionManager` lifecycle on Convex auth, handles callbacks, and registers the app as a login item. |
+| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3590 | Central state machine. Owns generation-guarded dictation, push-to-talk, Teach, capture, AI/TTS, overlays, and persona state; it cannot start before production data readiness. |
 | [MenuBarPanelManager.swift](leanring-buddy/MenuBarPanelManager.swift) | ~780 | `NSStatusItem` + custom borderless `NSPanel` lifecycle. Re-images the menu bar icon when persona changes. Owns the Taste Library window. |
-| [CompanionPanelView.swift](leanring-buddy/CompanionPanelView.swift) | ~1460 | SwiftUI menu bar panel content. Hero header with persona picker, push-to-talk instruction, teach session controls, mini activity feed, footer with model picker / theme toggle / sign-in chip / quit. |
+| [CompanionPanelView.swift](leanring-buddy/CompanionPanelView.swift) | ~1640 | SwiftUI menu bar panel content. Shows sign-in/retry state or the authenticated account-connected boundary; legacy persona, Ask, Teach, activity, and settings controls require production data readiness. |
 | [OverlayWindow.swift](leanring-buddy/OverlayWindow.swift) | ~1780 | One transparent always-on-top `NSPanel` per screen. Hosts `BlueCursorView` (cursor, waveform, response text, applied-principles chip, persona wheel). Handles cursor flight along bezier arcs to `[POINT:...]` targets. |
 | [CompanionResponseOverlay.swift](leanring-buddy/CompanionResponseOverlay.swift) | ~217 | The response-text bubble + waveform rendered next to the cursor. |
 | [CompanionScreenCaptureUtility.swift](leanring-buddy/CompanionScreenCaptureUtility.swift) | ~135 | Multi-monitor JPEG screenshot via ScreenCaptureKit. |
@@ -243,7 +258,6 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 | [DashboardRecordingHistoryStore.swift](leanring-buddy/DashboardRecordingHistoryStore.swift) | ~117 | Codable on-disk archive of "you taught Sticky X" rows. Powers the mini panel's recent-activity feed. |
 | [DashboardChatHistoryStore.swift](leanring-buddy/DashboardChatHistoryStore.swift) | ~175 | Codable on-disk archive of chat sessions. |
 | [DashboardSettingsView.swift](leanring-buddy/DashboardSettingsView.swift) | ~260 | Theme toggle, model picker, voice picker, transcription provider info, etc. |
-| [DashboardMockAuthState.swift](leanring-buddy/DashboardMockAuthState.swift) | ~104 | Mock email-only auth. Any non-empty email signs in. |
 | [DashboardSectionHeader.swift](leanring-buddy/DashboardSectionHeader.swift) | ~87 | Shared section header with eyebrow + title + subtitle. |
 | [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~82 | Voice vs chat model picker enum. |
 | [TasteLibraryView.swift](leanring-buddy/TasteLibraryView.swift) | ~654 | Browse / delete saved principles. Used in the Memory tab and the standalone library window. |
@@ -254,6 +268,8 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 | [MiniPanelActivityFeed.swift](leanring-buddy/MiniPanelActivityFeed.swift) | ~340 | Recent-activity rows in the menu bar panel. Merges teach moments + chat sessions. |
 | [WindowPositionManager.swift](leanring-buddy/WindowPositionManager.swift) | ~262 | Permission helpers (Accessibility, Screen Recording). |
 | [AppBundleConfiguration.swift](leanring-buddy/AppBundleConfiguration.swift) | ~62 | Reads runtime config from Info.plist. |
+| [AuthenticationManager.swift](leanring-buddy/AuthenticationManager.swift) | ~850 | Configures Clerk and authenticated Convex, independently scopes callback/account operations, publishes identity/workspace-bound readiness, and owns publisher-driven sign-out/retry. |
+| [scripts/configure-auth-runtime.py](scripts/configure-auth-runtime.py) | ~100 | Safely copies public Clerk and Convex runtime values from ignored env files into Application Support without displaying them. |
 | [worker/src/index.ts](worker/src/index.ts) | ~142 | Cloudflare Worker proxy. Three routes: `/chat`, `/tts`, `/transcribe-token`. |
 | [leanring-buddy/personas/](leanring-buddy/personas/) | — | Optional bundled persona TASTE.md files. Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
 

@@ -47,6 +47,11 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     /// constructed yet — falls back to a generic Sticky prompt with no
     /// persona injection in that case.
     func toggleChatWindow(companionManager: CompanionManager? = nil) {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            DashboardWindowController.shared.showDashboardWindow()
+            return
+        }
+
         if let companionManager {
             chatViewModel.setCompanionManager(companionManager)
         }
@@ -77,6 +82,11 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         // Without this, LSUIElement apps can show the window but the
         // text view won't accept keystrokes until the user clicks it.
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func hideWindow() {
+        chatViewModel.cancelProtectedActivity()
+        chatWindow?.orderOut(nil)
     }
 
     private func createChatWindow() -> NSWindow {

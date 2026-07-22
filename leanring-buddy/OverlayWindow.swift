@@ -88,7 +88,7 @@ struct BlueCursorView: View {
     let screenFrame: CGRect
     let isFirstAppearance: Bool
     @ObservedObject var companionManager: CompanionManager
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool

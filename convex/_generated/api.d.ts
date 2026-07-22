@@ -10,6 +10,7 @@
 
 import type * as authorization from "../authorization.js";
 import type * as health from "../health.js";
+import type * as identity from "../identity.js";
 import type * as validators from "../validators.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   authorization: typeof authorization;
   health: typeof health;
+  identity: typeof identity;
   validators: typeof validators;
 }>;
 

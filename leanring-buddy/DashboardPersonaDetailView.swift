@@ -31,7 +31,7 @@ struct DashboardPersonaDetailView: View {
     /// without waiting for `PersonaStore.myCurrentBundle()` to refresh.
     @State private var displayedBundle: PersonaBundle
 
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     init(personaBundle: PersonaBundle, isEditable: Bool, onClose: @escaping () -> Void) {
         self.personaBundle = personaBundle

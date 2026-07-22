@@ -21,7 +21,7 @@ import SwiftUI
 
 struct DashboardTastesView: View {
     @StateObject private var dashboardNavigationState = DashboardNavigationState.shared
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     /// Drives whether we're showing the list of personas or one
     /// persona's detail view. The detail view is pushed as a sheet-

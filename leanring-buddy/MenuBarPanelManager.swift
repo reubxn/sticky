@@ -102,6 +102,11 @@ final class MenuBarPanelManager: NSObject {
     /// otherwise the new window can appear behind the still-visible
     /// menu bar panel and the click looks like it did nothing.
     func openChatWindow() {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            openDashboardWindow(focusedPersonaId: nil)
+            return
+        }
+
         ChatWindowController.shared.toggleChatWindow(companionManager: companionManager)
         hidePanel()
     }
@@ -111,6 +116,11 @@ final class MenuBarPanelManager: NSObject {
     /// library window is the focused thing on screen — otherwise the
     /// panel hangs around behind the new window which is visually noisy.
     func openTasteLibraryWindow(companionManager: CompanionManager) {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            openDashboardWindow(focusedPersonaId: nil)
+            return
+        }
+
         if tasteLibraryWindowController == nil {
             tasteLibraryWindowController = TasteLibraryWindowController(
                 companionManager: companionManager
@@ -132,12 +142,20 @@ final class MenuBarPanelManager: NSObject {
         // floating chat window.
         DashboardWindowController.shared.setCompanionManager(companionManager)
 
-        if let focusedPersonaId {
+        if !AuthenticationManager.shared.canAccessProductionFeatures {
+            DashboardWindowController.shared.showDashboardWindow()
+        } else if let focusedPersonaId {
             DashboardWindowController.shared.openShowingPersona(personaId: focusedPersonaId)
         } else {
             DashboardWindowController.shared.toggleDashboardWindow(initialSection: initialSection)
         }
         hidePanel()
+    }
+
+    func handleAuthenticationLoss() {
+        ChatWindowController.shared.hideWindow()
+        tasteLibraryWindowController?.hideWindow()
+        refreshMenuBarIcon()
     }
 
     // MARK: - Status Item
@@ -162,6 +180,12 @@ final class MenuBarPanelManager: NSObject {
     /// (so the menu bar shows who Sticky is "wearing" right now), or
     /// the flat sticky orb glyph as a fallback.
     private func makeMenuBarIcon() -> NSImage {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            let fallback = makeStickyMenuBarIcon()
+            fallback.isTemplate = true
+            return fallback
+        }
+
         if let avatarIcon = makeSelectedPersonaAvatarMenuBarIcon() {
             return avatarIcon
         }
