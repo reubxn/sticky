@@ -7,6 +7,8 @@
 
 Sticky is a macOS menu-bar AI companion that wears your team's taste. It lives in the status bar (no dock icon, no main window) and answers in the voice and taste of whichever **persona** the user is currently wearing.
 
+> **Production transition:** This file describes the current local MVP unless a section says otherwise. [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) is authoritative for planned accounts, workspaces, membership-owned personas, authorization, cloud context, and the removal of Soul/TASTE.md runtime models. Do not treat the current `.team`, `TasteScope`, local-store, or TASTE.md behavior as the target production contract.
+
 The user's whole interaction with Sticky is shaped by one of three modes — but only one of them, **Ask**, is something the user explicitly invokes. The other two compose on top of it.
 
 ### Ask — the main loop
@@ -175,6 +177,7 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 
 | File | Lines | Purpose |
 |------|-------|---------|
+| [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~610 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
 | [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
 | [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3435 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
 | [MenuBarPanelManager.swift](leanring-buddy/MenuBarPanelManager.swift) | ~780 | `NSStatusItem` + custom borderless `NSPanel` lifecycle. Re-images the menu bar icon when persona changes. Owns the Taste Library window. |
