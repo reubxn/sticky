@@ -73,6 +73,7 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **Persona wheel hotkey**: separate listen-only `CGEvent` tap on `flagsChanged` for `shift + cmd` ([PersonaWheelHotkeyMonitor](leanring-buddy/PersonaWheelHotkeyMonitor.swift)). Independent of push-to-talk.
 - **Concurrency**: `@MainActor` isolation, async/await throughout.
 - **Theme**: light/dark/system via `ThemeManager.shared.mode`. Surfaces use the `ElevenLabsBrand.Colors` paper-and-ink palette which resolves dynamically per appearance.
+- **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Auth provider wiring and client integration are deferred.
 
 ### API proxy (Cloudflare Worker)
 
@@ -178,6 +179,13 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 | File | Lines | Purpose |
 |------|-------|---------|
 | [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~610 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
+| [CONVEX.md](CONVEX.md) | ~50 | Convex local setup, deployment, generated-file, and secret-handling instructions. |
+| [convex/schema.ts](convex/schema.ts) | ~40 | Initial production tables and indexes for profiles, workspaces, memberships, and membership-owned personas. |
+| [convex/validators.ts](convex/validators.ts) | ~90 | Shared lifecycle, role, setup-state, and core-table validators. |
+| [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
+| [convex/health.ts](convex/health.ts) | ~20 | Minimal public backend health query. |
+| [convex/authorization.test.ts](convex/authorization.test.ts) | ~430 | Edge-runtime Convex test harness covering health, authorization errors, lifecycle denial, relationship integrity, and cross-workspace isolation. |
+| [vitest.config.ts](vitest.config.ts) | ~10 | Vitest configuration for Convex tests in the edge runtime. |
 | [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
 | [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3435 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
 | [MenuBarPanelManager.swift](leanring-buddy/MenuBarPanelManager.swift) | ~780 | `NSStatusItem` + custom borderless `NSPanel` lifecycle. Re-images the menu bar icon when persona changes. Owns the Taste Library window. |
@@ -355,3 +363,17 @@ When you make changes that affect the information in this file, update it.
 5. **Significant line-count drift** (>50 lines): update the row.
 
 Don't update for minor edits, bug fixes, or changes that don't affect documented architecture or conventions.
+
+<!-- convex-ai-start -->
+
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, **always read
+`convex/_generated/ai/guidelines.md` first** for important guidelines on
+how to correctly use Convex APIs and patterns. The file contains rules that
+override what you may have learned about Convex from training data.
+
+Convex agent skills for common tasks can be installed by running
+`npx convex ai-files install`.
+
+<!-- convex-ai-end -->
