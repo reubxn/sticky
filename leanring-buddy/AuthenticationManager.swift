@@ -19,6 +19,13 @@ enum ProductionDataReadiness: Equatable {
     case ready(userID: String, authGeneration: UInt64, workspaceID: String)
 }
 
+enum WorkspaceProvisioningState: Equatable {
+    case idle
+    case provisioning(attempt: Int)
+    case ready(PersonalAccountBootstrapSnapshot)
+    case failure(message: String, attempt: Int)
+}
+
 @MainActor
 final class AuthenticationManager: ObservableObject {
     static let shared = AuthenticationManager()
@@ -33,6 +40,7 @@ final class AuthenticationManager: ObservableObject {
     private static let callbackHost = "callback"
     private static let maximumCallbackAttempts = 3
     private static let maximumSignOutAttempts = 3
+    private static let maximumProvisioningAttempts = 3
     private static let clerkLoadTimeout = Duration.seconds(10)
     private static let convexAuthenticationTimeout = Duration.seconds(10)
     private static let signOutTimeout = Duration.seconds(10)
@@ -43,6 +51,7 @@ final class AuthenticationManager: ObservableObject {
     @Published private(set) var authenticationState: ApplicationAuthenticationState = .loading
     @Published private(set) var productionDataReadiness: ProductionDataReadiness =
         .awaitingWorkspaceProvisioning
+    @Published private(set) var workspaceProvisioningState: WorkspaceProvisioningState = .idle
     @Published private(set) var authGeneration: UInt64 = 0
     @Published private(set) var clerkUserID: String?
     @Published private(set) var clerkDisplayName: String?
@@ -78,6 +87,7 @@ final class AuthenticationManager: ObservableObject {
     private var convexLoginTask: Task<Void, Never>?
     private var signOutOperationTask: Task<Void, Never>?
     private var signOutTimeoutTask: Task<Void, Never>?
+    private var workspaceProvisioningTask: Task<Void, Never>?
 
     var isSignedIn: Bool {
         authenticationState == .authenticated
@@ -99,6 +109,13 @@ final class AuthenticationManager: ObservableObject {
 
     var canAccessProductionFeatures: Bool {
         isSignedIn && isProductionDataReady
+    }
+
+    var canRetryWorkspaceProvisioning: Bool {
+        guard case .failure(_, let attempt) = workspaceProvisioningState else {
+            return false
+        }
+        return attempt < Self.maximumProvisioningAttempts
     }
 
     @discardableResult
@@ -200,6 +217,7 @@ final class AuthenticationManager: ObservableObject {
             deploymentUrl: convexDeploymentURL,
             authProvider: clerkAuthProvider
         )
+        resetWorkspaceProvisioning()
         convexClient = authenticatedConvexClient
         convexClientGeneration &+= 1
         configuredClerkPublishableKey = clerkPublishableKey
@@ -313,6 +331,14 @@ final class AuthenticationManager: ObservableObject {
         beginSignOutAttempt()
     }
 
+    func retryProvisioning() {
+        guard case .failure(_, let attempt) = workspaceProvisioningState,
+              attempt < Self.maximumProvisioningAttempts else {
+            return
+        }
+        startWorkspaceProvisioning(attempt: attempt + 1)
+    }
+
     private func retrySignOut() {
         guard signOutAttempt < Self.maximumSignOutAttempts else {
             setSignOutFailure(
@@ -332,6 +358,7 @@ final class AuthenticationManager: ObservableObject {
         guard authenticationState != .signingOut else { return }
 
         invalidateCallbacks()
+        resetWorkspaceProvisioning()
         activeWorkspaceID = nil
         productionDataReadiness = .awaitingWorkspaceProvisioning
         authenticationState = .loading
@@ -556,6 +583,90 @@ final class AuthenticationManager: ObservableObject {
         }
     }
 
+    private func startWorkspaceProvisioning(attempt: Int) {
+        guard attempt <= Self.maximumProvisioningAttempts,
+              workspaceProvisioningTask == nil,
+              authenticationState == .authenticated,
+              callbackProcessingTask == nil,
+              pendingCallbacks.isEmpty,
+              let convexClient,
+              let clerkUserID,
+              case .authenticated(let authenticationToken) =
+                convexAuthenticationState,
+              Self.subject(fromJWT: authenticationToken) == clerkUserID else {
+            return
+        }
+
+        switch workspaceProvisioningState {
+        case .ready, .provisioning:
+            return
+        case .idle, .failure:
+            break
+        }
+
+        let generation = authGeneration
+        let clientGeneration = convexClientGeneration
+        let provisioningUserID = clerkUserID
+        workspaceProvisioningState = .provisioning(attempt: attempt)
+        workspaceProvisioningTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response: PersonalAccountProvisioningResponse =
+                    try await convexClient.mutation("accounts:provisionCurrent")
+                guard !Task.isCancelled,
+                      self.authGeneration == generation,
+                      self.convexClientGeneration == clientGeneration,
+                      self.clerkUserID == provisioningUserID,
+                      self.authenticationState == .authenticated,
+                      case .authenticated = self.convexAuthenticationState else {
+                    return
+                }
+                self.workspaceProvisioningTask = nil
+                self.workspaceProvisioningState = .ready(response.snapshot)
+            } catch {
+                guard !Task.isCancelled,
+                      self.authGeneration == generation,
+                      self.convexClientGeneration == clientGeneration,
+                      self.clerkUserID == provisioningUserID,
+                      self.authenticationState == .authenticated else {
+                    return
+                }
+                self.workspaceProvisioningTask = nil
+                self.workspaceProvisioningState = .failure(
+                    message: error.localizedDescription,
+                    attempt: attempt
+                )
+            }
+        }
+    }
+
+    private func resetWorkspaceProvisioning() {
+        workspaceProvisioningTask?.cancel()
+        workspaceProvisioningTask = nil
+        workspaceProvisioningState = .idle
+    }
+
+    private static func subject(fromJWT token: String) -> String? {
+        let tokenParts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard tokenParts.count == 3 else { return nil }
+
+        var payload = String(tokenParts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let paddingLength = (4 - payload.count % 4) % 4
+        payload.append(String(repeating: "=", count: paddingLength))
+
+        guard let payloadData = Data(base64Encoded: payload),
+              let payloadObject = try? JSONSerialization.jsonObject(
+                with: payloadData
+              ) as? [String: Any],
+              let subject = payloadObject["sub"] as? String,
+              !subject.isEmpty else {
+            return nil
+        }
+        return subject
+    }
+
     private func scheduleExplicitRetryLoginFallback(
         generation: UInt64,
         providerTransitionCount: UInt64
@@ -732,6 +843,7 @@ final class AuthenticationManager: ObservableObject {
             cancelConvexAuthenticationFailure()
             authenticationState = .authenticated
             lastAuthenticationErrorMessage = nil
+            startWorkspaceProvisioning(attempt: 1)
         }
     }
 
@@ -786,6 +898,7 @@ final class AuthenticationManager: ObservableObject {
         convexLoginTask?.cancel()
         convexLoginTask = nil
         manualConvexLoginHasStarted = false
+        resetWorkspaceProvisioning()
     }
 
     private func invalidateCallbacks() {

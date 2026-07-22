@@ -38,6 +38,29 @@ export const personaSetupStateValidator = v.union(
   v.literal("complete"),
 );
 
+export const accountBootstrapSnapshotValidator = v.object({
+  profileId: v.id("profiles"),
+  profileDisplayName: v.string(),
+  workspaceId: v.id("workspaces"),
+  workspaceName: v.string(),
+  businessType: v.union(v.string(), v.null()),
+  membershipId: v.id("workspaceMembers"),
+  personaId: v.id("personas"),
+  personaDisplayName: v.string(),
+  personaSetupState: personaSetupStateValidator,
+  personaCurrentVersion: v.number(),
+});
+
+export const currentAccountResultValidator = v.union(
+  v.object({
+    status: v.literal("needsProvisioning"),
+  }),
+  v.object({
+    status: v.literal("ready"),
+    snapshot: accountBootstrapSnapshotValidator,
+  }),
+);
+
 export const profileValidator = v.object({
   tokenIdentifier: v.string(),
   displayName: v.string(),

@@ -6,6 +6,7 @@
 //
 
 import Testing
+import Foundation
 @testable import leanring_buddy
 
 struct leanring_buddyTests {
@@ -35,6 +36,37 @@ struct leanring_buddyTests {
         )
 
         #expect(shouldTreatPermissionAsGranted)
+    }
+
+    @Test func personalAccountProvisioningResponseDecodesConvexSnapshot() throws {
+        let fixture = """
+        {
+          "didCreate": true,
+          "snapshot": {
+            "profileId": "profiles:1",
+            "profileDisplayName": "Sticky User",
+            "workspaceId": "workspaces:1",
+            "workspaceName": "Sticky User's Workspace",
+            "businessType": null,
+            "membershipId": "workspaceMembers:1",
+            "personaId": "personas:1",
+            "personaDisplayName": "Sticky User",
+            "personaSetupState": "notStarted",
+            "personaCurrentVersion": 0
+          }
+        }
+        """
+
+        let response = try JSONDecoder().decode(
+            PersonalAccountProvisioningResponse.self,
+            from: Data(fixture.utf8)
+        )
+
+        #expect(response.didCreate)
+        #expect(response.snapshot.workspaceId == "workspaces:1")
+        #expect(response.snapshot.businessType == nil)
+        #expect(response.snapshot.personaSetupState == .notStarted)
+        #expect(response.snapshot.personaCurrentVersion == 0)
     }
 
 }
