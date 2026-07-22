@@ -167,7 +167,7 @@ A `PersonaBundle` is parsed from a markdown file by [PersonaTasteFileStore.swift
   personas/<id>/<avatar>.png|jpg      ← optional avatar override
 ```
 
-Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` (folder reference, picked up automatically — no `project.pbxproj` edits needed for new persona files).
+Persona bundles are loaded only from TASTE.md files in Application Support or the app bundle. There are no baked-in Swift persona fallbacks; if no files are available, the teammate list is empty.
 
 ---
 
@@ -176,7 +176,7 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | File | Lines | Purpose |
 |------|-------|---------|
 | [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
-| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~2960 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
+| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3435 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
 | [MenuBarPanelManager.swift](leanring-buddy/MenuBarPanelManager.swift) | ~780 | `NSStatusItem` + custom borderless `NSPanel` lifecycle. Re-images the menu bar icon when persona changes. Owns the Taste Library window. |
 | [CompanionPanelView.swift](leanring-buddy/CompanionPanelView.swift) | ~1460 | SwiftUI menu bar panel content. Hero header with persona picker, push-to-talk instruction, teach session controls, mini activity feed, footer with model picker / theme toggle / sign-in chip / quit. |
 | [OverlayWindow.swift](leanring-buddy/OverlayWindow.swift) | ~1780 | One transparent always-on-top `NSPanel` per screen. Hosts `BlueCursorView` (cursor, waveform, response text, applied-principles chip, persona wheel). Handles cursor flight along bezier arcs to `[POINT:...]` targets. |
@@ -191,7 +191,7 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [GlobalPushToTalkShortcutMonitor.swift](leanring-buddy/GlobalPushToTalkShortcutMonitor.swift) | ~132 | Listen-only `CGEvent` tap for `ctrl + option`. |
 | [PersonaWheelHotkeyMonitor.swift](leanring-buddy/PersonaWheelHotkeyMonitor.swift) | ~148 | Listen-only `CGEvent` tap for `shift + cmd`. Drives the radial wheel. |
 | [PersonaWheelView.swift](leanring-buddy/PersonaWheelView.swift) | ~209 | Radial picker rendered inside the overlay. Spokes laid out clockwise from 12 o'clock. |
-| [PersonaStore.swift](leanring-buddy/PersonaStore.swift) | ~495 | Loads persona bundles from TASTE.md (hot-swap > bundled). Holds the synthetic `mePseudoPersona` / `teamPseudoPersona` for the wheel. Sample bundles are last-resort fallbacks if every TASTE.md fails to load. |
+| [PersonaStore.swift](leanring-buddy/PersonaStore.swift) | ~100 | Loads persona bundles exclusively from TASTE.md and holds the synthetic `mePseudoPersona` / `teamPseudoPersona` for the wheel. |
 | [PersonaTasteFileStore.swift](leanring-buddy/PersonaTasteFileStore.swift) | ~706 | TASTE.md parser + writer. Read-paths fall back from Application Support to bundled. Writes always go to Application Support so reinstalls don't clobber teaching. |
 | [PersonaBundle.swift](leanring-buddy/PersonaBundle.swift) | ~171 | `PersonaSelection`, `PersonaAvatar`, `PersonaBundle` types. Hex-string → `Color` parser. |
 | [PersonaAvatarView.swift](leanring-buddy/PersonaAvatarView.swift) | ~187 | Renders initials / SF Symbol / image-file avatars at any size. |
@@ -243,7 +243,7 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [WindowPositionManager.swift](leanring-buddy/WindowPositionManager.swift) | ~262 | Permission helpers (Accessibility, Screen Recording). |
 | [AppBundleConfiguration.swift](leanring-buddy/AppBundleConfiguration.swift) | ~62 | Reads runtime config from Info.plist. |
 | [worker/src/index.ts](worker/src/index.ts) | ~142 | Cloudflare Worker proxy. Three routes: `/chat`, `/tts`, `/transcribe-token`. |
-| [leanring-buddy/personas/](leanring-buddy/personas/) | — | Bundled persona TASTE.md files (currently `reuban`, `leonard`, `magdalena`). Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
+| [leanring-buddy/personas/](leanring-buddy/personas/) | — | Optional bundled persona TASTE.md files. Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
 
 ---
 
