@@ -191,7 +191,7 @@ replacement PRs remove them.
 | File | Lines | Purpose |
 |------|-------|---------|
 | [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~610 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
-| [CONVEX.md](CONVEX.md) | ~65 | Convex deployment safety, local setup, generated-file, and secret-handling instructions. |
+| [CONVEX.md](CONVEX.md) | ~140 | Convex deployment safety, Clerk authentication, local setup, generated-file, and secret-handling instructions. |
 | [convex/schema.ts](convex/schema.ts) | ~40 | Initial production tables and indexes for profiles, workspaces, memberships, and membership-owned personas. |
 | [convex/validators.ts](convex/validators.ts) | ~90 | Shared lifecycle, role, setup-state, and core-table validators. |
 | [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |

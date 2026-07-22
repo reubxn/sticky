@@ -91,6 +91,13 @@ The native callback is `com.reuban.sticky://callback`. Add that exact URL to
 Clerk's native redirect allowlist. Associated domains are deferred until the
 app has a paid Apple Developer account.
 
+The development Clerk instance disables "Require the same device and browser"
+for email links. Native Sticky starts the flow inside the app and the email
+opens in an external browser, so Clerk otherwise rejects the callback as a
+different browser client. This is a development-only compromise. Before
+production, replace the custom-scheme flow with claimed HTTPS/Universal Links
+and re-evaluate same-client protection against email-link interception.
+
 After running the script, launch the signed app from Xcode and test both Google
 and email-link sign-in. Verify the custom callback brings the dashboard forward
 and the app reaches the authenticated "account connected" surface only after
