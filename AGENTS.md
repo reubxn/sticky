@@ -195,8 +195,8 @@ replacement PRs remove them.
 | [CONVEX.md](CONVEX.md) | ~140 | Convex deployment safety, Clerk authentication, local setup, generated-file, and secret-handling instructions. |
 | [convex/schema.ts](convex/schema.ts) | ~40 | Initial production tables and indexes for profiles, workspaces, memberships, and membership-owned personas. |
 | [convex/validators.ts](convex/validators.ts) | ~120 | Shared lifecycle, role, setup-state, core-table, and account-bootstrap DTO validators. |
-| [convex/accounts.ts](convex/accounts.ts) | ~340 | Authenticated, fail-closed personal-account provisioning and current-account graph query. |
-| [convex/accounts.test.ts](convex/accounts.test.ts) | ~510 | Adversarial provisioning tests for idempotency, concurrency, partial repair, lifecycle integrity, orphan rollback, and identity isolation. |
+| [convex/accounts.ts](convex/accounts.ts) | ~390 | Authenticated, fail-closed personal-account provisioning, safe default-name repair, and current-account graph query. |
+| [convex/accounts.test.ts](convex/accounts.test.ts) | ~580 | Adversarial provisioning tests for idempotency, concurrency, partial repair, claim refresh, lifecycle integrity, orphan rollback, and identity isolation. |
 | [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
 | [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
 | [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |

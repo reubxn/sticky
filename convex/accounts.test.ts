@@ -148,6 +148,9 @@ async function insertPersona(
     workspaceId: Id<"workspaces">;
     membershipId: Id<"workspaceMembers">;
     status: "active" | "removing";
+    displayName: string;
+    setupState: "notStarted" | "essentials" | "interview" | "complete";
+    currentVersion: number;
   }> = {},
 ) {
   return await testBackend.run(async (ctx) => {
@@ -156,9 +159,9 @@ async function insertPersona(
       workspaceId: overrides.workspaceId ?? workspaceId,
       ownerUserId: overrides.ownerUserId ?? profileId,
       status: overrides.status ?? "active",
-      displayName: "Stored Persona",
-      setupState: "notStarted",
-      currentVersion: 0,
+      displayName: overrides.displayName ?? "Stored Persona",
+      setupState: overrides.setupState ?? "notStarted",
+      currentVersion: overrides.currentVersion ?? 0,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -296,6 +299,57 @@ describe("personal account provisioning", () => {
     await expect(databaseState(testBackend)).resolves.toEqual(before);
   });
 
+  test("new verified name repairs untouched generic workspace and persona defaults", async () => {
+    const testBackend = convexTest(schema, modules);
+    const profileId = await insertProfile(testBackend, {
+      displayName: "Sticky user",
+    });
+    const workspaceId = await insertWorkspace(testBackend, profileId, {
+      name: "Sticky user's Workspace",
+    });
+    const membershipId = await insertMembership(
+      testBackend,
+      profileId,
+      workspaceId,
+    );
+    const personaId = await insertPersona(
+      testBackend,
+      profileId,
+      workspaceId,
+      membershipId,
+      {
+        displayName: "Sticky user",
+        setupState: "notStarted",
+        currentVersion: 0,
+      },
+    );
+
+    const provisioned = await testBackend
+      .withIdentity(primaryIdentity)
+      .mutation(api.accounts.provisionCurrent);
+
+    expect(provisioned.didCreate).toBe(false);
+    expect(provisioned.snapshot).toMatchObject({
+      profileId,
+      profileDisplayName: "Primary User",
+      workspaceId,
+      workspaceName: "Primary User's Workspace",
+      membershipId,
+      personaId,
+      personaDisplayName: "Primary User",
+      personaSetupState: "notStarted",
+      personaCurrentVersion: 0,
+    });
+    const repairedRecords = await testBackend.run(async (ctx) => ({
+      profile: await ctx.db.get("profiles", profileId),
+      workspace: await ctx.db.get("workspaces", workspaceId),
+      persona: await ctx.db.get("personas", personaId),
+    }));
+    expect(repairedRecords.profile?.updatedAt).toBeGreaterThan(timestamp);
+    expect(repairedRecords.workspace?.updatedAt).toBeGreaterThan(timestamp);
+    expect(repairedRecords.persona?.updatedAt).toBeGreaterThan(timestamp);
+  });
+
   test("refreshes only present verified profile claims and preserves edits", async () => {
     const testBackend = convexTest(schema, modules);
     const asPrimary = testBackend.withIdentity(primaryIdentity);
@@ -353,6 +407,26 @@ describe("personal account provisioning", () => {
     expect(refreshed.snapshot.profileDisplayName).toBe("Updated User");
     expect(refreshed.snapshot.workspaceName).toBe("Renamed Workspace");
     expect(refreshed.snapshot.personaDisplayName).toBe("Edited Persona");
+
+    await testBackend.run(async (ctx) => {
+      await ctx.db.patch("personas", refreshed.snapshot.personaId, {
+        displayName: "Updated User",
+        updatedAt: timestamp + 12,
+      });
+    });
+    const afterProgressedSetup = await testBackend
+      .withIdentity({
+        ...primaryIdentity,
+        name: "Final User",
+      })
+      .mutation(api.accounts.provisionCurrent);
+    expect(afterProgressedSetup.snapshot).toMatchObject({
+      profileDisplayName: "Final User",
+      workspaceName: "Renamed Workspace",
+      personaDisplayName: "Updated User",
+      personaSetupState: "interview",
+      personaCurrentVersion: 4,
+    });
   });
 
   test("deletion-pending profiles fail without writes", async () => {

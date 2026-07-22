@@ -72,8 +72,14 @@ https://ruling-katydid-23.clerk.accounts.dev
 ```
 
 In the Clerk Dashboard, activate the Convex integration before testing. Confirm
-new development session JWTs contain `aud: convex`; changing the template does
-not repair an already-issued session, so sign out fully and sign in again.
+new development session JWTs contain `aud: convex` and the standard verified
+`name`, `email`, and `picture` claims. Provisioning uses those non-empty claims
+to refresh mutable profile fields and may repair only untouched generated
+workspace and persona names. It never treats email as an identity key.
+
+Changing Clerk session claims does not repair an already-issued token. Sign out
+fully and sign in again, or otherwise force Clerk to issue and propagate a
+refreshed session token, before validating claim changes in Convex.
 
 Keep Clerk keys in ignored `.env.clerk.local` and Convex deployment values in
 ignored `.env.local`. To copy only the public publishable key and deployment URL
@@ -150,7 +156,10 @@ memberships or personas, and malformed relationships fail closed.
 partial prefix, or a validated ready snapshot. Both functions use bounded
 indexed reads. Repeated provisioning preserves workspace and persona edits;
 only present, non-empty verified profile claims may refresh mutable profile
-fields.
+fields. If a newly available verified name replaces a generic profile name,
+provisioning updates the workspace only when its name still exactly matches the
+old generated default, and updates the persona only while its name is unchanged
+and setup remains `notStarted` at version `0`.
 
 Manual Xcode validation must confirm Google and email-link sign-in, cold-launch
 callbacks, unrelated URL rejection, restart-required after rewriting

@@ -229,6 +229,9 @@ export const provisionCurrent = mutation({
     let didCreate = false;
 
     let profile = await loadCanonicalProfile(ctx, identity.tokenIdentifier);
+    const priorProfileDisplayName = profile?.displayName ?? null;
+    const verifiedDisplayName = nonEmptyClaim(identity.name);
+    let shouldRepairDefaultNames = false;
     if (profile === null) {
       const displayName = profileDisplayName(identity);
       const profileId = await ctx.db.insert("profiles", {
@@ -251,12 +254,15 @@ export const provisionCurrent = mutation({
       const profilePatch: Partial<
         Pick<Doc<"profiles">, "displayName" | "email" | "avatarUrl" | "updatedAt">
       > = {};
-      const displayName = nonEmptyClaim(identity.name);
       const email = nonEmptyClaim(identity.email);
       const avatarUrl = nonEmptyClaim(identity.pictureUrl);
 
-      if (displayName !== undefined && displayName !== profile.displayName) {
-        profilePatch.displayName = displayName;
+      if (
+        verifiedDisplayName !== undefined &&
+        verifiedDisplayName !== profile.displayName
+      ) {
+        profilePatch.displayName = verifiedDisplayName;
+        shouldRepairDefaultNames = true;
       }
       if (email !== undefined && email !== profile.email) {
         profilePatch.email = email;
@@ -277,6 +283,25 @@ export const provisionCurrent = mutation({
 
     let graph = await loadAccountGraph(ctx, profile);
     let workspace = graph.workspace;
+    if (
+      workspace !== null &&
+      shouldRepairDefaultNames &&
+      priorProfileDisplayName !== null &&
+      workspace.name === defaultWorkspaceName(priorProfileDisplayName)
+    ) {
+      await ctx.db.patch("workspaces", workspace._id, {
+        name: defaultWorkspaceName(profile.displayName),
+        updatedAt: timestamp,
+      });
+      const refreshedWorkspace = await ctx.db.get(
+        "workspaces",
+        workspace._id,
+      );
+      if (refreshedWorkspace === null) {
+        return failDataIntegrity("Updated workspace could not be loaded");
+      }
+      workspace = refreshedWorkspace;
+    }
     if (workspace === null) {
       const workspaceId = await ctx.db.insert("workspaces", {
         kind: "personal",
@@ -310,6 +335,24 @@ export const provisionCurrent = mutation({
     }
 
     let persona = graph.persona;
+    if (
+      persona !== null &&
+      shouldRepairDefaultNames &&
+      priorProfileDisplayName !== null &&
+      persona.displayName === priorProfileDisplayName &&
+      persona.setupState === "notStarted" &&
+      persona.currentVersion === 0
+    ) {
+      await ctx.db.patch("personas", persona._id, {
+        displayName: profile.displayName,
+        updatedAt: timestamp,
+      });
+      const refreshedPersona = await ctx.db.get("personas", persona._id);
+      if (refreshedPersona === null) {
+        return failDataIntegrity("Updated persona could not be loaded");
+      }
+      persona = refreshedPersona;
+    }
     if (persona === null) {
       const personaId = await ctx.db.insert("personas", {
         membershipId: membership._id,
