@@ -272,12 +272,17 @@ struct CompanionPanelView: View {
                     .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
             }
 
-            Text("Authentication is ready. Workspace provisioning is the next production slice, so Ask, Teach, personas, chat, and local memory stay unavailable for now.")
-                .font(ElevenLabsBrand.Typography.body)
-                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            workspaceProvisioningPanelContent
 
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                if authenticationManager.canRetryWorkspaceProvisioning {
+                    Button("Retry setup") {
+                        authenticationManager.retryProvisioning()
+                    }
+                    .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                    .pointerCursor()
+                }
+
                 Button("Open account") {
                     MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
                 }
@@ -289,6 +294,43 @@ struct CompanionPanelView: View {
                 }
                 .buttonStyle(InteractivePressStyle(pressScale: 0.98))
                 .pointerCursor()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceProvisioningPanelContent: some View {
+        switch authenticationManager.workspaceProvisioningState {
+        case .idle, .provisioning:
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Setting up your personal workspace…")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+        case .ready(let snapshot):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text(snapshot.workspaceName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(snapshot.personaSetupState.statusText)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text("Ask, Teach, personas, chat, and local memory stay locked until production storage is connected.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .failure(let message, let attempt):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text("Workspace setup attempt \(attempt) failed.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text(message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

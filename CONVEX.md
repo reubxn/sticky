@@ -101,11 +101,11 @@ and re-evaluate same-client protection against email-link interception.
 After running the script, launch the signed app from Xcode and test both Google
 and email-link sign-in. Verify the custom callback brings the dashboard forward
 and the app reaches the authenticated "account connected" surface only after
-Convex reports authentication. This PR intentionally leaves production data
-readiness at `awaitingWorkspaceProvisioning`: Ask, Teach, personas, floating
-chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team remain unavailable.
-PR 3 provisioning is responsible for changing that readiness only after a
-workspace and production-scoped storage exist.
+Convex reports authentication. Personal workspace provisioning then runs
+through `accounts:provisionCurrent`, but production data readiness intentionally
+remains `awaitingWorkspaceProvisioning`: Ask, Teach, personas, floating chat,
+Taste Library, and Dashboard Chat/Memory/Tastes/Team remain unavailable until
+production-scoped storage and subscriptions exist.
 
 The current Profile view mixes account fields with legacy TASTE export, and the
 current Settings view controls disabled legacy companion features, so neither
@@ -132,9 +132,25 @@ has its own bounded retry state and completes only when the Convex auth
 publisher reports unauthenticated; timeout is the operation failure path.
 
 Production readiness is bound to the verified Clerk user ID, current auth
-generation, and active workspace ID. PR 3 must call
-`markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning
-that exact identity and workspace.
+generation, and active workspace ID. Personal workspace provisioning does not
+call `markCurrentAuthenticatedWorkspaceReady(workspaceID:)`; a later storage
+slice may call it only after provisioning production-scoped storage for that
+exact identity and workspace.
+
+## Personal account provisioning
+
+`accounts:provisionCurrent` accepts no identity or ownership arguments. It
+derives the authenticated identity from Convex, keys the canonical profile only
+by `identity.tokenIdentifier`, and transactionally creates or validates one
+active personal workspace, owner membership, and persona. Valid partial prefixes
+are repaired; deletion-pending accounts, duplicates, inactive records, extra
+memberships or personas, and malformed relationships fail closed.
+
+`accounts:current` returns either `needsProvisioning` for a valid missing or
+partial prefix, or a validated ready snapshot. Both functions use bounded
+indexed reads. Repeated provisioning preserves workspace and persona edits;
+only present, non-empty verified profile claims may refresh mutable profile
+fields.
 
 Manual Xcode validation must confirm Google and email-link sign-in, cold-launch
 callbacks, unrelated URL rejection, restart-required after rewriting

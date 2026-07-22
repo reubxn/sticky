@@ -119,20 +119,64 @@ private struct DashboardAccountConnectedView: View {
                 }
             }
 
-            Text("Workspace provisioning and production storage arrive in the next slice. Until then, Ask, Teach, personas, chat, memory, tastes, and team data stay unavailable so no legacy local data can cross accounts.")
-                .font(ElevenLabsBrand.Typography.body)
-                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            workspaceProvisioningContent
 
-            Button("Sign out") {
-                authenticationManager.signOut()
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                if authenticationManager.canRetryWorkspaceProvisioning {
+                    Button("Retry workspace setup") {
+                        authenticationManager.retryProvisioning()
+                    }
+                    .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+                    .pointerCursor()
+                }
+
+                Button("Sign out") {
+                    authenticationManager.signOut()
+                }
+                .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                .pointerCursor()
             }
-            .elevenLabsPrimaryButtonStyle(isFullWidth: false)
-            .pointerCursor()
         }
         .frame(maxWidth: 520, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(ElevenLabsBrand.Spacing.xl)
+    }
+
+    @ViewBuilder
+    private var workspaceProvisioningContent: some View {
+        switch authenticationManager.workspaceProvisioningState {
+        case .idle, .provisioning:
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                ProgressView()
+                Text("Setting up your personal workspace…")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+        case .ready(let snapshot):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                ElevenLabsEyebrow("PERSONAL WORKSPACE")
+                Text(snapshot.workspaceName)
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 22))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(snapshot.personaSetupState.statusText)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text("Provisioning is complete. Ask, Teach, personas, chat, memory, tastes, and team data remain unavailable until production storage is connected.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .failure(let message, let attempt):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text("Workspace setup attempt \(attempt) failed.")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(message)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
