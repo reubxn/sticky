@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "clicky-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "ELEVENLABS_VOICE_ID": "kPzsL2i3teMYv0FxEYQ6",
+    "ONBOARDING_ROUTES_ENABLED": "false"
+  },
+  "secrets": {
+    "required": [
+      "ANTHROPIC_API_KEY",
+      "ASSEMBLYAI_API_KEY",
+      "ELEVENLABS_API_KEY"
+    ]
+  },
+  "env": {
+    "sticky-onboarding-dev": {
+      "name": "sticky-onboarding-dev",
+      "vars": {
+        "CONVEX_SITE_URL": "https://kindred-ostrich-447.convex.site",
+        "ELEVENLABS_VOICE_ID": "kPzsL2i3teMYv0FxEYQ6",
+        "ONBOARDING_ROUTES_ENABLED": "true"
+      },
+      "secrets": {
+        "required": [
+          "ANTHROPIC_API_KEY",
+          "ASSEMBLYAI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "WORKER_HMAC_CURRENT_KEY_ID",
+          "WORKER_HMAC_CURRENT_KEY"
+        ]
+      }
+    }
+  }
+}

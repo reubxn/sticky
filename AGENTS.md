@@ -75,7 +75,7 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **Theme**: light/dark/system via `ThemeManager.shared.mode`. Surfaces use the `ElevenLabsBrand.Colors` paper-and-ink palette which resolves dynamically per appearance.
 - **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Application data subscriptions remain deferred.
 - **Personal workspace provisioning**: after Convex authenticates and pending Clerk callbacks drain, `AuthenticationManager` calls the idempotent `accounts:provisionCurrent` mutation. Convex derives the profile exclusively from `identity.tokenIdentifier` and transactionally creates or validates one personal workspace, owner membership, and fresh persona. Provisioning has its own generation-bound state and bounded retry; it does not unlock production features.
-- **Onboarding Worker request tickets**: Convex exposes one authenticated owner-only action that returns a 256-bit opaque bearer once and persists only its SHA-256 digest. Tickets are short-lived, single-use, exact-body-bound, limited to `onboarding_chat`, `onboarding_tts`, and `onboarding_transcribe`, and revalidate the full account/workspace/membership/persona lifecycle plus the denormalized audit relationship at atomic internal consumption. Trusted model, prompt, voice, output, and session policy is server-derived. Hourly bounded cleanup preserves issued rows until 24 hours after ticket expiry, consumed rows for 24 hours after consumption, and audits for 30 days. Worker-facing HTTP consume/completion is intentionally absent until PR 4B adds HMAC service authentication.
+- **Onboarding Worker request tickets**: PR 4A's merged Convex control plane exposes one authenticated owner-only action that returns a 256-bit opaque bearer once and persists only its SHA-256 digest. Tickets are short-lived, single-use, exact-body-bound, limited to `onboarding_chat`, `onboarding_tts`, and `onboarding_transcribe`, and revalidate the full account/workspace/membership/persona lifecycle plus the denormalized audit relationship at atomic internal consumption. PR 4B adds exactly two Convex HTTP endpoints for consume and completion using timestamped per-request HMAC-SHA256 over the canonical method, path, timestamp, cryptographic request ID, and raw-body digest. Convex accepts current and optional previous key pairs for rotation and never receives ticket plaintext. Completion delivery retries network errors, `408`, `425`, `429`, and `5xx` up to three attempts with the same idempotent body and fresh service-request signatures. PR 4C remains responsible for Swift ticket issuance, exact-body hashing, and native integration; full PR 4 remains incomplete until it lands.
 - **Production authentication**: Clerk provides native Google and email-link sessions in Keychain. `AuthenticationManager` bridges Clerk into `ConvexClientWithAuth`; protected UI follows Convex auth state rather than Clerk user presence. Native callbacks use exact `com.reuban.sticky://callback` matching until associated domains are available. The development issuer is exactly `https://ruling-katydid-23.clerk.accounts.dev`, and Clerk's Convex integration must issue `aud: convex`.
 - **Production-data boundary**: Authentication alone does not start the product. `productionDataReadiness` remains `.awaitingWorkspaceProvisioning` in this PR, so `CompanionManager`, Ask, Teach, personas, floating chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team stay unavailable. Readiness is valid only as `.ready(userID:authGeneration:workspaceID:)` matching the current identity, generation, and workspace. PR 3 may call `markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning production-scoped storage. Auth or readiness loss increments lifecycle generations, cancels in-flight work, clears in-memory captures/messages, stops playback/hotkeys/overlays, and hides legacy windows.
 - **Auth operation generations**: Account generations protect identity-bound retry/login work; callback epochs independently preserve a valid callback across cached-user discovery and account transitions. Explicit sign-out invalidates callbacks. Sign-out completion is publisher-driven and has a distinct bounded retry failure state.
@@ -93,6 +93,14 @@ The app never calls external APIs directly. All requests go through a Worker tha
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
 Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
+
+The default `clicky-proxy` deployment remains legacy-only. The separate
+`sticky-onboarding-dev` environment closes those routes and exposes only
+`POST /v1/onboarding/chat`, `POST /v1/onboarding/tts`, and
+`POST /v1/onboarding/transcribe-token`. These routes require
+`Authorization: StickyTicket <opaque>`, consume the exact body binding before
+provider access, use only server-derived policy, stream provider bodies, and
+report sanitized completion through `ctx.waitUntil`.
 
 ### Key architecture decisions
 
@@ -205,6 +213,9 @@ replacement PRs remove them.
 | [convex/crons.ts](convex/crons.ts) | ~30 | Hourly triggers for issued-ticket, consumed-tombstone, and audit cleanup. |
 | [convex/requestTickets.test.ts](convex/requestTickets.test.ts) | ~1040 | Adversarial request-ticket authorization, setup lifecycle, quota, replay, concurrency, audit integrity, TOCTOU, privacy, rollback, and completion tests. |
 | [convex/workerRequestTicketCleanup.test.ts](convex/workerRequestTicketCleanup.test.ts) | ~260 | Retention-boundary, independent audit retention, bounded deletion, and continuation tests. |
+| [convex/http.ts](convex/http.ts) | ~180 | Exact HMAC-authenticated Worker consume and completion HTTP routes with bounded strict DTO parsing and generic failures. |
+| [convex/workerServiceBridge.ts](convex/workerServiceBridge.ts) | ~340 | Pure canonicalization, HMAC rotation verification, digesting, and strict Worker service payload validation. |
+| [convex/workerServiceBridge.test.ts](convex/workerServiceBridge.test.ts) | ~315 | Shared-vector compatibility, canonicalization, current/previous key rotation, timestamp, tamper, malformed DTO, route closure, and plaintext-ticket rejection tests. |
 | [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
 | [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
 | [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |
@@ -282,7 +293,12 @@ replacement PRs remove them.
 | [AuthenticationManager.swift](leanring-buddy/AuthenticationManager.swift) | ~960 | Configures Clerk and authenticated Convex, independently scopes callback/account/provisioning operations, publishes identity/workspace-bound readiness, and owns publisher-driven sign-out and bounded retries. |
 | [PersonalAccountBootstrapTypes.swift](leanring-buddy/PersonalAccountBootstrapTypes.swift) | ~40 | Decodable personal-workspace, membership, persona, and setup-state snapshot returned by Convex provisioning. |
 | [scripts/configure-auth-runtime.py](scripts/configure-auth-runtime.py) | ~100 | Safely copies public Clerk and Convex runtime values from ignored env files into Application Support without displaying them. |
-| [worker/src/index.ts](worker/src/index.ts) | ~142 | Cloudflare Worker proxy. Three routes: `/chat`, `/tts`, `/transcribe-token`. |
+| [worker/src/index.ts](worker/src/index.ts) | ~165 | Cloudflare Worker entrypoint that keeps the default legacy proxy routes separate from the closed onboarding development route set. |
+| [worker/src/onboarding.ts](worker/src/onboarding.ts) | ~770 | Strict ticket-authorized onboarding handlers with trusted policy, streaming, and bounded idempotent completion retry. |
+| [worker/src/service-auth.ts](worker/src/service-auth.ts) | ~120 | Per-request Worker-to-Convex HMAC signing and canonical request helpers. |
+| [worker/test/onboarding.test.ts](worker/test/onboarding.test.ts) | ~575 | Workers-runtime tests for auth, exact DTOs, replay denial, trusted policy, streaming, completion retry, cancellation, transcription windows, and legacy isolation. |
+| [worker/test/service-auth.test.ts](worker/test/service-auth.test.ts) | ~55 | Worker-side deterministic shared-vector digest, canonicalization, and HMAC signing compatibility test. |
+| [test-fixtures/workerServiceHmacVector.ts](test-fixtures/workerServiceHmacVector.ts) | ~15 | Non-secret canonical HMAC request vector shared by Worker signing and Convex verification tests. |
 | [leanring-buddy/personas/](leanring-buddy/personas/) | — | Optional bundled persona TASTE.md files. Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
 
 ---

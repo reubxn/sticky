@@ -167,7 +167,17 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`.
+Those legacy routes remain on the default `clicky-proxy` deployment. The
+separate `sticky-onboarding-dev` environment exposes only ticket-authorized
+`/v1/onboarding/chat`, `/v1/onboarding/tts`, and
+`/v1/onboarding/transcribe-token`. It consumes digest-bound, single-use tickets
+through Convex before contacting a provider and reports sanitized completion
+after streaming ends or disconnects.
+
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`,
+`ELEVENLABS_API_KEY`, plus `WORKER_HMAC_CURRENT_KEY_ID` and
+`WORKER_HMAC_CURRENT_KEY` for the onboarding environment. See
+`worker/README.md` for local validation, rotation, and deployment steps.
 
 ---
 
@@ -197,6 +207,10 @@ npx wrangler deploy
 ```
 
 For local development, create `worker/.dev.vars` with your keys and run `npx wrangler dev`.
+
+Onboarding development uses
+`npx wrangler dev --env sticky-onboarding-dev`. Do not deploy the default
+legacy Worker while validating onboarding routes.
 
 </details>
 
