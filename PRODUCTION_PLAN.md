@@ -38,9 +38,8 @@ decisions and may be revised through an architecture PR.
 2. The persona belongs to the membership's user and is unique to that
    workspace.
 3. A persona is never copied automatically between workspaces.
-4. Joining a workspace starts a fresh guided persona setup:
-   - structured essentials;
-   - followed by an AI interview.
+4. Joining a workspace starts one seamless, voice-first conversation with
+   Sticky. Text remains available as a fallback.
 5. A persona represents:
    - communication style;
    - decision-making taste;
@@ -58,6 +57,29 @@ decisions and may be revised through an architecture PR.
     is not restored.
 11. Removing a member purges the original persona records and approved evidence.
     Historical conversations retain only their independent frozen snapshots.
+
+### Conversational persona onboarding
+
+1. Sticky introduces itself, explains what the persona can do, and begins with
+   an open question such as what kind of work the member does.
+2. Follow-up questions adapt to the member's answers rather than following a
+   visible questionnaire.
+3. Voice is the primary input. Text is always available as a fallback.
+4. Answers are converted continuously into structured communication,
+   decision-making, expertise, and boundary records.
+5. Explicit onboarding answers save automatically. They do not enter the later
+   learning-suggestion approval queue.
+6. Once Sticky knows the member's work and at least one communication
+   preference, the persona becomes usable. The member may continue the deeper
+   interview later.
+7. Sticky shows an informational summary of what it learned, but activation
+   does not require approving that summary.
+8. Full persona records and evidence remain owner-private.
+9. A short boundary summary may be visible to teammates only after the persona
+   owner explicitly approves that summary.
+10. AI-generated interpretations must remain traceable to the owner's
+    onboarding answers and must never be treated as evidence from another
+    member.
 
 ### Workspace context
 
@@ -96,7 +118,9 @@ workspace. Context from one workspace must never enter another workspace.
    - the current private conversation;
    - relevant messages from the asking user's earlier private conversations
      with that same selected persona, weighted below the current conversation;
-   - relevant approved persona records and supporting sources.
+   - relevant active persona records and supporting sources. Active records are
+     either explicit onboarding records or records created from owner-approved
+     learning suggestions.
 6. When a selected persona becomes unavailable, historical conversations retain
    an immutable persona snapshot.
 7. Those historical conversations become read-only and cannot generate new
@@ -108,6 +132,9 @@ workspace. Context from one workspace must never enter another workspace.
    analysis finishes.
 
 ### Controlled persona learning
+
+This section applies after initial onboarding. Explicit onboarding answers use
+the automatic-save rules above.
 
 1. Only the persona owner's own interactions and Teach sessions may generate
    suggestions for that persona.
@@ -179,9 +206,23 @@ These relationships are contractual.
 
 ### `personaRecords`
 
-- Structured approved records for communication, judgment, expertise, and
+- Structured active records for communication, judgment, expertise, and
   boundaries.
+- Explicit onboarding answers create active, versioned records immediately.
+  Later passive learning creates inactive suggestions that become records only
+  after owner approval.
 - Evidence reference, provenance, confidence, and version metadata.
+
+### `personaBoundarySummaries`
+
+- A separate, bounded teammate-readable projection of owner-private boundary
+  records.
+- Persona, workspace, owner, summary text, source version, publication state,
+  approved timestamp, and superseded timestamp.
+- Only the persona owner may draft, approve, replace, or unpublish it.
+- Active workspace members may read only the currently approved summary while
+  both memberships and the persona remain active. They never receive the
+  underlying boundary records or evidence.
 
 ### `personaSuggestions`
 
@@ -192,7 +233,7 @@ These relationships are contractual.
 
 ### `personaVersions`
 
-- Immutable version metadata for approved persona changes.
+- Immutable version metadata for onboarding records and approved later changes.
 - Supports audit history and frozen conversation snapshots.
 
 ### `workspaceContext`
@@ -245,6 +286,7 @@ Authorization helpers return validated records rather than booleans:
 - `acceptWorkspaceInvite(inviteToken)`
 - `requirePersonaOwner(personaId)`
 - `requireUsablePersona(personaId)`
+- `requireReadableBoundarySummary(personaId)`
 - `requireConversationOwner(conversationId)`
 - `requireSuggestionOwner(suggestionId)`
 - `validateSuggestionProvenance(personaId, sourceId)`
@@ -268,6 +310,14 @@ Authorization helpers return validated records rather than booleans:
 
 Persona edits, training, approval, rejection, and evidence access require
 `requirePersonaOwner`. Workspace roles do not bypass this check.
+
+### Boundary-summary access
+
+Drafting, approving, replacing, and unpublishing a boundary summary require
+`requirePersonaOwner`. `requireReadableBoundarySummary` returns only the
+currently approved projection after validating active asker membership, active
+owner membership, the same workspace, and an active persona. It never returns
+private boundary records, evidence, superseded summaries, or draft text.
 
 ### Conversation access
 
@@ -311,7 +361,7 @@ For each Ask request:
 
 1. Convex verifies the asking user's active membership.
 2. Convex verifies that the selected persona is usable in the active workspace.
-3. Convex loads compact approved persona records.
+3. Convex loads compact active persona records.
 4. Convex retrieves only relevant context chunks from the active workspace.
 5. Convex loads the current private conversation first.
 6. Convex may retrieve relevant messages from earlier private conversations
@@ -416,6 +466,19 @@ Every public operation is tested as:
 
 ### Personas and learning
 
+- Onboarding cannot activate a persona until work context and at least one
+  communication preference are stored.
+- Explicit owner onboarding answers create active, versioned records
+  automatically with immutable answer provenance.
+- The informational onboarding summary does not block activation.
+- Skipping the deeper interview preserves active essentials and permits the
+  owner to resume later.
+- Another member cannot submit onboarding answers or alter setup progress.
+- Only the owner may draft, approve, replace, or unpublish the teammate boundary
+  summary.
+- Teammates receive only the current approved summary while both memberships
+  and the persona remain active; drafts, superseded summaries, private boundary
+  records, and evidence remain inaccessible.
 - Active members may use another active member's persona.
 - Members, admins, and workspace owners cannot edit another member's persona.
 - Non-owner use creates no suggestion or evidence.
@@ -536,43 +599,50 @@ implementation.
   context, plus its owner membership and persona.
 - Initial guided persona setup state.
 
-### PR 4 — Structured persona setup and ownership
+### PR 4 — Authenticated Worker request tickets
 
-- Structured essentials and AI interview.
-- Communication, judgment, expertise, and boundary records.
-- Owner-only edit and version APIs.
+- Purpose-bound, short-lived, single-use Convex tickets.
+- Authenticated onboarding chat, TTS, and transcription routes.
+- Atomic ticket consumption, quotas, rate limits, and audit metadata.
+- No general Ask access or client-authored trusted prompts.
 
-### PR 5 — Team workspaces and invitations
+### PR 5 — Voice-first conversational persona onboarding
+
+- One adaptive voice-first conversation with text fallback.
+- Automatic structured communication, judgment, expertise, and boundary
+  records from the owner's explicit answers.
+- Minimum activation threshold: work context plus one communication preference.
+- Optional deeper interview, informational summary, and owner-approved teammate
+  boundary summary.
+- Owner-only edit, immutable provenance, and version APIs.
+- Production data readiness remains locked until the remaining cloud data paths
+  exist.
+
+### PR 6 — Team workspaces and invitations
 
 - Workspace creation atomically records the required name, business type, and
   initial context profile, creator owner membership, and fresh persona.
 - Invite, accept, roles, member list, and removal.
 - Fresh persona setup for every new membership.
 
-### PR 6 — Workspace persona roster
+### PR 7 — Workspace persona roster
 
 - Reactive workspace member/persona list.
 - Persona wheel and picker integration.
 - Removed personas disappear immediately.
 
-### PR 7 — Workspace context and files
+### PR 8 — Workspace context and files
 
 - Business profile and brief.
 - Owner/admin editing.
 - R2 uploads, ingestion metadata, and authorized reads.
 
-### PR 8 — Private cloud conversations
+### PR 9 — Private cloud conversations
 
 - Convex conversations and messages.
 - User-only history.
 - Frozen persona snapshots.
 - Removed-member and unavailable-persona conversations become read-only.
-
-### PR 9 — Worker request tickets
-
-- Convex context assembly and single-use tickets.
-- Authenticated chat, TTS, and transcription routes.
-- Rate limits and usage logging.
 
 ### PR 10 — Context retrieval
 
@@ -605,6 +675,8 @@ The production conversion is complete when:
 - every user has one permanent personal workspace;
 - invite-only team membership works across devices;
 - every membership has one user-owned persona;
+- persona onboarding is a seamless voice-first conversation with text fallback
+  and a skippable deeper interview;
 - active members can use, but never train, one another's personas;
 - only owners can edit and approve their own persona;
 - workspace context is admin-managed and tenant-isolated;
