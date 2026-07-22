@@ -15,7 +15,7 @@
 import SwiftUI
 
 struct ChatHistorySidebar: View {
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     /// The same ChatViewModel the live ChatView is bound to. The sidebar
     /// reads `currentChatHistorySessionId` from it to highlight the

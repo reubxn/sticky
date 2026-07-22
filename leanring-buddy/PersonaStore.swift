@@ -92,6 +92,6 @@ enum PersonaStore {
     @MainActor
     static func uploadedProfilePicturePath(forPersonaId personaId: String) -> String? {
         guard personaId == myPersonaId || personaId == mePseudoPersona.id else { return nil }
-        return DashboardMockAuthState.shared.profilePicturePath
+        return AuthenticationManager.shared.localProfilePicturePath
     }
 }

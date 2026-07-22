@@ -39,9 +39,7 @@ enum AppBundleConfiguration {
         return nil
     }
 
-    /// Cached read of `~/Library/Application Support/com.learning-buddy.clicky/secrets.plist`.
-    /// First lookup hits disk; subsequent calls return the cached dictionary.
-    private static let cachedApplicationSupportSecrets: NSDictionary? = {
+    private static func applicationSupportSecrets() -> NSDictionary? {
         guard let applicationSupportDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -54,9 +52,5 @@ enum AppBundleConfiguration {
             .appendingPathComponent("secrets.plist")
 
         return NSDictionary(contentsOf: secretsFileURL)
-    }()
-
-    private static func applicationSupportSecrets() -> NSDictionary? {
-        cachedApplicationSupportSecrets
     }
 }

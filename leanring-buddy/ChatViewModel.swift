@@ -186,6 +186,15 @@ final class ChatViewModel: ObservableObject {
         activeChatHistorySessionId = UUID().uuidString
     }
 
+    func cancelProtectedActivity() {
+        currentSendTask?.cancel()
+        currentSendTask = nil
+        isResponding = false
+        messages.removeAll()
+        draftMessage = ""
+        lastErrorMessage = nil
+    }
+
     /// Currently active chat history session id, exposed so the chat
     /// history sidebar can highlight which session is loaded.
     var currentChatHistorySessionId: String {
@@ -234,6 +243,12 @@ final class ChatViewModel: ObservableObject {
     /// a user message + a placeholder assistant message to the list,
     /// then streams Claude's reply into the placeholder.
     func sendDraftMessage() {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            lastErrorMessage = "Workspace setup must finish before chat is available."
+            DashboardWindowController.shared.showDashboardWindow()
+            return
+        }
+
         let trimmedDraft = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedDraft.isEmpty else { return }
         guard !isResponding else { return }

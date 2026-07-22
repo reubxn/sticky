@@ -19,7 +19,7 @@
 import SwiftUI
 
 struct PersonaWheelView: View {
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     /// All personas to render around the wheel — usually
     /// `PersonaStore.allWheelPersonas` (Me, Team, then teammates).

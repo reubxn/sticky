@@ -16,6 +16,7 @@
 //
 
 import AppKit
+import ClerkKit
 import SwiftUI
 
 @MainActor
@@ -53,6 +54,12 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     /// in the mini panel") jump straight to a specific tab. Passing
     /// nil preserves whatever section was last visible.
     func toggleDashboardWindow(initialSection: DashboardSection? = nil) {
+        if AuthenticationManager.shared.isSignedIn
+            && !AuthenticationManager.shared.canAccessProductionFeatures {
+            showDashboardWindow()
+            return
+        }
+
         if let dashboardWindow, dashboardWindow.isVisible {
             if dashboardWindow.isKeyWindow {
                 dashboardWindow.orderOut(nil)
@@ -79,16 +86,37 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func showDashboardWindow(initialSection: DashboardSection? = nil) {
+        if let initialSection,
+           AuthenticationManager.shared.canAccessProductionFeatures {
+            DashboardNavigationState.shared.selectedSection = initialSection
+        }
+
+        if dashboardWindow == nil {
+            dashboardWindow = createDashboardWindow()
+        }
+
+        guard let dashboardWindow else { return }
+        dashboardWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     /// Convenience: open the dashboard pinned to a specific persona
     /// in the Personas tab. The mini-panel passes a persona id when
     /// the user clicks a persona row to view it.
     func openShowingPersona(personaId: String) {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            showDashboardWindow()
+            return
+        }
+
         DashboardNavigationState.shared.focusedPersonaId = personaId
         toggleDashboardWindow(initialSection: .tastes)
     }
 
     private func createDashboardWindow() -> NSWindow {
         let dashboardRootView = DashboardView(companionManager: companionManager)
+            .environment(Clerk.shared)
         let hostingController = NSHostingController(rootView: dashboardRootView)
 
         let window = NSWindow(

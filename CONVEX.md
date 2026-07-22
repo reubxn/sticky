@@ -1,8 +1,8 @@
 # Convex backend
 
 The root npm project owns Sticky's Convex schema, functions, generated types,
-and backend tests. The macOS app is not connected to Convex in this bootstrap
-slice.
+and backend tests. The native macOS app authenticates with Clerk and passes its
+session token to Convex through `ClerkConvex`.
 
 ## Deployment safety
 
@@ -60,6 +60,77 @@ Set backend secrets with `npx convex env set NAME value` against the intended
 deployment. Store values in the team's secret manager and CI environment; do
 not place them in source files, npm scripts, or committed env files.
 
-Authentication provider configuration is deliberately deferred. Until
-`convex/auth.config.ts` is introduced with the selected provider, deployed
-protected operations will deny callers because Convex has no verified identity.
+## Clerk authentication
+
+The development Clerk instance uses Google and email-link authentication.
+`convex/auth.config.ts` reads `CLERK_JWT_ISSUER_DOMAIN` from the selected Convex
+deployment and requires Clerk's `convex` JWT audience. For the linked
+development instance, the exact issuer is:
+
+```text
+https://ruling-katydid-23.clerk.accounts.dev
+```
+
+In the Clerk Dashboard, activate the Convex integration before testing. Confirm
+new development session JWTs contain `aud: convex`; changing the template does
+not repair an already-issued session, so sign out fully and sign in again.
+
+Keep Clerk keys in ignored `.env.clerk.local` and Convex deployment values in
+ignored `.env.local`. To copy only the public publishable key and deployment URL
+into the app's existing Application Support `secrets.plist`, run:
+
+```bash
+python3 scripts/configure-auth-runtime.py
+```
+
+The script reads `CLERK_PUBLISHABLE_KEY` and `CONVEX_URL`, preserves unrelated
+plist entries, uses an atomic mode-`0600` write, and never displays values.
+`CLERK_SECRET_KEY` remains outside the app and is never copied.
+
+The native callback is `com.reuban.sticky://callback`. Add that exact URL to
+Clerk's native redirect allowlist. Associated domains are deferred until the
+app has a paid Apple Developer account.
+
+After running the script, launch the signed app from Xcode and test both Google
+and email-link sign-in. Verify the custom callback brings the dashboard forward
+and the app reaches the authenticated "account connected" surface only after
+Convex reports authentication. This PR intentionally leaves production data
+readiness at `awaitingWorkspaceProvisioning`: Ask, Teach, personas, floating
+chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team remain unavailable.
+PR 3 provisioning is responsible for changing that readiness only after a
+workspace and production-scoped storage exist.
+
+The current Profile view mixes account fields with legacy TASTE export, and the
+current Settings view controls disabled legacy companion features, so neither
+is exposed in this slice. The account-connected surface shows verified Clerk
+identity and sign-out without loading those views.
+
+The local display-name, role, and profile-picture overrides are keyed by the
+verified Clerk user ID. Existing taste, chat-history, and recording-history
+stores remain unscoped local MVP data and are never exposed to authenticated
+accounts in this slice. They must not be treated as account data and remain
+temporary until their planned cloud replacement PRs.
+
+Only exact `com.reuban.sticky://callback` URLs are accepted. Valid callbacks are
+queued while Clerk loads, removed before handling, and retried a bounded number
+of times without blocking later callbacks. Callback epochs are independent of
+authenticated-user generations, so discovering a cached user or completing an
+account switch does not cancel the callback producing that transition.
+
+Normal Retry uses ClerkKit 1.3.2's public `refreshEnvironment()` and
+`refreshClient()` APIs. ClerkKit 1.3.2 ignores a second `Clerk.configure` call,
+so if Retry detects changed publishable-key or Convex URL values it shows a
+restart-required failure and does not replace the active Convex client. Sign-out
+has its own bounded retry state and completes only when the Convex auth
+publisher reports unauthenticated; timeout is the operation failure path.
+
+Production readiness is bound to the verified Clerk user ID, current auth
+generation, and active workspace ID. PR 3 must call
+`markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning
+that exact identity and workspace.
+
+Manual Xcode validation must confirm Google and email-link sign-in, cold-launch
+callbacks, unrelated URL rejection, restart-required after rewriting
+`secrets.plist`, account switching, publisher-driven sign-out and retry, and
+that every legacy product surface remains inaccessible after authentication.
+Restart the app before validating newly written runtime values.

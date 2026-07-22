@@ -7,9 +7,10 @@
 //  opens a floating panel with companion voice controls.
 //
 
+import Combine
 import ServiceManagement
-import SwiftUI
 import Sparkle
+import SwiftUI
 
 @main
 struct leanring_buddyApp: App {
@@ -32,6 +33,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
+    private var pendingAuthenticationURLs: [URL] = []
+    private var hasFinishedLaunching = false
+    private var authenticationStateSubscription: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Sticky: Starting...")
@@ -45,18 +49,80 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         ThemeManager.shared.applyAppearanceToRunningApp()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
-        companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
-        }
+        observeAuthenticationState()
+        AuthenticationManager.shared.configure()
+        hasFinishedLaunching = true
+        handleAuthenticationURLs(pendingAuthenticationURLs)
+        pendingAuthenticationURLs.removeAll()
         registerAsLoginItemIfNeeded()
         // startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        authenticationStateSubscription?.cancel()
         companionManager.stop()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard hasFinishedLaunching else {
+            pendingAuthenticationURLs.append(contentsOf: urls)
+            return
+        }
+
+        handleAuthenticationURLs(urls)
+    }
+
+    private func handleAuthenticationURLs(_ urls: [URL]) {
+        for url in urls {
+            guard AuthenticationManager.isSupportedCallbackURL(url) else { continue }
+            DashboardWindowController.shared.setCompanionManager(companionManager)
+            DashboardWindowController.shared.showDashboardWindow()
+            AuthenticationManager.shared.handleIncomingURL(url)
+        }
+    }
+
+    private func observeAuthenticationState() {
+        authenticationStateSubscription = AuthenticationManager.shared.$authenticationState
+            .combineLatest(AuthenticationManager.shared.$productionDataReadiness)
+            .combineLatest(AuthenticationManager.shared.$authGeneration)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] authenticationAndReadiness, _ in
+                let authenticationState = authenticationAndReadiness.0
+                self?.applyAuthenticationState(authenticationState)
+            }
+    }
+
+    private func applyAuthenticationState(
+        _ authenticationState: ApplicationAuthenticationState
+    ) {
+        switch authenticationState {
+        case .authenticated:
+            if AuthenticationManager.shared.canAccessProductionFeatures {
+                companionManager.start()
+                if !companionManager.hasCompletedOnboarding
+                    || !companionManager.allPermissionsGranted {
+                    menuBarPanelManager?.showPanelOnLaunch()
+                }
+            } else {
+                companionManager.stop()
+                menuBarPanelManager?.handleAuthenticationLoss()
+                menuBarPanelManager?.showPanelOnLaunch()
+            }
+        case .configurationMissing,
+             .loading,
+             .signedOut,
+             .signingOut,
+             .signOutFailure,
+             .failure:
+            companionManager.stop()
+            menuBarPanelManager?.handleAuthenticationLoss()
+
+            if authenticationState != .loading
+                && authenticationState != .signingOut {
+                menuBarPanelManager?.showPanelOnLaunch()
+            }
+        }
     }
 
     /// Registers the app as a login item so it launches automatically on

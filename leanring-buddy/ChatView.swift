@@ -416,7 +416,7 @@ private struct ChatMessageCard: View {
     /// snapshot (older messages from before persona-aware chat landed).
     let fallbackAssistantAvatar: PersonaAvatar
 
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     var body: some View {
         HStack(alignment: .top, spacing: ElevenLabsBrand.Spacing.sm) {
