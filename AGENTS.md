@@ -374,6 +374,9 @@ Clarity over concision.
 
 ## Git workflow
 
+- **Protected release baseline:** `main` must remain pinned to the verified May 8 baseline (`7792eae`) until Reuban explicitly approves the complete rebuild after end-to-end validation. Do not merge, push, or target incremental work to `main`.
+- **Production integration branch:** `feature/production-rebuild` is the base and merge target for all production-rebuild work. Create child branches from it and open incremental PRs back into it.
+- **Final release:** Draft PR #26 is the single eventual `feature/production-rebuild` → `main` update. Never mark it ready or merge it without explicit user approval.
 - Branches: `feature/description` or `fix/description`.
 - Commit messages: imperative mood, concise, the "why" not the "what".
 - Don't force-push to `main`.
