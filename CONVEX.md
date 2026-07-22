@@ -4,6 +4,25 @@ The root npm project owns Sticky's Convex schema, functions, generated types,
 and backend tests. The macOS app is not connected to Convex in this bootstrap
 slice.
 
+## Deployment safety
+
+Before running any Convex CLI command or `convex:*` npm script, inspect
+`CONVEX_DEPLOYMENT` in `.env.local` and confirm that its team, project, and
+deployment are the intended target. Stop and ask if the target is unclear.
+
+Plain `npx convex dev` and the root Convex scripts use the configured
+`CONVEX_DEPLOYMENT`. That deployment may be cloud-hosted, and development,
+codegen, run, environment, and deployment commands may read or mutate it.
+
+For isolated local validation, explicitly force anonymous agent mode:
+
+```bash
+CONVEX_AGENT_MODE=anonymous npx convex dev --once
+```
+
+Never run `convex deploy` or `npm run convex:deploy` without explicit user
+authorization for that production deployment operation.
+
 ## Local setup
 
 Requirements: Node.js 20 or newer and access to the Sticky Convex project.

@@ -198,5 +198,13 @@ export async function requireUsablePersona(
     return denyResourceUnavailable();
   }
 
+  const ownerProfile = await ctx.db.get("profiles", persona.ownerUserId);
+  if (
+    ownerProfile === null ||
+    ownerProfile.lifecycleStatus !== "active"
+  ) {
+    return denyResourceUnavailable();
+  }
+
   return { askingMembership, ownerMembership, persona };
 }

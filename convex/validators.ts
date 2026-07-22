@@ -54,15 +54,24 @@ export const profileValidator = v.object({
   updatedAt: v.number(),
 });
 
-export const workspaceValidator = v.object({
-  kind: workspaceKindValidator,
+const workspaceFieldsValidator = v.object({
   name: v.string(),
-  businessType: v.optional(v.string()),
   createdByProfileId: v.id("profiles"),
   lifecycleStatus: workspaceLifecycleStatusValidator,
   createdAt: v.number(),
   updatedAt: v.number(),
 });
+
+export const workspaceValidator = v.union(
+  workspaceFieldsValidator.extend({
+    kind: v.literal("personal"),
+    businessType: v.optional(v.string()),
+  }),
+  workspaceFieldsValidator.extend({
+    kind: v.literal("team"),
+    businessType: v.string(),
+  }),
+);
 
 export const workspaceMemberValidator = v.object({
   workspaceId: v.id("workspaces"),

@@ -117,6 +117,7 @@ async function seedWorkspace() {
     const unrelatedWorkspaceId = await ctx.db.insert("workspaces", {
       kind: "team",
       name: "Other workspace",
+      businessType: "Software",
       createdByProfileId: unrelatedProfileId,
       lifecycleStatus: "active",
       createdAt: timestamp,
@@ -417,6 +418,24 @@ describe("Convex bootstrap", () => {
       await ctx.db.patch("workspaceMembers", ids.ownerMembershipId, {
         status: "removed",
         removedAt: 1_700_000_000_001,
+      });
+    });
+
+    const asMember = testBackend.withIdentity(memberIdentity);
+    await expectAuthorizationError(
+      asMember.run(
+        async (ctx) => await requireUsablePersona(ctx, ids.ownerPersonaId),
+      ),
+      "UNAUTHORIZED",
+      "Resource unavailable",
+    );
+  });
+
+  test("an inactive persona owner profile makes its persona unusable", async () => {
+    const { ids, testBackend } = await seedWorkspace();
+    await testBackend.run(async (ctx) => {
+      await ctx.db.patch("profiles", ids.ownerProfileId, {
+        lifecycleStatus: "deletionPending",
       });
     });
 

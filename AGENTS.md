@@ -179,12 +179,13 @@ Persona bundles are loaded only from TASTE.md files in Application Support or th
 | File | Lines | Purpose |
 |------|-------|---------|
 | [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~610 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
-| [CONVEX.md](CONVEX.md) | ~50 | Convex local setup, deployment, generated-file, and secret-handling instructions. |
+| [CONVEX.md](CONVEX.md) | ~65 | Convex deployment safety, local setup, generated-file, and secret-handling instructions. |
 | [convex/schema.ts](convex/schema.ts) | ~40 | Initial production tables and indexes for profiles, workspaces, memberships, and membership-owned personas. |
 | [convex/validators.ts](convex/validators.ts) | ~90 | Shared lifecycle, role, setup-state, and core-table validators. |
 | [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
 | [convex/health.ts](convex/health.ts) | ~20 | Minimal public backend health query. |
-| [convex/authorization.test.ts](convex/authorization.test.ts) | ~430 | Edge-runtime Convex test harness covering health, authorization errors, lifecycle denial, relationship integrity, and cross-workspace isolation. |
+| [convex/authorization.test.ts](convex/authorization.test.ts) | ~450 | Edge-runtime Convex test harness covering health, authorization errors, lifecycle denial, relationship integrity, and cross-workspace isolation. |
+| [convex/schema.test.ts](convex/schema.test.ts) | ~65 | Runtime and inferred-type tests for personal and team workspace schema requirements. |
 | [vitest.config.ts](vitest.config.ts) | ~10 | Vitest configuration for Convex tests in the edge runtime. |
 | [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
 | [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3435 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
@@ -375,5 +376,13 @@ override what you may have learned about Convex from training data.
 
 Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
+
+Before running any Convex command, inspect `CONVEX_DEPLOYMENT` in `.env.local`
+and confirm its team, project, and deployment are the intended target. Plain
+`convex dev` and the root Convex scripts use that configured deployment and may
+mutate a cloud backend. For isolated local validation, explicitly run
+`CONVEX_AGENT_MODE=anonymous npx convex dev --once`. Never run `convex deploy`
+or `npm run convex:deploy` without explicit user authorization for that
+production deployment operation.
 
 <!-- convex-ai-end -->
