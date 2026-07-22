@@ -1,0 +1,27 @@
+{
+  "name": "sticky-backend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "npm run test:convex",
+    "convex:dev": "convex dev",
+    "convex:dev:once": "convex dev --once",
+    "convex:codegen": "convex codegen",
+    "convex:deploy": "convex deploy",
+    "test:convex": "vitest run",
+    "test:convex:watch": "vitest",
+    "typecheck:convex": "tsc --noEmit -p convex/tsconfig.json"
+  },
+  "dependencies": {
+    "convex": "^1.42.3"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "convex-test": "^0.0.54",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
