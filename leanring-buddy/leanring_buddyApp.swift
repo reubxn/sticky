@@ -84,11 +84,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private func observeAuthenticationState() {
         authenticationStateSubscription = AuthenticationManager.shared.$authenticationState
             .combineLatest(AuthenticationManager.shared.$productionDataReadiness)
-            .combineLatest(AuthenticationManager.shared.$authGeneration)
-            .removeDuplicates()
+            .removeDuplicates { previous, current in
+                previous.0 == current.0 && previous.1 == current.1
+            }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] authenticationAndReadiness, _ in
-                let authenticationState = authenticationAndReadiness.0
+            .sink { [weak self] authenticationState, _ in
                 self?.applyAuthenticationState(authenticationState)
             }
     }
