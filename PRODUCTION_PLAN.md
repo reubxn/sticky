@@ -599,7 +599,7 @@ implementation.
   context, plus its owner membership and persona.
 - Initial guided persona setup state.
 
-### PR 4A — Convex request-ticket foundation
+### PR 4A — Convex request-ticket foundation (merged)
 
 - Purpose-bound, short-lived, single-use tickets limited to onboarding chat,
   TTS, and transcription.
@@ -611,15 +611,28 @@ implementation.
   plus 24 hours, consumed tombstones for 24 hours, and audits for 30 days.
 - Trusted provider policy is server-derived. No general Ask access or
   client-authored model, system prompt, voice, or output policy.
-- No public Worker consume endpoint until service authentication exists.
+- No public Worker consume endpoint existed before service authentication.
 
-### PR 4B — Worker and native ticket integration
+### PR 4B — Worker routes and HMAC service bridge (current)
 
 - Timestamped HMAC service authentication from the Worker to Convex.
 - Authenticated onboarding chat, TTS, and transcription Worker routes.
 - Public HTTP consume and completion handlers that wrap the PR 4A internals.
+- Exact Worker request-body binding, trusted provider policy, streaming, and
+  sanitized completion reporting.
+
+PR 4B does not change the native app or make it issue or redeem tickets.
+
+### PR 4C — Native ticket client (future)
+
 - Exact-body hashing in Swift, streaming integration, route closure, and
   removal of onboarding direct-provider paths.
+- Native issuance and `Authorization: StickyTicket <opaque>` integration for
+  onboarding chat, TTS, and transcription.
+- Tests proving the native body bytes exactly match the issued ticket binding.
+
+The complete PR 4 outcome remains incomplete until PR 4C lands. Production
+readiness stays locked throughout these slices.
 
 ### PR 5 — Voice-first conversational persona onboarding
 

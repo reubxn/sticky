@@ -169,6 +169,19 @@ Restart the app before validating newly written runtime values.
 
 ## Onboarding Worker request tickets
 
+This work is intentionally split into three slices:
+
+- **PR 4A (merged):** Convex ticket issuance, policy, atomic consumption,
+  completion storage, quotas, retention, and cleanup.
+- **PR 4B (current):** the HMAC-authenticated Convex service bridge and
+  Cloudflare onboarding provider routes.
+- **PR 4C (future):** Swift exact-body hashing, ticket issuance, and native
+  onboarding route integration.
+
+PR 4B does not modify Swift or claim native integration. The complete PR 4
+outcome remains incomplete until PR 4C lands, and production readiness remains
+locked.
+
 `requestTickets:issueOnboarding` is the only public ticket function in PR 4A.
 It authenticates through Convex, accepts only a persona ID, one of the three
 onboarding scopes, the lowercase SHA-256 digest of the exact future Worker
@@ -197,9 +210,46 @@ continuation with the original cutoff only when a full batch was found. Audit
 metadata contains no ticket plaintext or digest, prompt, answer, transcript,
 TTS text or audio, raw IP, or user-agent.
 
-PR 4A intentionally defines internal consume and completion mutations only.
-There is no public Convex HTTP endpoint for the Worker. PR 4B must configure
-and verify timestamped Worker-to-Convex HMAC service authentication before
-adding HTTP consume or completion. Do not expose the internal mutation
-contracts through a public action or accept a Clerk client token as Worker
-service authentication.
+The Worker service bridge exposes exactly two POST endpoints:
+
+- `/internal/worker/request-tickets/consume`
+- `/internal/worker/request-tickets/complete`
+
+They accept digest-only ticket bindings and strict JSON DTOs. Every call is
+authenticated with a timestamped HMAC-SHA256 signature over the canonical
+method, path, timestamp, request ID, and SHA-256 digest of the raw body. The
+timestamp window is 30 seconds, request IDs are cryptographically generated,
+and signature verification uses Web Crypto's constant-time HMAC verification.
+Convex accepts the configured current key and, during rotation, an optional
+previous key. It returns generic authentication, validation, and authorization
+errors without exposing ticket or tenant state.
+
+Configure these Convex deployment variables through the team's secret manager:
+
+```text
+WORKER_HMAC_CURRENT_KEY_ID
+WORKER_HMAC_CURRENT_KEY
+WORKER_HMAC_PREVIOUS_KEY_ID      # optional during rotation
+WORKER_HMAC_PREVIOUS_KEY         # optional during rotation
+```
+
+Use at least 32 random bytes for each HMAC key. Rotate by first moving the old
+current pair to the previous pair in Convex, then setting a fresh current pair
+in Convex and the `sticky-onboarding-dev` Worker. After all old Worker
+instances and in-flight requests have expired, remove the previous pair.
+Never expose these endpoints through a public Convex function, accept a Clerk
+token as Worker service authentication, or send the opaque ticket to Convex.
+
+Completion reporting retries network failures and only transient HTTP statuses
+(`408`, `425`, `429`, and `5xx`) up to three total attempts with short backoff.
+All other `4xx` responses are terminal request denials. Every retry preserves
+the original consumption ID, Worker request ID, and completion DTO for Convex
+idempotency while signing the HTTP attempt with a fresh service-request ID.
+
+Worker and Convex tests consume one shared deterministic canonical HMAC vector
+covering the exact body bytes, digest, canonical request, key ID, key, and
+signature. `convex-test` exercises exact HTTP route/method closure and strict
+malformed-request responses, but it cannot inject Convex deployment environment
+variables into an HTTP action runtime. The shared vector therefore tests the
+real Worker signer directly against the real Convex verifier, including
+mutated-body rejection, without introducing a test-only environment bypass.

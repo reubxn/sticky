@@ -1,23 +1,22 @@
-/**
- * Clicky Proxy Worker
- *
- * Proxies requests to Claude and ElevenLabs APIs so the app never
- * ships with raw API keys. Keys are stored as Cloudflare secrets.
- *
- * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
- */
+import {
+  handleOnboardingChat,
+  handleOnboardingTranscribe,
+  handleOnboardingTTS,
+} from "./onboarding";
 
-interface Env {
-  ANTHROPIC_API_KEY: string;
-  ELEVENLABS_API_KEY: string;
-  ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
-}
+export type WorkerEnvironment = Omit<
+  Env,
+  "ONBOARDING_ROUTES_ENABLED"
+> & {
+  ONBOARDING_ROUTES_ENABLED: "true" | "false";
+};
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: WorkerEnvironment,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method !== "POST") {
@@ -25,6 +24,19 @@ export default {
     }
 
     try {
+      if (env.ONBOARDING_ROUTES_ENABLED === "true") {
+        if (url.pathname === "/v1/onboarding/chat") {
+          return await handleOnboardingChat(request, env, ctx);
+        }
+        if (url.pathname === "/v1/onboarding/tts") {
+          return await handleOnboardingTTS(request, env, ctx);
+        }
+        if (url.pathname === "/v1/onboarding/transcribe-token") {
+          return await handleOnboardingTranscribe(request, env, ctx);
+        }
+        return new Response("Not found", { status: 404 });
+      }
+
       if (url.pathname === "/chat") {
         return await handleChat(request, env);
       }
@@ -37,9 +49,16 @@ export default {
         return await handleTranscribeToken(env);
       }
     } catch (error) {
-      console.error(`[${url.pathname}] Unhandled error:`, error);
+      console.error(
+        JSON.stringify({
+          event: "worker_request_failed",
+          route: url.pathname,
+          errorType:
+            error instanceof Error ? error.name : "UnknownError",
+        }),
+      );
       return new Response(
-        JSON.stringify({ error: String(error) }),
+        JSON.stringify({ error: "request_failed" }),
         { status: 500, headers: { "content-type": "application/json" } }
       );
     }
@@ -48,7 +67,10 @@ export default {
   },
 };
 
-async function handleChat(request: Request, env: Env): Promise<Response> {
+async function handleChat(
+  request: Request,
+  env: WorkerEnvironment,
+): Promise<Response> {
   const body = await request.text();
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -63,7 +85,6 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/chat] Anthropic API error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
@@ -79,7 +100,9 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleTranscribeToken(env: Env): Promise<Response> {
+async function handleTranscribeToken(
+  env: WorkerEnvironment,
+): Promise<Response> {
   const response = await fetch(
     "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
     {
@@ -92,7 +115,6 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/transcribe-token] AssemblyAI token error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
@@ -106,7 +128,10 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
   });
 }
 
-async function handleTTS(request: Request, env: Env): Promise<Response> {
+async function handleTTS(
+  request: Request,
+  env: WorkerEnvironment,
+): Promise<Response> {
   const body = await request.text();
   const voiceId = env.ELEVENLABS_VOICE_ID;
 
@@ -125,7 +150,6 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/tts] ElevenLabs API error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
