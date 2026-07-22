@@ -53,7 +53,6 @@ final class CompanionManager: ObservableObject {
     @Published var showOnboardingVideo: Bool = false
     @Published var onboardingVideoOpacity: Double = 0.0
     private var onboardingVideoEndObserver: NSObjectProtocol?
-    private var onboardingDemoTimeObserver: Any?
 
     // MARK: - Onboarding Prompt Bubble
 
@@ -1875,7 +1874,7 @@ final class CompanionManager: ObservableObject {
     element pointing:
     you have a small glowing blue orb cursor that can fly to and point at things on screen. **use it aggressively.** the pointing is one of the best parts of this product — every time you reference something specific on screen, point at it. err *heavily* on the side of pointing. if you can name the thing, you can point at the thing.
 
-    **most importantly: when you critique something, suggest a change, or recommend a fix, point at the exact thing you're talking about.** this is non-negotiable. if you say "the headline is too long," point at the headline. if you say "crop the feet," point at the feet. if you say "the logo needs to be bigger," point at the logo. if you say "the brand should feel more swedish," point at the empty area where the flag or *Made in Sweden* should go. the cursor on the thing is what makes the feedback land — words alone are noise, words plus the cursor on the actual pixel is craft.
+    **most importantly: when you critique something, suggest a change, or recommend a fix, point at the exact thing you're talking about.** this is non-negotiable. if you say "the headline is too long," point at the headline. if you say "the logo needs to be bigger," point at the logo. if you say a missing element belongs in a specific area, point at that area. the cursor on the thing is what makes the feedback land — words alone are noise, words plus the cursor on the actual pixel is craft.
 
     when to point:
     - critiquing or suggesting a change to a specific element on screen → point at that element. always.
@@ -1894,7 +1893,7 @@ final class CompanionManager: ObservableObject {
 
     if pointing genuinely wouldn't help, append [POINT:none] — but use this sparingly. when in doubt, point.
 
-    whenever you include a [POINT:x,y:label] tag (i.e. you're actually pointing at something, not [POINT:none]), you MUST also include a [BUBBLE:caption] tag immediately after it. the caption is a tiny speech bubble that pops out of the cursor at the target — it's the single sharpest line of your reply, in your own voice, all lowercase, no quotes, no emojis, max 6 words. it should land like a callout, not a label. punchy verbs ("crop the feet", "needs the flag here", "double this"), reactions ("too small", "throws the eye"), or imperatives ("click here", "open this") all work. don't just restate the element name — say the *thing about it* that you said in your spoken reply, compressed. skip [BUBBLE:...] entirely when [POINT:none] — there's nothing to caption.
+    whenever you include a [POINT:x,y:label] tag (i.e. you're actually pointing at something, not [POINT:none]), you MUST also include a [BUBBLE:caption] tag immediately after it. the caption is a tiny speech bubble that pops out of the cursor at the target — it's the single sharpest line of your reply, in your own voice, all lowercase, no quotes, no emojis, max 6 words. it should land like a callout, not a label. punchy verbs ("shorten this", "move it here", "double this"), reactions ("too small", "throws the eye"), or imperatives ("click here", "open this") all work. don't just restate the element name — say the *thing about it* that you said in your spoken reply, compressed. skip [BUBBLE:...] entirely when [POINT:none] — there's nothing to caption.
 
     the order at the end of your reply for a single-pointer answer is: spoken text, then [POINT:...], then [BUBBLE:...] (only when pointing).
 
@@ -1908,8 +1907,8 @@ final class CompanionManager: ObservableObject {
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
     - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control][BUBBLE:click here to commit]"
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2][BUBBLE:over on your other screen]"
-    - critique on a poster: "the feet are throwing me off — crop them above the ankles or shoot from a higher angle. [POINT:640,1180:feet][BUBBLE:crop above the ankles]"
-    - flagging what's missing: "this could be any sauna company. it needs *Made in Sweden* and the flag, somewhere down here in the empty space under the headline. [POINT:520,940:empty space below headline][BUBBLE:swedish flag goes here]"
+    - critique on a poster: "the headline is competing with the image — shorten it to one line so the visual can lead. [POINT:640,180:headline][BUBBLE:cut this to one line]"
+    - flagging what's missing: "the date needs a clearer home — put it in this empty space below the headline. [POINT:520,940:empty space below headline][BUBBLE:put the date here]"
     - recommending a specific change: "the logo is too small — needs to be at least double this size to earn the brand presence. [POINT:120,80:logo][BUBBLE:double this size]"
     - multi-step in figma: "first, grab the rectangle tool from the toolbar at the top. [POINT:480,32:rectangle tool][BUBBLE:grab this] then drag a frame across the empty area in the middle of the canvas. [POINT:760,440:empty canvas area][BUBBLE:drag a frame here] and finally drop a fill on it from the right panel. [POINT:1340,220:fill swatch][BUBBLE:set the fill]"
     - multi-step in xcode: "open the source control menu up top. [POINT:285,11:source control menu][BUBBLE:click here] then pick commit from the dropdown. [POINT:300,90:commit menu item][BUBBLE:then this]"
@@ -2090,7 +2089,7 @@ final class CompanionManager: ObservableObject {
 
         you are not a neutral assistant in costume — you are this person, and this person has opinions. when the user shows you work and asks what you think, give a real take with one or two specific, concrete suggestions tied to exactly what's on screen (the headline, the crop, the colors, a specific element you can name). do not hedge. do not list every possibility. pick the one or two changes \(teammateBundle.displayName) would actually push for and say what they'd be — name the thing, name the fix. specifics earn the opinion.
 
-        **when you critique or suggest a change, always point at the thing you're talking about using the [POINT:x,y:label] tag described later in this prompt.** if you say "crop the feet," point at the feet. if you say "the brand needs to feel swedish," point at the empty area where the flag belongs. if you say "the logo is too small," point at the logo. the cursor on the actual pixel is what turns a quote into craft. critique without pointing is a missed beat.
+        **when you critique or suggest a change, always point at the thing you're talking about using the [POINT:x,y:label] tag described later in this prompt.** if you say "shorten the headline," point at the headline. if you say a missing element belongs in an empty area, point at that area. if you say "the logo is too small," point at the logo. the cursor on the actual pixel is what turns a quote into craft. critique without pointing is a missed beat.
 
         pick the lens \(teammateBundle.displayName) naturally reaches for from this list and use it implicitly (you don't have to label it out loud unless it sharpens the point): product / user, craft / quality, strategy / leverage, risk / trust, taste / aesthetics / narrative, execution / timeline. brand and identity work usually pulls the taste lens or the strategy lens — pick whichever \(teammateBundle.displayName) would.
 
@@ -3329,8 +3328,8 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Onboarding Video
 
-    /// Sets up the onboarding video player, starts playback, and schedules
-    /// the demo interaction at 40s. Called by BlueCursorView when onboarding starts.
+    /// Sets up the onboarding video player and starts playback.
+    /// Called by BlueCursorView when onboarding starts.
     func setupOnboardingVideo() {
         guard let videoURL = URL(string: "https://stream.mux.com/e5jB8UuSrtFABVnTHCR7k3sIsmcUHCyhtLu1tzqLlfs.m3u8") else { return }
 
@@ -3351,16 +3350,6 @@ final class CompanionManager: ObservableObject {
             self.onboardingVideoOpacity = 1.0
             // Fade audio volume from 0 → 1 over 2s to match visual fade
             self.fadeInVideoAudio(player: player, targetVolume: 1.0, duration: 2.0)
-        }
-
-        // At 40 seconds into the video, trigger the onboarding demo where
-        // Sticky flies to something interesting on screen and comments on it
-        let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
-        onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
-            forTimes: [NSValue(time: demoTriggerTime)],
-            queue: .main
-        ) { [weak self] in
-            self?.performOnboardingDemoInteraction()
         }
 
         // Fade out and clean up when the video finishes
@@ -3384,10 +3373,6 @@ final class CompanionManager: ObservableObject {
 
     func tearDownOnboardingVideo() {
         showOnboardingVideo = false
-        if let timeObserver = onboardingDemoTimeObserver {
-            onboardingVideoPlayer?.removeTimeObserver(timeObserver)
-            onboardingDemoTimeObserver = nil
-        }
         onboardingVideoPlayer?.pause()
         onboardingVideoPlayer = nil
         if let observer = onboardingVideoEndObserver {
@@ -3448,82 +3433,4 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    // MARK: - Onboarding Demo Interaction
-
-    private static let onboardingDemoSystemPrompt = """
-    you're sticky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
-
-    make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
-
-    CRITICAL COORDINATE RULE: you MUST only pick elements near the CENTER of the screen. your x coordinate must be between 20%-80% of the image width. your y coordinate must be between 20%-80% of the image height. do NOT pick anything in the top 20%, bottom 20%, left 20%, or right 20% of the screen. no menu bar items, no dock icons, no sidebar items, no items near any edge. only things clearly in the middle area of the screen. if the only interesting things are near the edges, pick something boring in the center instead.
-
-    respond with ONLY your short comment followed by the coordinate tag. nothing else. all lowercase.
-
-    format: your comment [POINT:x,y:label]
-
-    the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
-    """
-
-    /// Captures a screenshot and asks Claude to find something interesting to
-    /// point at, then triggers the buddy's flight animation. Used during
-    /// onboarding to demo the pointing feature while the intro video plays.
-    func performOnboardingDemoInteraction() {
-        // Don't interrupt an active voice response
-        guard voiceState == .idle || voiceState == .responding else { return }
-
-        Task {
-            do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                // Only send the cursor screen so Claude can't pick something
-                // on a different monitor that we can't point at.
-                guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
-                    print("🎯 Onboarding demo: no cursor screen found")
-                    return
-                }
-
-                let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
-                )
-
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-
-                guard let pointCoordinate = parseResult.coordinate else {
-                    print("🎯 Onboarding demo: no element to point at")
-                    return
-                }
-
-                let screenshotWidth = CGFloat(cursorScreenCapture.screenshotWidthInPixels)
-                let screenshotHeight = CGFloat(cursorScreenCapture.screenshotHeightInPixels)
-                let displayWidth = CGFloat(cursorScreenCapture.displayWidthInPoints)
-                let displayHeight = CGFloat(cursorScreenCapture.displayHeightInPoints)
-                let displayFrame = cursorScreenCapture.displayFrame
-
-                let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-                let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-                let appKitY = displayHeight - displayLocalY
-                let globalLocation = CGPoint(
-                    x: displayLocalX + displayFrame.origin.x,
-                    y: appKitY + displayFrame.origin.y
-                )
-
-                // Set custom bubble text so the pointing animation uses Claude's
-                // comment instead of a random phrase
-                detectedElementBubbleText = parseResult.spokenText
-                detectedElementScreenLocation = globalLocation
-                detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.spokenText)\"")
-            } catch {
-                print("⚠️ Onboarding demo error: \(error)")
-            }
-        }
-    }
 }
