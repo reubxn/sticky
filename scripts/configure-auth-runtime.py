@@ -4,6 +4,7 @@ import os
 import plistlib
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +59,35 @@ def required_value(values: dict[str, str], key: str, filename: str) -> str:
     return value
 
 
+def validated_https_origin(value: str, key: str, filename: str) -> str:
+    parsed_value = urlsplit(value)
+    try:
+        parsed_port = parsed_value.port
+    except ValueError:
+        raise SystemExit(
+            f"{key} in {filename} must use a port between 1 and 65535"
+        ) from None
+    if (
+        parsed_value.scheme != "https"
+        or not parsed_value.hostname
+        or parsed_value.username is not None
+        or parsed_value.password is not None
+        or parsed_value.path not in {"", "/"}
+        or parsed_value.query
+        or parsed_value.fragment
+    ):
+        raise SystemExit(f"{key} in {filename} must be an HTTPS origin")
+    if parsed_port is not None and not 1 <= parsed_port <= 65_535:
+        raise SystemExit(
+            f"{key} in {filename} must use a port between 1 and 65535"
+        )
+    if parsed_value.netloc.endswith(":"):
+        raise SystemExit(
+            f"{key} in {filename} must use a port between 1 and 65535"
+        )
+    return value.removesuffix("/")
+
+
 def main() -> None:
     clerk_values = read_env_file(CLERK_ENV_PATH)
     convex_values = read_env_file(CONVEX_ENV_PATH)
@@ -84,6 +114,18 @@ def main() -> None:
 
     secrets["ClerkPublishableKey"] = clerk_publishable_key
     secrets["ConvexDeploymentURL"] = convex_deployment_url
+    onboarding_worker_base_url = convex_values.get(
+        "ONBOARDING_WORKER_BASE_URL",
+        "",
+    ).strip()
+    if onboarding_worker_base_url:
+        secrets["OnboardingWorkerBaseURL"] = validated_https_origin(
+            onboarding_worker_base_url,
+            "ONBOARDING_WORKER_BASE_URL",
+            CONVEX_ENV_PATH.name,
+        )
+    else:
+        secrets.pop("OnboardingWorkerBaseURL", None)
 
     temporary_file_descriptor, temporary_file_path = tempfile.mkstemp(
         dir=SECRETS_PATH.parent,

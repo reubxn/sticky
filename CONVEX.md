@@ -173,14 +173,13 @@ This work is intentionally split into three slices:
 
 - **PR 4A (merged):** Convex ticket issuance, policy, atomic consumption,
   completion storage, quotas, retention, and cleanup.
-- **PR 4B (current):** the HMAC-authenticated Convex service bridge and
+- **PR 4B (merged):** the HMAC-authenticated Convex service bridge and
   Cloudflare onboarding provider routes.
-- **PR 4C (future):** Swift exact-body hashing, ticket issuance, and native
+- **PR 4C (current):** Swift exact-body hashing, ticket issuance, and native
   onboarding route integration.
 
-PR 4B does not modify Swift or claim native integration. The complete PR 4
-outcome remains incomplete until PR 4C lands, and production readiness remains
-locked.
+PR 4C adds a dedicated native client but no onboarding UI. Production readiness
+remains locked.
 
 `requestTickets:issueOnboarding` is the only public ticket function in PR 4A.
 It authenticates through Convex, accepts only a persona ID, one of the three
@@ -209,6 +208,19 @@ its exact retention index, deletes at most 50 rows, and schedules a zero-delay
 continuation with the original cutoff only when a full batch was found. Audit
 metadata contains no ticket plaintext or digest, prompt, answer, transcript,
 TTS text or audio, raw IP, or user-agent.
+
+The native client reads `OnboardingWorkerBaseURL` from the same ignored
+Application Support `secrets.plist` as the public authentication configuration.
+After the onboarding Worker development environment is deployed, add its HTTPS
+origin as `ONBOARDING_WORKER_BASE_URL` in ignored `.env.local` and rerun
+`python3 scripts/configure-auth-runtime.py`. The script validates an origin-only
+URL, writes it without displaying the value, and removes a stale plist entry
+when the env value is absent.
+
+No onboarding Worker development deployment exists yet, so
+`ONBOARDING_WORKER_BASE_URL` must remain absent. Native onboarding transport is
+therefore intentionally unavailable until the deployment and human Xcode
+configuration step are complete. Do not add a placeholder URL.
 
 The Worker service bridge exposes exactly two POST endpoints:
 

@@ -1,10 +1,9 @@
 # Sticky Cloudflare Worker
 
-PR 4A's Convex ticket control plane is already merged. This directory and the
-two authenticated Convex HTTP handlers are PR 4B. The future PR 4C will add
-Swift ticket issuance, exact-body hashing, and native route integration. PR 4B
-does not modify the native app, and the complete PR 4 outcome remains
-incomplete until PR 4C lands.
+PR 4A's Convex ticket control plane and PR 4B's Worker service bridge are
+already merged. PR 4C adds Swift ticket issuance, exact-body hashing, and native
+route integration without adding onboarding UI or unlocking production data
+readiness.
 
 The default `clicky-proxy` configuration preserves the legacy `/chat`, `/tts`,
 and `/transcribe-token` routes. The named `sticky-onboarding-dev` environment
@@ -80,3 +79,11 @@ with its current key; Convex accepts current and previous keys during overlap.
 
 Do not deploy the default `clicky-proxy` configuration as part of onboarding
 testing.
+
+The `sticky-onboarding-dev` environment is not deployed yet. Until a human
+deploys it, keep `ONBOARDING_WORKER_BASE_URL` absent from ignored `.env.local`;
+native onboarding transport will remain unavailable. After deployment, set the
+variable to the environment's HTTPS origin and run
+`python3 scripts/configure-auth-runtime.py`. The script writes
+`OnboardingWorkerBaseURL` to the ignored Application Support `secrets.plist`
+without displaying it. Never commit or substitute a placeholder URL.

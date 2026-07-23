@@ -77,6 +77,8 @@ final class AuthenticationManager: ObservableObject {
     private var loadedLocalProfileUserID: String?
     private var convexAuthenticationState: AuthState<String> = .loading
     private var pendingCallbacks: [PendingCallback] = []
+    private var onboardingWorkerInvalidationSignal =
+        OnboardingWorkerInvalidationSignal()
     private var clerkEventObservationTask: Task<Void, Never>?
     private var clerkLoadingObservationTask: Task<Void, Never>?
     private var clerkRefreshTask: Task<Void, Never>?
@@ -129,7 +131,10 @@ final class AuthenticationManager: ObservableObject {
             return false
         }
 
-        activeWorkspaceID = trimmedWorkspaceID
+        if activeWorkspaceID != trimmedWorkspaceID {
+            invalidateOnboardingWorkerOperations()
+            activeWorkspaceID = trimmedWorkspaceID
+        }
         productionDataReadiness = .ready(
             userID: clerkUserID,
             authGeneration: authGeneration,
@@ -337,6 +342,50 @@ final class AuthenticationManager: ObservableObject {
             return
         }
         startWorkspaceProvisioning(attempt: attempt + 1)
+    }
+
+    func makeOnboardingWorkerClient(
+        workspaceID: String,
+        personaID: String
+    ) throws -> OnboardingWorkerClient {
+        guard authenticationState == .authenticated,
+              let clerkUserID,
+              let convexClient,
+              case .authenticated(let authenticationToken) =
+                convexAuthenticationState,
+              Self.subject(fromJWT: authenticationToken) == clerkUserID,
+              case .ready(let accountSnapshot) = workspaceProvisioningState,
+              accountSnapshot.workspaceId == workspaceID,
+              accountSnapshot.personaId == personaID,
+              accountSnapshot.personaSetupState != .complete else {
+            throw OnboardingWorkerClientError.contextInvalidated
+        }
+        guard let configuredBaseURL = AppBundleConfiguration.stringValue(
+            forKey: "OnboardingWorkerBaseURL"
+        ),
+        let baseURL = URL(string: configuredBaseURL) else {
+            throw OnboardingWorkerClientError.configurationUnavailable
+        }
+
+        let context = OnboardingWorkerOperationContext(
+            clerkUserID: clerkUserID,
+            authGeneration: authGeneration,
+            workspaceID: workspaceID,
+            personaID: personaID
+        )
+        let ticketIssuer = ConvexOnboardingTicketIssuer(
+            convexClient: convexClient
+        )
+        return try OnboardingWorkerClient(
+            baseURL: baseURL,
+            context: context,
+            ticketIssuer: ticketIssuer,
+            invalidationSignal: onboardingWorkerInvalidationSignal,
+            contextValidityCheck: { [weak self] context in
+                guard let self else { return false }
+                return self.isValidOnboardingWorkerContext(context)
+            }
+        )
     }
 
     private func retrySignOut() {
@@ -578,6 +627,15 @@ final class AuthenticationManager: ObservableObject {
                     self.convexLoginTask = nil
                 }
                 self.convexAuthenticationState = authState
+                switch authState {
+                case .authenticated(let authenticationToken):
+                    if Self.subject(fromJWT: authenticationToken)
+                        != self.clerkUserID {
+                        self.invalidateOnboardingWorkerOperations()
+                    }
+                case .loading, .unauthenticated:
+                    self.invalidateOnboardingWorkerOperations()
+                }
                 self.refreshPublishedAuthenticationState()
             }
         }
@@ -641,9 +699,34 @@ final class AuthenticationManager: ObservableObject {
     }
 
     private func resetWorkspaceProvisioning() {
+        invalidateOnboardingWorkerOperations()
         workspaceProvisioningTask?.cancel()
         workspaceProvisioningTask = nil
         workspaceProvisioningState = .idle
+    }
+
+    private func invalidateOnboardingWorkerOperations() {
+        onboardingWorkerInvalidationSignal.invalidate()
+        onboardingWorkerInvalidationSignal =
+            OnboardingWorkerInvalidationSignal()
+    }
+
+    private func isValidOnboardingWorkerContext(
+        _ context: OnboardingWorkerOperationContext
+    ) -> Bool {
+        guard authenticationState == .authenticated,
+              authGeneration == context.authGeneration,
+              clerkUserID == context.clerkUserID,
+              case .authenticated(let authenticationToken) =
+                convexAuthenticationState,
+              Self.subject(fromJWT: authenticationToken) == context.clerkUserID,
+              case .ready(let accountSnapshot) = workspaceProvisioningState,
+              accountSnapshot.workspaceId == context.workspaceID,
+              accountSnapshot.personaId == context.personaID,
+              accountSnapshot.personaSetupState != .complete else {
+            return false
+        }
+        return true
     }
 
     private static func subject(fromJWT token: String) -> String? {
