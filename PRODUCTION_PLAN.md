@@ -613,7 +613,7 @@ implementation.
   client-authored model, system prompt, voice, or output policy.
 - No public Worker consume endpoint existed before service authentication.
 
-### PR 4B — Worker routes and HMAC service bridge (current)
+### PR 4B — Worker routes and HMAC service bridge (merged)
 
 - Timestamped HMAC service authentication from the Worker to Convex.
 - Authenticated onboarding chat, TTS, and transcription Worker routes.
@@ -623,16 +623,18 @@ implementation.
 
 PR 4B does not change the native app or make it issue or redeem tickets.
 
-### PR 4C — Native ticket client (future)
+### PR 4C — Native ticket client (current)
 
 - Exact-body hashing in Swift, streaming integration, route closure, and
   removal of onboarding direct-provider paths.
 - Native issuance and `Authorization: StickyTicket <opaque>` integration for
   onboarding chat, TTS, and transcription.
 - Tests proving the native body bytes exactly match the issued ticket binding.
+- No onboarding UI or production-data readiness unlock. Native transport remains
+  unavailable until the separate development Worker is deployed and its HTTPS
+  origin is supplied through ignored runtime configuration.
 
-The complete PR 4 outcome remains incomplete until PR 4C lands. Production
-readiness stays locked throughout these slices.
+Production readiness stays locked throughout these slices.
 
 ### PR 5 — Voice-first conversational persona onboarding
 
