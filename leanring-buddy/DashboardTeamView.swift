@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 
 struct DashboardTeamView: View {
     @StateObject private var dashboardNavigationState = DashboardNavigationState.shared
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     @State private var pendingInviteEmailText: String = ""
     @State private var showingInviteFormCard: Bool = false

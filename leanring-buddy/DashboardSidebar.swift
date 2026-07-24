@@ -5,16 +5,15 @@
 //  Left rail of the Dashboard: app wordmark at the top, vertical list
 //  of section nav rows in the middle, signed-in user chip + sign-out
 //  button at the bottom. The user chip is read-only here (you edit
-//  your name/role in the Profile tab) — clicking sign out flips the
-//  shared mock auth state and the dashboard root collapses to the
-//  sign-in card.
+//  your name/role in the Profile tab) — clicking sign out ends the
+//  Clerk session and revokes Convex access.
 //
 
 import SwiftUI
 
 struct DashboardSidebar: View {
     @Binding var selectedSection: DashboardSection
-    @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @StateObject private var authenticationManager = AuthenticationManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -109,12 +108,12 @@ struct DashboardSidebar: View {
             avatarForCurrentUser
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(dashboardMockAuthState.displayName)
+                Text(authenticationManager.displayName)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(ElevenLabsBrand.Colors.inkPure)
                     .lineLimit(1)
 
-                Text(dashboardMockAuthState.role)
+                Text(authenticationManager.localRole)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
                     .lineLimit(1)
@@ -123,7 +122,7 @@ struct DashboardSidebar: View {
             Spacer()
 
             Button(action: {
-                dashboardMockAuthState.signOut()
+                authenticationManager.signOut()
             }) {
                 Image(systemName: "rectangle.portrait.and.arrow.right")
                     .font(.system(size: 12, weight: .semibold))
@@ -146,13 +145,13 @@ struct DashboardSidebar: View {
             PersonaAvatarView(
                 avatar: localPersonaBundle.avatar,
                 diameter: 32,
-                uploadedImageOverridePath: dashboardMockAuthState.profilePicturePath
+                uploadedImageOverridePath: authenticationManager.localProfilePicturePath
             )
         } else {
             Circle()
                 .fill(ElevenLabsBrand.Colors.gradientSky)
                 .overlay(
-                    Text(initials(from: dashboardMockAuthState.displayName))
+                    Text(initials(from: authenticationManager.displayName))
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(ElevenLabsBrand.Colors.inkPure)
                 )

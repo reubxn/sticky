@@ -40,10 +40,7 @@ enum WarmPalette {
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
 
-    /// Live mock-auth state so the footer's signed-in chip and the
-    /// "Sign in" fallback react instantly when the user signs in or
-    /// out from the dashboard while the panel is open.
-    @ObservedObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @ObservedObject private var authenticationManager = AuthenticationManager.shared
 
     /// Drives the custom persona-picker popover. Replaces the native
     /// `Menu` so we can render avatars, role subtitles, and a sectioned
@@ -90,14 +87,19 @@ struct CompanionPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            heroHeader
+            if authenticationManager.canAccessProductionFeatures {
+                heroHeader
 
-            if !companionManager.allPermissionsGranted {
-                permissionsContent
-            } else if !companionManager.hasCompletedOnboarding {
-                onboardingContent
+                if !companionManager.allPermissionsGranted {
+                    permissionsContent
+                } else if !companionManager.hasCompletedOnboarding {
+                    onboardingContent
+                } else {
+                    mainContent
+                }
             } else {
-                mainContent
+                authenticationHeader
+                authenticationBoundaryContent
             }
 
             footerSection
@@ -110,6 +112,7 @@ struct CompanionPanelView: View {
         .animation(.easeInOut(duration: 0.22), value: companionManager.allPermissionsGranted)
         .animation(.easeInOut(duration: 0.22), value: companionManager.hasCompletedOnboarding)
         .animation(.easeInOut(duration: 0.22), value: companionManager.teachSessionState)
+        .animation(.easeInOut(duration: 0.22), value: authenticationManager.authenticationState)
     }
 
     // MARK: - Hero Header
@@ -134,6 +137,201 @@ struct CompanionPanelView: View {
             Rectangle()
                 .fill(ElevenLabsBrand.Colors.hairline)
                 .frame(height: 1)
+        }
+    }
+
+    private var authenticationHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                stickyAppWordmark
+                Spacer()
+            }
+            .padding(.horizontal, ElevenLabsBrand.Spacing.md)
+            .padding(.top, ElevenLabsBrand.Spacing.md)
+            .padding(.bottom, ElevenLabsBrand.Spacing.sm)
+
+            Rectangle()
+                .fill(ElevenLabsBrand.Colors.hairline)
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var authenticationBoundaryContent: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
+            switch authenticationManager.authenticationState {
+            case .loading:
+                authenticationProgressContent(
+                    title: "Checking your session…",
+                    message: "Sticky will be ready after Convex verifies your Clerk session."
+                )
+            case .signingOut:
+                authenticationProgressContent(
+                    title: "Signing out…",
+                    message: "Protected features stay locked while access is revoked."
+                )
+            case .signedOut:
+                authenticationActionContent(
+                    title: "Sign in to use Sticky.",
+                    message: "Continue with Google or a secure email link.",
+                    errorMessage: nil
+                )
+            case .configurationMissing(let message),
+                 .signOutFailure(let message),
+                 .failure(let message):
+                authenticationActionContent(
+                    title: "Authentication needs attention.",
+                    message: "Ask, Teach, personas, and chat remain locked.",
+                    errorMessage: message
+                )
+            case .authenticated:
+                authenticatedAccountConnectedContent
+            }
+        }
+        .padding(ElevenLabsBrand.Spacing.md)
+        .frame(maxWidth: .infinity, minHeight: 230, alignment: .topLeading)
+    }
+
+    private func authenticationProgressContent(
+        title: String,
+        message: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: ElevenLabsBrand.Spacing.sm) {
+            ProgressView()
+                .controlSize(.small)
+
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text(title)
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 18))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(message)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func authenticationActionContent(
+        title: String,
+        message: String,
+        errorMessage: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
+            Text(title)
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+            Text(message)
+                .font(ElevenLabsBrand.Typography.body)
+                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .padding(ElevenLabsBrand.Spacing.sm)
+                    .background(
+                        RoundedRectangle(
+                            cornerRadius: ElevenLabsBrand.Radius.card,
+                            style: .continuous
+                        )
+                        .fill(ElevenLabsBrand.Colors.paperRecessed)
+                    )
+            }
+
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                if errorMessage != nil {
+                    Button("Retry") {
+                        authenticationManager.retry()
+                    }
+                    .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                    .pointerCursor()
+                }
+
+                Button("Open sign in") {
+                    MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+                }
+                .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+                .pointerCursor()
+            }
+        }
+    }
+
+    private var authenticatedAccountConnectedContent: some View {
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.sm) {
+            ElevenLabsEyebrow("ACCOUNT CONNECTED")
+
+            Text(authenticationManager.clerkDisplayName ?? "Signed-in user")
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 20))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+            if !authenticationManager.email.isEmpty {
+                Text(authenticationManager.email)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+
+            workspaceProvisioningPanelContent
+
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                if authenticationManager.canRetryWorkspaceProvisioning {
+                    Button("Retry setup") {
+                        authenticationManager.retryProvisioning()
+                    }
+                    .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                    .pointerCursor()
+                }
+
+                Button("Open account") {
+                    MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
+                }
+                .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+                .pointerCursor()
+
+                Button("Sign out") {
+                    authenticationManager.signOut()
+                }
+                .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                .pointerCursor()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceProvisioningPanelContent: some View {
+        switch authenticationManager.workspaceProvisioningState {
+        case .idle, .provisioning:
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Setting up your personal workspace…")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+        case .ready(let snapshot):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text(snapshot.workspaceName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(snapshot.personaSetupState.statusText)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text("Ask, Teach, personas, chat, and local memory stay locked until production storage is connected.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .failure(let message, let attempt):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text("Workspace setup attempt \(attempt) failed.")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text(message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -723,11 +921,15 @@ struct CompanionPanelView: View {
 
             // Footer: identity chip on the left, Voice Color + Theme + Quit on the right.
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
-                signedInUserChip
+                if authenticationManager.canAccessProductionFeatures {
+                    signedInUserChip
+                }
 
                 Spacer()
 
-                voiceColorPickerButton
+                if authenticationManager.canAccessProductionFeatures {
+                    voiceColorPickerButton
+                }
 
                 themePickerButton
 
@@ -764,13 +966,11 @@ struct CompanionPanelView: View {
     }
 
     /// Tiny "signed in as X" chip in the footer — clicking opens the
-    /// dashboard's Profile tab where the user can actually edit their
-    /// identity / sign out. Pulls live from the shared mock auth
-    /// state so signing out from the dashboard collapses this chip
-    /// the next time the panel re-opens.
+    /// dashboard's Profile tab where the user can edit local profile
+    /// details or sign out. It follows Convex's authenticated state.
     @ViewBuilder
     private var signedInUserChip: some View {
-        if dashboardMockAuthState.isSignedIn {
+        if authenticationManager.canAccessProductionFeatures {
             Button(action: {
                 DashboardNavigationState.shared.selectedSection = .profile
                 MenuBarPanelManager.shared?.openDashboardWindow(focusedPersonaId: nil)
@@ -778,7 +978,7 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     miniSignedInAvatar
 
-                    Text(dashboardMockAuthState.displayName)
+                    Text(authenticationManager.displayName)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(
                             isHoveringSignedInChip

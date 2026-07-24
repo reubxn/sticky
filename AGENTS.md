@@ -7,6 +7,8 @@
 
 Sticky is a macOS menu-bar AI companion that wears your team's taste. It lives in the status bar (no dock icon, no main window) and answers in the voice and taste of whichever **persona** the user is currently wearing.
 
+> **Production transition:** This file describes the current local MVP unless a section says otherwise. [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) is authoritative for planned accounts, workspaces, membership-owned personas, authorization, cloud context, and the removal of Soul/TASTE.md runtime models. Do not treat the current `.team`, `TasteScope`, local-store, or TASTE.md behavior as the target production contract.
+
 The user's whole interaction with Sticky is shaped by one of three modes — but only one of them, **Ask**, is something the user explicitly invokes. The other two compose on top of it.
 
 ### Ask — the main loop
@@ -71,6 +73,14 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **Persona wheel hotkey**: separate listen-only `CGEvent` tap on `flagsChanged` for `shift + cmd` ([PersonaWheelHotkeyMonitor](leanring-buddy/PersonaWheelHotkeyMonitor.swift)). Independent of push-to-talk.
 - **Concurrency**: `@MainActor` isolation, async/await throughout.
 - **Theme**: light/dark/system via `ThemeManager.shared.mode`. Surfaces use the `ElevenLabsBrand.Colors` paper-and-ink palette which resolves dynamically per appearance.
+- **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Application data subscriptions remain deferred.
+- **Personal workspace provisioning**: after Convex authenticates and pending Clerk callbacks drain, `AuthenticationManager` calls the idempotent `accounts:provisionCurrent` mutation. Convex derives the profile exclusively from `identity.tokenIdentifier` and transactionally creates or validates one personal workspace, owner membership, and fresh persona. Provisioning has its own generation-bound state and bounded retry; it does not unlock production features.
+- **Onboarding Worker request tickets**: PR 4A's merged Convex control plane exposes one authenticated owner-only action that returns a 256-bit opaque bearer once and persists only its SHA-256 digest. Tickets are short-lived, single-use, exact-body-bound, limited to `onboarding_chat`, `onboarding_tts`, and `onboarding_transcribe`, and revalidate the full account/workspace/membership/persona lifecycle plus the denormalized audit relationship at atomic internal consumption. PR 4B adds exactly two Convex HTTP endpoints for consume and completion using timestamped per-request HMAC-SHA256 over the canonical method, path, timestamp, cryptographic request ID, and raw-body digest. Convex accepts current and optional previous key pairs for rotation and never receives ticket plaintext. Completion delivery retries network errors, `408`, `425`, `429`, and `5xx` up to three attempts with the same idempotent body and fresh service-request signatures. PR 4C's actor-backed native client deterministically serializes each strict route DTO once, hashes and issues a fresh ticket for those exact bytes, then streams the unchanged request through the onboarding Worker. Every operation is bound to an immutable authenticated account/workspace/persona context and revalidates it before issuance, after issuance, after response, and during streaming. No onboarding UI is added, production readiness stays locked, and native transport remains unavailable until the development Worker is deployed and its HTTPS origin is supplied through ignored runtime configuration.
+- **Production authentication**: Clerk provides native Google and email-link sessions in Keychain. `AuthenticationManager` bridges Clerk into `ConvexClientWithAuth`; protected UI follows Convex auth state rather than Clerk user presence. Native callbacks use exact `com.reuban.sticky://callback` matching until associated domains are available. The development issuer is exactly `https://ruling-katydid-23.clerk.accounts.dev`, and Clerk's Convex integration must issue `aud: convex`.
+- **Production-data boundary**: Authentication alone does not start the product. `productionDataReadiness` remains `.awaitingWorkspaceProvisioning` in this PR, so `CompanionManager`, Ask, Teach, personas, floating chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team stay unavailable. Readiness is valid only as `.ready(userID:authGeneration:workspaceID:)` matching the current identity, generation, and workspace. PR 3 may call `markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning production-scoped storage. Auth or readiness loss increments lifecycle generations, cancels in-flight work, clears in-memory captures/messages, stops playback/hotkeys/overlays, and hides legacy windows.
+- **Auth operation generations**: Account generations protect identity-bound retry/login work; callback epochs independently preserve a valid callback across cached-user discovery and account transitions. Explicit sign-out invalidates callbacks. Sign-out completion is publisher-driven and has a distinct bounded retry failure state.
+- **Runtime auth configuration**: ClerkKit 1.3.2 ignores a second `Clerk.configure` call. Normal Retry uses `refreshEnvironment()` and `refreshClient()`. If public runtime values changed on disk, the app must show restart-required and must not replace the Convex client in-process.
+- **Authenticated interim surface**: Authenticated users see verified Clerk identity, personal-workspace provisioning progress or status, dedicated provisioning retry, and sign-out. Existing Profile and Settings views remain hidden because they mix in legacy TASTE export or controls for disabled local companion features.
 
 ### API proxy (Cloudflare Worker)
 
@@ -83,6 +93,16 @@ The app never calls external APIs directly. All requests go through a Worker tha
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
 Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
+
+The default `clicky-proxy` deployment remains legacy-only. The separate
+`sticky-onboarding-dev` environment closes those routes and exposes only
+`POST /v1/onboarding/chat`, `POST /v1/onboarding/tts`, and
+`POST /v1/onboarding/transcribe-token`. These routes require
+`Authorization: StickyTicket <opaque>`, consume the exact body binding before
+provider access, use only server-derived policy, stream provider bodies, and
+report sanitized completion through `ctx.waitUntil`. The native base URL is
+read from `OnboardingWorkerBaseURL`; it is intentionally absent until the
+development environment is deployed.
 
 ### Key architecture decisions
 
@@ -165,9 +185,16 @@ A `PersonaBundle` is parsed from a markdown file by [PersonaTasteFileStore.swift
   team-files/<filename>               ← attached files raw bytes
   personas/<id>/TASTE.md              ← per-persona override (hot-swap)
   personas/<id>/<avatar>.png|jpg      ← optional avatar override
+  profiles/<clerk-user-id>/profile-picture.* ← temporary Clerk-user-scoped local profile image
 ```
 
-Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` (folder reference, picked up automatically — no `project.pbxproj` edits needed for new persona files).
+Persona bundles are loaded only from TASTE.md files in Application Support or the app bundle. There are no baked-in Swift persona fallbacks; if no files are available, the teammate list is empty.
+
+Temporary local display-name, role, and profile-picture overrides are scoped by
+verified Clerk user ID. Legacy persona, taste, team, chat-history, and
+recording-history stores are unscoped local MVP data and must never render for
+authenticated accounts. They remain on disk but inaccessible until their cloud
+replacement PRs remove them.
 
 ---
 
@@ -175,10 +202,34 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~89 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, starts `CompanionManager`, and registers the app as a login item. |
-| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~2960 | Central state machine. Owns dictation, push-to-talk monitor, persona-wheel monitor, screen capture, ClaudeAPI, ElevenLabs TTS, overlay manager, voice + teach state, persona selection, taste scope, applied-principles transparency, and the system prompt composer. |
+| [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~690 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
+| [CONVEX.md](CONVEX.md) | ~140 | Convex deployment safety, Clerk authentication, local setup, generated-file, and secret-handling instructions. |
+| [convex/schema.ts](convex/schema.ts) | ~65 | Production account tables plus digest-only Worker ticket and sanitized audit tables with bounded-query indexes. |
+| [convex/validators.ts](convex/validators.ts) | ~240 | Shared lifecycle, account, Worker ticket, policy-envelope, completion, and schema validators. |
+| [convex/accounts.ts](convex/accounts.ts) | ~390 | Authenticated, fail-closed personal-account provisioning, safe default-name repair, and current-account graph query. |
+| [convex/accounts.test.ts](convex/accounts.test.ts) | ~580 | Adversarial provisioning tests for idempotency, concurrency, partial repair, claim refresh, lifecycle integrity, orphan rollback, and identity isolation. |
+| [convex/requestTickets.ts](convex/requestTickets.ts) | ~80 | Public authenticated onboarding-ticket action that generates and hashes a one-time 256-bit bearer. |
+| [convex/workerRequestPolicy.ts](convex/workerRequestPolicy.ts) | ~160 | Versioned onboarding-only scope, payload, quota, expiry, retention, and trusted provider policy. |
+| [convex/workerRequestTicketMutations.ts](convex/workerRequestTicketMutations.ts) | ~505 | Internal issuance, atomic consume, lifecycle and audit-integrity revalidation, quota enforcement, and idempotent sanitized completion. |
+| [convex/workerRequestTicketCleanup.ts](convex/workerRequestTicketCleanup.ts) | ~115 | Bounded indexed ticket and audit cleanup mutations with fixed-cutoff scheduled continuation. |
+| [convex/crons.ts](convex/crons.ts) | ~30 | Hourly triggers for issued-ticket, consumed-tombstone, and audit cleanup. |
+| [convex/requestTickets.test.ts](convex/requestTickets.test.ts) | ~1040 | Adversarial request-ticket authorization, setup lifecycle, quota, replay, concurrency, audit integrity, TOCTOU, privacy, rollback, and completion tests. |
+| [convex/workerRequestTicketCleanup.test.ts](convex/workerRequestTicketCleanup.test.ts) | ~260 | Retention-boundary, independent audit retention, bounded deletion, and continuation tests. |
+| [convex/http.ts](convex/http.ts) | ~180 | Exact HMAC-authenticated Worker consume and completion HTTP routes with bounded strict DTO parsing and generic failures. |
+| [convex/workerServiceBridge.ts](convex/workerServiceBridge.ts) | ~340 | Pure canonicalization, HMAC rotation verification, digesting, and strict Worker service payload validation. |
+| [convex/workerServiceBridge.test.ts](convex/workerServiceBridge.test.ts) | ~315 | Shared-vector compatibility, canonicalization, current/previous key rotation, timestamp, tamper, malformed DTO, route closure, and plaintext-ticket rejection tests. |
+| [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
+| [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
+| [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |
+| [convex/identity.test.ts](convex/identity.test.ts) | ~55 | Convex-test coverage for authenticated identity claims and unauthenticated denial. |
+| [convex/health.ts](convex/health.ts) | ~20 | Minimal public backend health query. |
+| [convex/authorization.test.ts](convex/authorization.test.ts) | ~450 | Edge-runtime Convex test harness covering health, authorization errors, lifecycle denial, relationship integrity, and cross-workspace isolation. |
+| [convex/schema.test.ts](convex/schema.test.ts) | ~65 | Runtime and inferred-type tests for personal and team workspace schema requirements. |
+| [vitest.config.ts](vitest.config.ts) | ~10 | Vitest configuration for Convex tests in the edge runtime. |
+| [leanring_buddyApp.swift](leanring-buddy/leanring_buddyApp.swift) | ~140 | App entry. `@NSApplicationDelegateAdaptor` → `CompanionAppDelegate` creates `MenuBarPanelManager`, gates the `CompanionManager` lifecycle on Convex auth, handles callbacks, and registers the app as a login item. |
+| [CompanionManager.swift](leanring-buddy/CompanionManager.swift) | ~3590 | Central state machine. Owns generation-guarded dictation, push-to-talk, Teach, capture, AI/TTS, overlays, and persona state; it cannot start before production data readiness. |
 | [MenuBarPanelManager.swift](leanring-buddy/MenuBarPanelManager.swift) | ~780 | `NSStatusItem` + custom borderless `NSPanel` lifecycle. Re-images the menu bar icon when persona changes. Owns the Taste Library window. |
-| [CompanionPanelView.swift](leanring-buddy/CompanionPanelView.swift) | ~1460 | SwiftUI menu bar panel content. Hero header with persona picker, push-to-talk instruction, teach session controls, mini activity feed, footer with model picker / theme toggle / sign-in chip / quit. |
+| [CompanionPanelView.swift](leanring-buddy/CompanionPanelView.swift) | ~1680 | SwiftUI menu bar panel content. Shows authentication and personal-workspace provisioning state; legacy persona, Ask, Teach, activity, and settings controls require production data readiness. |
 | [OverlayWindow.swift](leanring-buddy/OverlayWindow.swift) | ~1780 | One transparent always-on-top `NSPanel` per screen. Hosts `BlueCursorView` (cursor, waveform, response text, applied-principles chip, persona wheel). Handles cursor flight along bezier arcs to `[POINT:...]` targets. |
 | [CompanionResponseOverlay.swift](leanring-buddy/CompanionResponseOverlay.swift) | ~217 | The response-text bubble + waveform rendered next to the cursor. |
 | [CompanionScreenCaptureUtility.swift](leanring-buddy/CompanionScreenCaptureUtility.swift) | ~135 | Multi-monitor JPEG screenshot via ScreenCaptureKit. |
@@ -191,7 +242,7 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [GlobalPushToTalkShortcutMonitor.swift](leanring-buddy/GlobalPushToTalkShortcutMonitor.swift) | ~132 | Listen-only `CGEvent` tap for `ctrl + option`. |
 | [PersonaWheelHotkeyMonitor.swift](leanring-buddy/PersonaWheelHotkeyMonitor.swift) | ~148 | Listen-only `CGEvent` tap for `shift + cmd`. Drives the radial wheel. |
 | [PersonaWheelView.swift](leanring-buddy/PersonaWheelView.swift) | ~209 | Radial picker rendered inside the overlay. Spokes laid out clockwise from 12 o'clock. |
-| [PersonaStore.swift](leanring-buddy/PersonaStore.swift) | ~495 | Loads persona bundles from TASTE.md (hot-swap > bundled). Holds the synthetic `mePseudoPersona` / `teamPseudoPersona` for the wheel. Sample bundles are last-resort fallbacks if every TASTE.md fails to load. |
+| [PersonaStore.swift](leanring-buddy/PersonaStore.swift) | ~100 | Loads persona bundles exclusively from TASTE.md and holds the synthetic `mePseudoPersona` / `teamPseudoPersona` for the wheel. |
 | [PersonaTasteFileStore.swift](leanring-buddy/PersonaTasteFileStore.swift) | ~706 | TASTE.md parser + writer. Read-paths fall back from Application Support to bundled. Writes always go to Application Support so reinstalls don't clobber teaching. |
 | [PersonaBundle.swift](leanring-buddy/PersonaBundle.swift) | ~171 | `PersonaSelection`, `PersonaAvatar`, `PersonaBundle` types. Hex-string → `Color` parser. |
 | [PersonaAvatarView.swift](leanring-buddy/PersonaAvatarView.swift) | ~187 | Renders initials / SF Symbol / image-file avatars at any size. |
@@ -219,7 +270,7 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [ChatMarkdownRenderer.swift](leanring-buddy/ChatMarkdownRenderer.swift) | ~481 | Custom markdown-on-screen renderer for chat replies. |
 | [ChatHistorySidebar.swift](leanring-buddy/ChatHistorySidebar.swift) | ~414 | Left rail inside the dashboard's Chat tab. Lists archived sessions; tap to load into the live transcript. |
 | [DashboardWindowController.swift](leanring-buddy/DashboardWindowController.swift) | ~170 | Dashboard `NSWindow` lifecycle. Hide-on-close so re-opens are instant. |
-| [DashboardView.swift](leanring-buddy/DashboardView.swift) | ~141 | Dashboard root. Two-column layout — sidebar + section content. Mock auth gate. |
+| [DashboardView.swift](leanring-buddy/DashboardView.swift) | ~220 | Dashboard root. Keeps legacy sections locked behind production readiness and shows authenticated workspace provisioning status. |
 | [DashboardSidebar.swift](leanring-buddy/DashboardSidebar.swift) | ~164 | Sidebar nav. Sections: Chat, Memory, Tastes, Team, Profile, Settings. |
 | [DashboardNavigationState.swift](leanring-buddy/DashboardNavigationState.swift) | ~72 | `DashboardSection` enum + shared `selectedSection` / `focusedPersonaId`. |
 | [DashboardLiveChatView.swift](leanring-buddy/DashboardLiveChatView.swift) | ~37 | Embeds the same `ChatView` + `ChatViewModel` the floating chat uses, side by side with `ChatHistorySidebar`. One transcript, two surfaces. |
@@ -231,7 +282,6 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [DashboardRecordingHistoryStore.swift](leanring-buddy/DashboardRecordingHistoryStore.swift) | ~117 | Codable on-disk archive of "you taught Sticky X" rows. Powers the mini panel's recent-activity feed. |
 | [DashboardChatHistoryStore.swift](leanring-buddy/DashboardChatHistoryStore.swift) | ~175 | Codable on-disk archive of chat sessions. |
 | [DashboardSettingsView.swift](leanring-buddy/DashboardSettingsView.swift) | ~260 | Theme toggle, model picker, voice picker, transcription provider info, etc. |
-| [DashboardMockAuthState.swift](leanring-buddy/DashboardMockAuthState.swift) | ~104 | Mock email-only auth. Any non-empty email signs in. |
 | [DashboardSectionHeader.swift](leanring-buddy/DashboardSectionHeader.swift) | ~87 | Shared section header with eyebrow + title + subtitle. |
 | [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~82 | Voice vs chat model picker enum. |
 | [TasteLibraryView.swift](leanring-buddy/TasteLibraryView.swift) | ~654 | Browse / delete saved principles. Used in the Memory tab and the standalone library window. |
@@ -242,8 +292,19 @@ Bundled defaults ship inside the app at `leanring-buddy/personas/<id>/TASTE.md` 
 | [MiniPanelActivityFeed.swift](leanring-buddy/MiniPanelActivityFeed.swift) | ~340 | Recent-activity rows in the menu bar panel. Merges teach moments + chat sessions. |
 | [WindowPositionManager.swift](leanring-buddy/WindowPositionManager.swift) | ~262 | Permission helpers (Accessibility, Screen Recording). |
 | [AppBundleConfiguration.swift](leanring-buddy/AppBundleConfiguration.swift) | ~62 | Reads runtime config from Info.plist. |
-| [worker/src/index.ts](worker/src/index.ts) | ~142 | Cloudflare Worker proxy. Three routes: `/chat`, `/tts`, `/transcribe-token`. |
-| [leanring-buddy/personas/](leanring-buddy/personas/) | — | Bundled persona TASTE.md files (currently `reuban`, `leonard`, `magdalena`). Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
+| [AuthenticationManager.swift](leanring-buddy/AuthenticationManager.swift) | ~1045 | Configures Clerk and authenticated Convex, independently scopes callback/account/provisioning operations, publishes identity/workspace-bound readiness, owns publisher-driven sign-out and bounded retries, and creates generation-invalidated onboarding Worker clients only for the matching provisioned account context. |
+| [PersonalAccountBootstrapTypes.swift](leanring-buddy/PersonalAccountBootstrapTypes.swift) | ~40 | Decodable personal-workspace, membership, persona, and setup-state snapshot returned by Convex provisioning. |
+| [OnboardingWorkerClient.swift](leanring-buddy/OnboardingWorkerClient.swift) | ~1630 | Actor-backed exact-byte ticket issuer and delegate-streamed native client with synchronized bounded backpressure, lifetime-owned cancellation, proactive generation and buffered-event invalidation, ticket freshness, and strict onboarding chat, TTS, and transcription contracts. |
+| [leanring-buddyTests/OnboardingWorkerClientTests.swift](leanring-buddyTests/OnboardingWorkerClientTests.swift) | ~1340 | Native contract tests for Convex wire encoding, deterministic body binding, fresh tickets, production chunking, response limits, post-await and buffered-event invalidation, dropped-stream cleanup, threshold races, cancellation, ticket freshness, origin validation, and SSE streaming. |
+| [scripts/configure-auth-runtime.py](scripts/configure-auth-runtime.py) | ~150 | Safely copies public Clerk, Convex, and optional onboarding Worker runtime values from ignored env files into Application Support without displaying them. |
+| [scripts/test_configure_auth_runtime.py](scripts/test_configure_auth_runtime.py) | ~55 | Unit tests for accepted and rejected onboarding Worker HTTPS origin ports. |
+| [worker/src/index.ts](worker/src/index.ts) | ~165 | Cloudflare Worker entrypoint that keeps the default legacy proxy routes separate from the closed onboarding development route set. |
+| [worker/src/onboarding.ts](worker/src/onboarding.ts) | ~770 | Strict ticket-authorized onboarding handlers with trusted policy, streaming, and bounded idempotent completion retry. |
+| [worker/src/service-auth.ts](worker/src/service-auth.ts) | ~120 | Per-request Worker-to-Convex HMAC signing and canonical request helpers. |
+| [worker/test/onboarding.test.ts](worker/test/onboarding.test.ts) | ~575 | Workers-runtime tests for auth, exact DTOs, replay denial, trusted policy, streaming, completion retry, cancellation, transcription windows, and legacy isolation. |
+| [worker/test/service-auth.test.ts](worker/test/service-auth.test.ts) | ~55 | Worker-side deterministic shared-vector digest, canonicalization, and HMAC signing compatibility test. |
+| [test-fixtures/workerServiceHmacVector.ts](test-fixtures/workerServiceHmacVector.ts) | ~15 | Non-secret canonical HMAC request vector shared by Worker signing and Convex verification tests. |
+| [leanring-buddy/personas/](leanring-buddy/personas/) | — | Optional bundled persona TASTE.md files. Folder reference — drop a new `<id>/TASTE.md` and it ships in the next build. |
 
 ---
 
@@ -334,6 +395,9 @@ Clarity over concision.
 
 ## Git workflow
 
+- **Protected release baseline:** `main` must remain pinned to the verified May 8 baseline (`7792eae`) until Reuban explicitly approves the complete rebuild after end-to-end validation. Do not merge, push, or target incremental work to `main`.
+- **Production integration branch:** `feature/production-rebuild` is the base and merge target for all production-rebuild work. Create child branches from it and open incremental PRs back into it.
+- **Final release:** Draft PR #26 is the single eventual `feature/production-rebuild` → `main` update. Never mark it ready or merge it without explicit user approval.
 - Branches: `feature/description` or `fix/description`.
 - Commit messages: imperative mood, concise, the "why" not the "what".
 - Don't force-push to `main`.
@@ -352,3 +416,25 @@ When you make changes that affect the information in this file, update it.
 5. **Significant line-count drift** (>50 lines): update the row.
 
 Don't update for minor edits, bug fixes, or changes that don't affect documented architecture or conventions.
+
+<!-- convex-ai-start -->
+
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, **always read
+`convex/_generated/ai/guidelines.md` first** for important guidelines on
+how to correctly use Convex APIs and patterns. The file contains rules that
+override what you may have learned about Convex from training data.
+
+Convex agent skills for common tasks can be installed by running
+`npx convex ai-files install`.
+
+Before running any Convex command, inspect `CONVEX_DEPLOYMENT` in `.env.local`
+and confirm its team, project, and deployment are the intended target. Plain
+`convex dev` and the root Convex scripts use that configured deployment and may
+mutate a cloud backend. For isolated local validation, explicitly run
+`CONVEX_AGENT_MODE=anonymous npx convex dev --once`. Never run `convex deploy`
+or `npm run convex:deploy` without explicit user authorization for that
+production deployment operation.
+
+<!-- convex-ai-end -->

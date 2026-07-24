@@ -7,11 +7,11 @@
 //  content on the right (one of six section views, switched via
 //  `DashboardNavigationState.selectedSection`).
 //
-//  When the user is signed out (mock auth), the sidebar collapses and
-//  the main pane shows a sign-in card. Signing in (mock — any non-
-//  empty email) restores the full dashboard.
+//  When Convex has not authenticated the Clerk session, the sidebar
+//  collapses and the main pane shows Clerk's native sign-in UI.
 //
 
+import ClerkKitUI
 import SwiftUI
 
 struct DashboardView: View {
@@ -24,7 +24,7 @@ struct DashboardView: View {
     let companionManager: CompanionManager?
 
     @StateObject private var dashboardNavigationState = DashboardNavigationState.shared
-    @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @StateObject private var authenticationManager = AuthenticationManager.shared
 
     init(companionManager: CompanionManager? = nil) {
         self.companionManager = companionManager
@@ -32,10 +32,27 @@ struct DashboardView: View {
 
     var body: some View {
         Group {
-            if dashboardMockAuthState.isSignedIn {
-                signedInDashboardLayout
-            } else {
+            switch authenticationManager.authenticationState {
+            case .authenticated:
+                if authenticationManager.canAccessProductionFeatures {
+                    signedInDashboardLayout
+                } else {
+                    DashboardAccountConnectedView()
+                }
+            case .signedOut:
                 DashboardSignInView()
+            case .loading:
+                ProgressView("Checking your session…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .signingOut:
+                ProgressView("Signing out…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .configurationMissing(let message):
+                DashboardAuthenticationFailureView(message: message)
+            case .signOutFailure(let message):
+                DashboardAuthenticationFailureView(message: message)
+            case .failure(let message):
+                DashboardAuthenticationFailureView(message: message)
             }
         }
         .frame(minWidth: 760, minHeight: 520)
@@ -79,58 +96,123 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Sign-in screen (mock)
-
-/// Shown when `DashboardMockAuthState.isSignedIn` is false. One field
-/// (email), one button. Accepts any non-empty input — this is the
-/// hackathon's fake auth, not real authentication.
-struct DashboardSignInView: View {
-    @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
-    @State private var emailInputText: String = ""
+private struct DashboardAccountConnectedView: View {
+    @StateObject private var authenticationManager = AuthenticationManager.shared
 
     var body: some View {
-        VStack(spacing: ElevenLabsBrand.Spacing.lg) {
-            Spacer()
+        VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
+            ElevenLabsEyebrow("ACCOUNT CONNECTED")
 
-            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.md) {
-                ElevenLabsEyebrow("WELCOME BACK")
-                Text("Sign in to Sticky.")
-                    .font(ElevenLabsBrand.Typography.cardTitle(size: 28))
-                    .tracking(-0.4)
+            Text("You're signed in.")
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 30))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text(authenticationManager.clerkDisplayName ?? "Signed-in user")
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(ElevenLabsBrand.Colors.ink)
-                Text("Mock sign-in for the hackathon demo — any email works.")
+
+                if !authenticationManager.email.isEmpty {
+                    Text(authenticationManager.email)
+                        .font(ElevenLabsBrand.Typography.body)
+                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                }
+            }
+
+            workspaceProvisioningContent
+
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                if authenticationManager.canRetryWorkspaceProvisioning {
+                    Button("Retry workspace setup") {
+                        authenticationManager.retryProvisioning()
+                    }
+                    .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+                    .pointerCursor()
+                }
+
+                Button("Sign out") {
+                    authenticationManager.signOut()
+                }
+                .buttonStyle(InteractivePressStyle(pressScale: 0.98))
+                .pointerCursor()
+            }
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(ElevenLabsBrand.Spacing.xl)
+    }
+
+    @ViewBuilder
+    private var workspaceProvisioningContent: some View {
+        switch authenticationManager.workspaceProvisioningState {
+        case .idle, .provisioning:
+            HStack(spacing: ElevenLabsBrand.Spacing.sm) {
+                ProgressView()
+                Text("Setting up your personal workspace…")
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            }
+        case .ready(let snapshot):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                ElevenLabsEyebrow("PERSONAL WORKSPACE")
+                Text(snapshot.workspaceName)
+                    .font(ElevenLabsBrand.Typography.cardTitle(size: 22))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(snapshot.personaSetupState.statusText)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                Text("Provisioning is complete. Ask, Teach, personas, chat, memory, tastes, and team data remain unavailable until production storage is connected.")
                     .font(ElevenLabsBrand.Typography.body)
                     .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                TextField("you@email.com", text: $emailInputText)
-                    .textFieldStyle(.plain)
-                    .font(ElevenLabsBrand.Typography.body)
-                    .foregroundColor(ElevenLabsBrand.Colors.ink)
-                    .padding(.horizontal, ElevenLabsBrand.Spacing.md)
-                    .padding(.vertical, ElevenLabsBrand.Spacing.sm)
-                    .background(
-                        RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                            .fill(ElevenLabsBrand.Colors.card)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: ElevenLabsBrand.Radius.card, style: .continuous)
-                            .stroke(ElevenLabsBrand.Colors.hairline, lineWidth: 1)
-                    )
-
-                Button(action: {
-                    dashboardMockAuthState.signIn(emailAddress: emailInputText)
-                }) {
-                    Text("Sign in")
-                }
-                .elevenLabsPrimaryButtonStyle()
-                .disabled(emailInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity(emailInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1.0)
             }
-            .frame(maxWidth: 360)
-
-            Spacer()
+        case .failure(let message, let attempt):
+            VStack(alignment: .leading, spacing: ElevenLabsBrand.Spacing.xs) {
+                Text("Workspace setup attempt \(attempt) failed.")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(ElevenLabsBrand.Colors.ink)
+                Text(message)
+                    .font(ElevenLabsBrand.Typography.body)
+                    .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+}
+
+struct DashboardSignInView: View {
+    var body: some View {
+        AuthView(isDismissible: false)
+            .frame(maxWidth: 460)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.vertical, ElevenLabsBrand.Spacing.xl)
+    }
+}
+
+private struct DashboardAuthenticationFailureView: View {
+    let message: String
+    @StateObject private var authenticationManager = AuthenticationManager.shared
+
+    var body: some View {
+        VStack(spacing: ElevenLabsBrand.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28))
+                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+            Text("Authentication needs attention.")
+                .font(ElevenLabsBrand.Typography.cardTitle(size: 22))
+                .foregroundColor(ElevenLabsBrand.Colors.ink)
+            Text(message)
+                .font(ElevenLabsBrand.Typography.body)
+                .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                .multilineTextAlignment(.center)
+
+            Button("Retry") {
+                authenticationManager.retry()
+            }
+            .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+            .pointerCursor()
+        }
+        .frame(maxWidth: 420)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, ElevenLabsBrand.Spacing.xl)
     }

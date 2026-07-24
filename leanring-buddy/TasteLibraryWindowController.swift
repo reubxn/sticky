@@ -39,6 +39,11 @@ final class TasteLibraryWindowController: NSObject, NSWindowDelegate {
     /// LSUIElement apps can leave the new window stranded behind other
     /// apps' windows.
     func showWindow() {
+        guard AuthenticationManager.shared.canAccessProductionFeatures else {
+            DashboardWindowController.shared.showDashboardWindow()
+            return
+        }
+
         if libraryWindow == nil {
             libraryWindow = createLibraryWindow()
         }
@@ -46,6 +51,10 @@ final class TasteLibraryWindowController: NSObject, NSWindowDelegate {
         guard let libraryWindow else { return }
         libraryWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func hideWindow() {
+        libraryWindow?.orderOut(nil)
     }
 
     private func createLibraryWindow() -> NSWindow {

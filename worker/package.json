@@ -1,11 +1,23 @@
 {
   "name": "clicky-proxy",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "wrangler dev --env sticky-onboarding-dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types --env sticky-onboarding-dev",
+    "types:check": "wrangler types --env sticky-onboarding-dev --check",
+    "check:startup": "wrangler check startup --env sticky-onboarding-dev",
+    "dry-run:development": "wrangler deploy --env sticky-onboarding-dev --dry-run"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "@cloudflare/vitest-pool-workers": "^0.18.7",
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.113.0"
   }
 }

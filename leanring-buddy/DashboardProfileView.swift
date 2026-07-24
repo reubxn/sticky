@@ -28,17 +28,15 @@ struct DashboardProfileView: View {
         self.companionManager = companionManager
     }
 
-    @StateObject private var dashboardMockAuthState = DashboardMockAuthState.shared
+    @StateObject private var authenticationManager = AuthenticationManager.shared
 
     /// Reading the personal taste profile lazily so the export button
     /// always has the most recent version (a teach-mode save while the
     /// dashboard is open should be reflected immediately).
     @State private var didJustExportTasteFile: Bool = false
 
-    /// Local working copies of the editable fields. Bound to the
-    /// shared mock auth store via the .onChange handlers below — we
-    /// don't bind directly so the user can type freely without each
-    /// keystroke being persisted.
+    /// Local working copies of the editable app-profile fields. These
+    /// are separate from Clerk's authenticated identity.
     @State private var draftDisplayName: String = ""
     @State private var draftRole: String = ""
 
@@ -117,7 +115,7 @@ struct DashboardProfileView: View {
                     )
 
                 fieldLabel("Email")
-                Text(dashboardMockAuthState.email.isEmpty ? "Not signed in with email yet." : dashboardMockAuthState.email)
+                Text(authenticationManager.email.isEmpty ? "No primary email available." : authenticationManager.email)
                     .font(ElevenLabsBrand.Typography.body)
                     .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                     .padding(.horizontal, ElevenLabsBrand.Spacing.sm)
@@ -147,13 +145,15 @@ struct DashboardProfileView: View {
     }
 
     private var hasUnsavedIdentityChanges: Bool {
-        draftDisplayName != dashboardMockAuthState.displayName
-            || draftRole != dashboardMockAuthState.role
+        draftDisplayName != authenticationManager.displayName
+            || draftRole != authenticationManager.localRole
     }
 
     private func saveIdentityChanges() {
-        dashboardMockAuthState.displayName = draftDisplayName
-        dashboardMockAuthState.role = draftRole
+        authenticationManager.updateLocalIdentity(
+            displayName: draftDisplayName,
+            role: draftRole
+        )
     }
 
     private func fieldLabel(_ label: String) -> some View {
@@ -176,13 +176,13 @@ struct DashboardProfileView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "square.and.arrow.up")
                                 .font(.system(size: 11, weight: .bold))
-                            Text(dashboardMockAuthState.profilePicturePath == nil ? "Upload" : "Change")
+                            Text(authenticationManager.localProfilePicturePath == nil ? "Upload" : "Change")
                                 .font(.system(size: 12, weight: .semibold))
                         }
                     }
                     .elevenLabsPrimaryButtonStyle(isFullWidth: false)
 
-                    if dashboardMockAuthState.profilePicturePath != nil {
+                    if authenticationManager.localProfilePicturePath != nil {
                         Button(action: removeProfilePicture) {
                             Text("Remove")
                                 .font(.system(size: 12, weight: .semibold))
@@ -204,7 +204,7 @@ struct DashboardProfileView: View {
 
     @ViewBuilder
     private var profilePictureAvatar: some View {
-        if let path = dashboardMockAuthState.profilePicturePath,
+        if let path = authenticationManager.localProfilePicturePath,
            let nsImage = NSImage(contentsOfFile: path) {
             Image(nsImage: nsImage)
                 .resizable()
@@ -254,7 +254,7 @@ struct DashboardProfileView: View {
 
         do {
             let savedPath = try saveProfilePictureFile(sourceURL: sourceURL)
-            dashboardMockAuthState.profilePicturePath = savedPath
+            authenticationManager.updateLocalProfilePicturePath(savedPath)
             profilePictureReloadCounter += 1
         } catch {
             NSLog("Failed to save profile picture: \(error)")
@@ -262,10 +262,10 @@ struct DashboardProfileView: View {
     }
 
     private func removeProfilePicture() {
-        if let existingPath = dashboardMockAuthState.profilePicturePath {
+        if let existingPath = authenticationManager.localProfilePicturePath {
             try? FileManager.default.removeItem(atPath: existingPath)
         }
-        dashboardMockAuthState.profilePicturePath = nil
+        authenticationManager.updateLocalProfilePicturePath(nil)
         profilePictureReloadCounter += 1
     }
 
@@ -283,8 +283,17 @@ struct DashboardProfileView: View {
             ])
         }
 
+        guard let localProfileStorageDirectoryName =
+            authenticationManager.localProfileStorageDirectoryName else {
+            throw NSError(domain: "DashboardProfileView", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "A verified Clerk user is required."
+            ])
+        }
+
         let directoryURL = applicationSupportDirectoryURL
             .appendingPathComponent("com.learning-buddy.clicky", isDirectory: true)
+            .appendingPathComponent("profiles", isDirectory: true)
+            .appendingPathComponent(localProfileStorageDirectoryName, isDirectory: true)
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         let fileExtension = sourceURL.pathExtension.isEmpty ? "png" : sourceURL.pathExtension
@@ -536,8 +545,8 @@ struct DashboardProfileView: View {
 
         DashboardTasteMarkdownExporter.exportPersonalProfileAsMarkdown(
             mergedProfile,
-            displayName: localBundle?.displayName ?? dashboardMockAuthState.displayName,
-            role: localBundle?.role ?? dashboardMockAuthState.role,
+            displayName: localBundle?.displayName ?? authenticationManager.displayName,
+            role: localBundle?.role ?? authenticationManager.localRole,
             accentHex: localBundle?.accentColorHex,
             voiceId: localBundle?.voiceId,
             soulProse: localBundle?.soul
@@ -558,17 +567,17 @@ struct DashboardProfileView: View {
 
             HStack(spacing: ElevenLabsBrand.Spacing.md) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Signed in as \(dashboardMockAuthState.displayName)")
+                    Text("Signed in as \(authenticationManager.displayName)")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(ElevenLabsBrand.Colors.ink)
-                    Text("Mock sign-in — clicking out signs you out of the dashboard only.")
+                    Text("Signing out ends the Clerk session and Convex access.")
                         .font(.system(size: 11))
                         .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
                 }
 
                 Spacer()
 
-                Button(action: { dashboardMockAuthState.signOut() }) {
+                Button(action: { authenticationManager.signOut() }) {
                     HStack(spacing: 6) {
                         Image(systemName: "rectangle.portrait.and.arrow.right")
                             .font(.system(size: 11, weight: .bold))
@@ -577,6 +586,7 @@ struct DashboardProfileView: View {
                     }
                 }
                 .elevenLabsPrimaryButtonStyle(isFullWidth: false)
+                .pointerCursor()
             }
             .padding(ElevenLabsBrand.Spacing.md)
             .background(
@@ -593,8 +603,8 @@ struct DashboardProfileView: View {
     // MARK: - State sync
 
     private func loadDraftValuesFromAuthState() {
-        draftDisplayName = dashboardMockAuthState.displayName
-        draftRole = dashboardMockAuthState.role
+        draftDisplayName = authenticationManager.displayName
+        draftRole = authenticationManager.localRole
         draftVoiceId = UserDefaults.standard.string(forKey: "selectedElevenLabsVoiceID")
         // If the saved voice id isn't one of the bundled options, surface
         // it in the custom-voice input so the user sees what's currently
