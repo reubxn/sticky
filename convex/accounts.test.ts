@@ -151,6 +151,7 @@ async function insertPersona(
     displayName: string;
     setupState: "notStarted" | "essentials" | "interview" | "complete";
     currentVersion: number;
+    activatedAt: number;
   }> = {},
 ) {
   return await testBackend.run(async (ctx) => {
@@ -162,6 +163,12 @@ async function insertPersona(
       displayName: overrides.displayName ?? "Stored Persona",
       setupState: overrides.setupState ?? "notStarted",
       currentVersion: overrides.currentVersion ?? 0,
+      activatedAt:
+        overrides.activatedAt ??
+        (overrides.setupState === "interview" ||
+        overrides.setupState === "complete"
+          ? timestamp
+          : undefined),
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -364,6 +371,7 @@ describe("personal account provisioning", () => {
         displayName: "Edited Persona",
         setupState: "interview",
         currentVersion: 4,
+        activatedAt: timestamp + 11,
         updatedAt: timestamp + 11,
       });
     });

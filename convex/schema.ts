@@ -1,7 +1,13 @@
 import { defineSchema, defineTable } from "convex/server";
 
 import {
+  personaBoundarySummaryValidator,
+  personaOnboardingSessionValidator,
+  personaOnboardingTurnValidator,
+  personaRecordValidator,
+  personaSessionOperationReceiptValidator,
   personaValidator,
+  personaVersionValidator,
   profileValidator,
   workerRequestAuditValidator,
   workerRequestTicketValidator,
@@ -41,6 +47,71 @@ export default defineSchema({
       "status",
     ])
     .index("by_workspaceId_and_status", ["workspaceId", "status"]),
+
+  personaVersions: defineTable(personaVersionValidator)
+    .index("by_personaId_and_versionNumber", ["personaId", "versionNumber"])
+    .index("by_personaId_and_clientMutationId", [
+      "personaId",
+      "clientMutationId",
+    ])
+    .index("by_membershipId", ["membershipId"]),
+
+  personaRecords: defineTable(personaRecordValidator)
+    .index("by_personaId_and_isCurrent_and_state_and_kind", [
+      "personaId",
+      "isCurrent",
+      "state",
+      "kind",
+    ])
+    .index("by_personaId_and_recordKey_and_isCurrent", [
+      "personaId",
+      "recordKey",
+      "isCurrent",
+    ])
+    .index("by_versionId", ["versionId"])
+    .index("by_membershipId", ["membershipId"]),
+
+  personaOnboardingSessions: defineTable(personaOnboardingSessionValidator)
+    .index("by_personaId", ["personaId"])
+    .index("by_membershipId", ["membershipId"]),
+
+  personaOnboardingTurns: defineTable(personaOnboardingTurnValidator)
+    .index("by_sessionId_and_sequence", ["sessionId", "sequence"])
+    .index("by_sessionId_and_turnId", ["sessionId", "turnId"])
+    .index("by_sessionId_and_clientMutationId", [
+      "sessionId",
+      "clientMutationId",
+    ])
+    .index("by_membershipId", ["membershipId"]),
+
+  personaSessionOperationReceipts: defineTable(
+    personaSessionOperationReceiptValidator,
+  )
+    .index("by_personaId_and_clientMutationId", [
+      "personaId",
+      "clientMutationId",
+    ])
+    .index("by_sessionId_and_clientMutationId", [
+      "sessionId",
+      "clientMutationId",
+    ])
+    .index("by_membershipId", ["membershipId"]),
+
+  personaBoundarySummaries: defineTable(personaBoundarySummaryValidator)
+    .index("by_personaId_and_state", ["personaId", "state"])
+    .index("by_personaId_and_clientMutationId", [
+      "personaId",
+      "clientMutationId",
+    ])
+    .index("by_personaId_and_approvalClientMutationId", [
+      "personaId",
+      "approvalClientMutationId",
+    ])
+    .index("by_personaId_and_unpublishClientMutationId", [
+      "personaId",
+      "unpublishClientMutationId",
+    ])
+    .index("by_membershipId", ["membershipId"]),
 
   workerRequestTickets: defineTable(workerRequestTicketValidator)
     .index("by_ticketDigest", ["ticketDigest"])

@@ -38,6 +38,122 @@ export const personaSetupStateValidator = v.union(
   v.literal("complete"),
 );
 
+export const personaRecordKindValidator = v.union(
+  v.literal("work_context"),
+  v.literal("communication_preference"),
+  v.literal("judgment_principle"),
+  v.literal("expertise"),
+  v.literal("boundary"),
+);
+
+export const personaRecordStateValidator = v.union(
+  v.literal("active"),
+  v.literal("superseded"),
+  v.literal("tombstone"),
+);
+
+export const personaBoundaryModeValidator = v.union(
+  v.literal("always"),
+  v.literal("ask_first"),
+  v.literal("never"),
+);
+
+export const personaRecordContentValidator = v.union(
+  v.object({
+    kind: v.literal("work_context"),
+    statement: v.string(),
+  }),
+  v.object({
+    kind: v.literal("communication_preference"),
+    statement: v.string(),
+  }),
+  v.object({
+    kind: v.literal("judgment_principle"),
+    statement: v.string(),
+  }),
+  v.object({
+    kind: v.literal("expertise"),
+    statement: v.string(),
+  }),
+  v.object({
+    kind: v.literal("boundary"),
+    mode: personaBoundaryModeValidator,
+    statement: v.string(),
+  }),
+);
+
+export const personaVersionSourceValidator = v.union(
+  v.object({
+    kind: v.literal("onboarding_answer"),
+    sessionId: v.id("personaOnboardingSessions"),
+    sourceTurnId: v.id("personaOnboardingTurns"),
+  }),
+  v.object({
+    kind: v.literal("manual_owner_edit"),
+  }),
+);
+
+export const personaRecordSourceValidator = v.union(
+  v.object({
+    kind: v.literal("onboarding_explicit_answer"),
+    sessionId: v.id("personaOnboardingSessions"),
+    sourceTurnId: v.id("personaOnboardingTurns"),
+    sourceClientTurnId: v.string(),
+    evidenceExcerpt: v.string(),
+  }),
+  v.object({
+    kind: v.literal("manual_owner_edit"),
+  }),
+);
+
+export const personaOnboardingSessionStatusValidator = v.union(
+  v.literal("active"),
+  v.literal("paused"),
+  v.literal("completed"),
+);
+
+export const personaOnboardingPauseReasonValidator = v.union(
+  v.literal("userPaused"),
+  v.literal("skippedForNow"),
+);
+
+export const personaOnboardingSpeakerValidator = v.union(
+  v.literal("owner"),
+  v.literal("sticky"),
+);
+
+export const personaOnboardingTurnKindValidator = v.union(
+  v.literal("answer"),
+  v.literal("introduction"),
+  v.literal("question"),
+  v.literal("acknowledgement"),
+  v.literal("informational_summary"),
+);
+
+export const personaOnboardingInputModeValidator = v.union(
+  v.literal("voice"),
+  v.literal("text"),
+);
+
+export const personaOnboardingInterpretationStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("applied"),
+);
+
+export const personaSessionOperationValidator = v.union(
+  v.literal("start"),
+  v.literal("resume"),
+  v.literal("pause"),
+  v.literal("complete"),
+);
+
+export const personaBoundarySummaryStateValidator = v.union(
+  v.literal("draft"),
+  v.literal("approved"),
+  v.literal("superseded"),
+  v.literal("unpublished"),
+);
+
 export const workerRequestScopeValidator = v.union(
   v.literal("onboarding_chat"),
   v.literal("onboarding_tts"),
@@ -193,8 +309,117 @@ export const personaValidator = v.object({
   avatarUrl: v.optional(v.string()),
   setupState: personaSetupStateValidator,
   currentVersion: v.number(),
+  activatedAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
+});
+
+export const personaVersionValidator = v.object({
+  personaId: v.id("personas"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  versionNumber: v.number(),
+  previousVersionNumber: v.number(),
+  clientMutationId: v.string(),
+  requestFingerprint: v.string(),
+  source: personaVersionSourceValidator,
+  changeCount: v.number(),
+  createdAt: v.number(),
+});
+
+export const personaRecordValidator = v.object({
+  personaId: v.id("personas"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  recordKey: v.string(),
+  versionId: v.id("personaVersions"),
+  versionNumber: v.number(),
+  kind: personaRecordKindValidator,
+  state: personaRecordStateValidator,
+  isCurrent: v.boolean(),
+  content: v.optional(personaRecordContentValidator),
+  deletedKind: v.optional(personaRecordKindValidator),
+  source: personaRecordSourceValidator,
+  confidence: v.number(),
+  createdAt: v.number(),
+  supersededAt: v.optional(v.number()),
+  supersededByRecordId: v.optional(v.id("personaRecords")),
+});
+
+export const personaOnboardingSessionValidator = v.object({
+  personaId: v.id("personas"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  status: personaOnboardingSessionStatusValidator,
+  pauseReason: v.optional(personaOnboardingPauseReasonValidator),
+  revision: v.number(),
+  turnCount: v.number(),
+  nextSequence: v.number(),
+  lastClientMutationId: v.optional(v.string()),
+  startedAt: v.number(),
+  updatedAt: v.number(),
+  pausedAt: v.optional(v.number()),
+  completedAt: v.optional(v.number()),
+});
+
+export const personaOnboardingTurnValidator = v.object({
+  sessionId: v.id("personaOnboardingSessions"),
+  personaId: v.id("personas"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  turnId: v.string(),
+  clientMutationId: v.string(),
+  sequence: v.number(),
+  speaker: personaOnboardingSpeakerValidator,
+  kind: personaOnboardingTurnKindValidator,
+  text: v.string(),
+  inputMode: v.optional(personaOnboardingInputModeValidator),
+  interpretationStatus: v.optional(
+    personaOnboardingInterpretationStatusValidator,
+  ),
+  interpretationClientMutationId: v.optional(v.string()),
+  interpretationRequestFingerprint: v.optional(v.string()),
+  interpretedVersionId: v.optional(v.id("personaVersions")),
+  createdAt: v.number(),
+});
+
+export const personaSessionOperationReceiptValidator = v.object({
+  personaId: v.id("personas"),
+  sessionId: v.id("personaOnboardingSessions"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  clientMutationId: v.string(),
+  operation: personaSessionOperationValidator,
+  requestFingerprint: v.string(),
+  resultStatus: personaOnboardingSessionStatusValidator,
+  resultRevision: v.number(),
+  resultSetupState: personaSetupStateValidator,
+  createdAt: v.number(),
+});
+
+export const personaBoundarySummaryValidator = v.object({
+  personaId: v.id("personas"),
+  membershipId: v.id("workspaceMembers"),
+  workspaceId: v.id("workspaces"),
+  ownerUserId: v.id("profiles"),
+  summaryText: v.string(),
+  sourceVersionNumber: v.number(),
+  state: personaBoundarySummaryStateValidator,
+  clientMutationId: v.string(),
+  requestFingerprint: v.string(),
+  approvalClientMutationId: v.optional(v.string()),
+  approvalRequestFingerprint: v.optional(v.string()),
+  unpublishClientMutationId: v.optional(v.string()),
+  unpublishRequestFingerprint: v.optional(v.string()),
+  createdAt: v.number(),
+  approvedAt: v.optional(v.number()),
+  supersededAt: v.optional(v.number()),
+  unpublishedAt: v.optional(v.number()),
 });
 
 const workerRequestTicketFieldsValidator = v.object({

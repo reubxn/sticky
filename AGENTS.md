@@ -18,8 +18,8 @@ Hold `ctrl + option`, speak, release. On release:
 1. [BuddyDictationManager](leanring-buddy/BuddyDictationManager.swift) finalizes the transcript (AssemblyAI streaming).
 2. [CompanionScreenCaptureUtility](leanring-buddy/CompanionScreenCaptureUtility.swift) returns a JPEG of every screen. Capture is actually started on key-*down* so it overlaps with the user speaking — see `preflightScreenCaptureTask` in [CompanionManager.swift](leanring-buddy/CompanionManager.swift).
 3. The active persona's `TASTE.md` (soul + principles) is composed into the system prompt by `composeVoiceSystemPromptWithTaste()`.
-4. [ClaudeAPI](leanring-buddy/ClaudeAPI.swift) streams the reply via SSE.
-5. Sentences are dispatched to [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift) as they finalize so playback starts before Claude is done generating.
+4. The selected provider client ([ClaudeAPI](leanring-buddy/ClaudeAPI.swift) or [OpenAIAPI](leanring-buddy/OpenAIAPI.swift)) streams the reply via SSE.
+5. Sentences are dispatched to [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift) as they finalize so playback starts before the model is done generating.
 6. If the reply contains `[POINT:x,y:label[:screenN]]`, the blue cursor in [OverlayWindow](leanring-buddy/OverlayWindow.swift) flies along a bezier arc to that pixel on the right monitor. Replies can contain **multiple inline `[POINT:...][BUBBLE:...]` pairs** for multi-step pointing — each waypoint fires as the speech segment immediately preceding it begins playing through ElevenLabs, so the cursor stays locked to the spoken sentence. Inline pairs are extracted by the streaming parser in `StreamingResponseState`, attached to their preceding speech segment, and flown via the per-segment `onSegmentStart` hook on [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift). Single trailing-tag pointing still works the same way as before for the common one-step case.
 7. If the reply ends with `[USED:P1,T2]`, those short labels are resolved back to `TastePrinciple` objects and rendered in `AppliedPrinciplesChip` so the user can see which principles informed the answer.
 8. If the reply ends with `[ACTION:start_notes]` or `[ACTION:stop_notes]`, Sticky waits for the spoken acknowledgement to finish playing (polls `ElevenLabsTTSClient.isPlaybackChainActive`, hard-capped at 4s) and then calls `startTeachSession()` / `stopTeachSession()`. Lets the user verbally start a notes session ("start taking notes for me") instead of clicking the panel button. Parsed by `parseActionTag(from:)` and fired via `scheduleVoiceActionAfterAcknowledgement(_:)` in [CompanionManager.swift](leanring-buddy/CompanionManager.swift).
@@ -64,7 +64,7 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **App type**: Menu bar-only (`LSUIElement=true`), no dock icon. Two real windows can open as auxiliary surfaces: the floating chat ([ChatWindowController](leanring-buddy/ChatWindowController.swift)) and the dashboard ([DashboardWindowController](leanring-buddy/DashboardWindowController.swift)).
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for the borderless menu bar `NSPanel` and the always-on-top transparent cursor overlay.
 - **Pattern**: MVVM with `@StateObject` / `@Published`. `CompanionManager` is the central state machine.
-- **AI chat**: Claude (Haiku 4.5 default for voice — TTFT-bound, Sonnet/Opus optional) via Cloudflare Worker proxy with SSE streaming.
+- **AI chat**: Claude (Haiku 4.5 default for voice — TTFT-bound, Sonnet/Opus optional) or OpenAI GPT-5.2 via provider-specific Cloudflare Worker proxy routes with SSE streaming.
 - **Speech-to-text**: AssemblyAI streaming v3 over websocket, with OpenAI and Apple Speech as fallbacks. Provider chosen by `VoiceTranscriptionProvider` in Info.plist.
 - **Text-to-speech**: ElevenLabs `eleven_flash_v2_5` via the Worker. Sentence-streamed playback so audio starts before generation finishes.
 - **Screen capture**: ScreenCaptureKit, multi-monitor, JPEG.
@@ -76,6 +76,7 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **Production backend bootstrap**: Convex owns the initial `profiles`, `workspaces`, `workspaceMembers`, and membership-owned `personas` model. Authorization helpers derive the canonical profile from verified identity and enforce active membership, workspace roles, persona ownership, and workspace-scoped persona use. Application data subscriptions remain deferred.
 - **Personal workspace provisioning**: after Convex authenticates and pending Clerk callbacks drain, `AuthenticationManager` calls the idempotent `accounts:provisionCurrent` mutation. Convex derives the profile exclusively from `identity.tokenIdentifier` and transactionally creates or validates one personal workspace, owner membership, and fresh persona. Provisioning has its own generation-bound state and bounded retry; it does not unlock production features.
 - **Onboarding Worker request tickets**: PR 4A's merged Convex control plane exposes one authenticated owner-only action that returns a 256-bit opaque bearer once and persists only its SHA-256 digest. Tickets are short-lived, single-use, exact-body-bound, limited to `onboarding_chat`, `onboarding_tts`, and `onboarding_transcribe`, and revalidate the full account/workspace/membership/persona lifecycle plus the denormalized audit relationship at atomic internal consumption. PR 4B adds exactly two Convex HTTP endpoints for consume and completion using timestamped per-request HMAC-SHA256 over the canonical method, path, timestamp, cryptographic request ID, and raw-body digest. Convex accepts current and optional previous key pairs for rotation and never receives ticket plaintext. Completion delivery retries network errors, `408`, `425`, `429`, and `5xx` up to three attempts with the same idempotent body and fresh service-request signatures. PR 4C's actor-backed native client deterministically serializes each strict route DTO once, hashes and issues a fresh ticket for those exact bytes, then streams the unchanged request through the onboarding Worker. Every operation is bound to an immutable authenticated account/workspace/persona context and revalidates it before issuance, after issuance, after response, and during streaming. No onboarding UI is added, production readiness stays locked, and native transport remains unavailable until the development Worker is deployed and its HTTPS origin is supplied through ignored runtime configuration.
+- **Structured persona foundation**: PR 5A stores one owner-private onboarding session per persona, bounded immutable turns, append-only versioned records with exact owner-answer provenance, immutable session-operation receipts, and a separate explicitly approved teammate-readable boundary projection. Canonical server-generated fingerprints make retries valid only for the exact normalized request. Active `startOrResume` no-ops store exact nonterminal receipts to preserve mutation-ID uniqueness; new unique no-ops are rejected at the nonterminal cap, which remains one row below the hard limit so terminal completion always retains a reserved slot from active or paused state. One shared bounded graph validator checks every setup, child relationship, version/source link, turn sequence, and lifecycle combination before reads, writes, authorization, or ticket use. Work context plus one communication preference atomically activates the persona and moves setup to `interview`; skipping pauses that same resumable session, while `complete` is permanently terminal for onboarding tickets. Chat ticket consumption base64-encodes byte-length-labelled untrusted values and deterministically fits only that persona's current records and latest turns within both 8,192 characters and UTF-8 bytes; TTS and transcription policy remain unchanged.
 - **Production authentication**: Clerk provides native Google and email-link sessions in Keychain. `AuthenticationManager` bridges Clerk into `ConvexClientWithAuth`; protected UI follows Convex auth state rather than Clerk user presence. Native callbacks use exact `com.reuban.sticky://callback` matching until associated domains are available. The development issuer is exactly `https://ruling-katydid-23.clerk.accounts.dev`, and Clerk's Convex integration must issue `aud: convex`.
 - **Production-data boundary**: Authentication alone does not start the product. `productionDataReadiness` remains `.awaitingWorkspaceProvisioning` in this PR, so `CompanionManager`, Ask, Teach, personas, floating chat, Taste Library, and Dashboard Chat/Memory/Tastes/Team stay unavailable. Readiness is valid only as `.ready(userID:authGeneration:workspaceID:)` matching the current identity, generation, and workspace. PR 3 may call `markCurrentAuthenticatedWorkspaceReady(workspaceID:)` only after provisioning production-scoped storage. Auth or readiness loss increments lifecycle generations, cancels in-flight work, clears in-memory captures/messages, stops playback/hotkeys/overlays, and hides legacy windows.
 - **Auth operation generations**: Account generations protect identity-bound retry/login work; callback epochs independently preserve a valid callback across cached-user discovery and account transitions. Explicit sign-out invalidates callbacks. Sign-out completion is publisher-driven and has a distinct bounded retry failure state.
@@ -89,10 +90,11 @@ The app never calls external APIs directly. All requests go through a Worker tha
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
+| `POST /openai-chat` | `api.openai.com/v1/chat/completions` | OpenAI vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
+Worker secrets: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
 
 The default `clicky-proxy` deployment remains legacy-only. The separate
 `sticky-onboarding-dev` environment closes those routes and exposes only
@@ -202,10 +204,10 @@ replacement PRs remove them.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~690 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
-| [CONVEX.md](CONVEX.md) | ~140 | Convex deployment safety, Clerk authentication, local setup, generated-file, and secret-handling instructions. |
-| [convex/schema.ts](convex/schema.ts) | ~65 | Production account tables plus digest-only Worker ticket and sanitized audit tables with bounded-query indexes. |
-| [convex/validators.ts](convex/validators.ts) | ~240 | Shared lifecycle, account, Worker ticket, policy-envelope, completion, and schema validators. |
+| [PRODUCTION_PLAN.md](PRODUCTION_PLAN.md) | ~755 | Confirmed production product model, Convex data relationships, authorization contract, context rules, test requirements, and dependency-ordered agent/PR roadmap. |
+| [CONVEX.md](CONVEX.md) | ~290 | Convex deployment safety, authentication, persona onboarding, ticket context, local setup, generated-file, and secret-handling instructions. |
+| [convex/schema.ts](convex/schema.ts) | ~140 | Production account, structured persona, onboarding receipt, boundary projection, and Worker ticket tables with bounded indexes. |
+| [convex/validators.ts](convex/validators.ts) | ~470 | Shared account, structured persona, onboarding receipt, boundary, Worker ticket, policy, and completion validators. |
 | [convex/accounts.ts](convex/accounts.ts) | ~390 | Authenticated, fail-closed personal-account provisioning, safe default-name repair, and current-account graph query. |
 | [convex/accounts.test.ts](convex/accounts.test.ts) | ~580 | Adversarial provisioning tests for idempotency, concurrency, partial repair, claim refresh, lifecycle integrity, orphan rollback, and identity isolation. |
 | [convex/requestTickets.ts](convex/requestTickets.ts) | ~80 | Public authenticated onboarding-ticket action that generates and hashes a one-time 256-bit bearer. |
@@ -213,12 +215,18 @@ replacement PRs remove them.
 | [convex/workerRequestTicketMutations.ts](convex/workerRequestTicketMutations.ts) | ~505 | Internal issuance, atomic consume, lifecycle and audit-integrity revalidation, quota enforcement, and idempotent sanitized completion. |
 | [convex/workerRequestTicketCleanup.ts](convex/workerRequestTicketCleanup.ts) | ~115 | Bounded indexed ticket and audit cleanup mutations with fixed-cutoff scheduled continuation. |
 | [convex/crons.ts](convex/crons.ts) | ~30 | Hourly triggers for issued-ticket, consumed-tombstone, and audit cleanup. |
-| [convex/requestTickets.test.ts](convex/requestTickets.test.ts) | ~1040 | Adversarial request-ticket authorization, setup lifecycle, quota, replay, concurrency, audit integrity, TOCTOU, privacy, rollback, and completion tests. |
+| [convex/requestTickets.test.ts](convex/requestTickets.test.ts) | ~1310 | Adversarial request-ticket authorization, strict setup graphs, injection-safe bounded persona context, quota, replay, concurrency, audit integrity, TOCTOU, privacy, rollback, and completion tests. |
 | [convex/workerRequestTicketCleanup.test.ts](convex/workerRequestTicketCleanup.test.ts) | ~260 | Retention-boundary, independent audit retention, bounded deletion, and continuation tests. |
 | [convex/http.ts](convex/http.ts) | ~180 | Exact HMAC-authenticated Worker consume and completion HTTP routes with bounded strict DTO parsing and generic failures. |
 | [convex/workerServiceBridge.ts](convex/workerServiceBridge.ts) | ~340 | Pure canonicalization, HMAC rotation verification, digesting, and strict Worker service payload validation. |
 | [convex/workerServiceBridge.test.ts](convex/workerServiceBridge.test.ts) | ~315 | Shared-vector compatibility, canonicalization, current/previous key rotation, timestamp, tamper, malformed DTO, route closure, and plaintext-ticket rejection tests. |
-| [convex/authorization.ts](convex/authorization.ts) | ~190 | Deny-by-default identity, membership, role, workspace-owner, persona-owner, and usable-persona authorization helpers. |
+| [convex/authorization.ts](convex/authorization.ts) | ~270 | Deny-by-default identity, membership, role, validated persona usability, and readable boundary projection authorization helpers. |
+| [convex/personaFoundation.ts](convex/personaFoundation.ts) | ~810 | Canonical request fingerprints, receipt limits, shared child/setup graph validation, immutable version/record writes, minimum preservation, and publication invalidation. |
+| [convex/personaOnboarding.ts](convex/personaOnboarding.ts) | ~880 | Owner-only setup/session/turn APIs, terminal-capacity operation receipts, exact interpretation replay, pause/resume, pagination, and completion. |
+| [convex/personaRecords.ts](convex/personaRecords.ts) | ~100 | Owner-only manual structured-record changes and immutable version pagination. |
+| [convex/personaBoundarySummaries.ts](convex/personaBoundarySummaries.ts) | ~380 | Fingerprinted owner-controlled boundary publication lifecycle, normalized direct-ID denial, and minimal teammate projection. |
+| [convex/personaOnboardingContext.ts](convex/personaOnboardingContext.ts) | ~150 | Deterministic byte-aware 8 KiB onboarding context with base64-encoded untrusted records and turns. |
+| [convex/personaOnboarding.test.ts](convex/personaOnboarding.test.ts) | ~1200 | Persona readiness, private interpretation pagination, exact no-op/cross-operation replay, receipt exhaustion/reservation, provenance corruption, existence-oracle, concurrency, rollback, lifecycle, privacy, and publication tests. |
 | [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
 | [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |
 | [convex/identity.test.ts](convex/identity.test.ts) | ~55 | Convex-test coverage for authenticated identity claims and unauthenticated denial. |
@@ -257,7 +265,7 @@ replacement PRs remove them.
 | [TasteProfileExporter.swift](leanring-buddy/TasteProfileExporter.swift) | ~225 | Export/import for sharing taste profiles between teammates. |
 | [DashboardTasteMarkdownExporter.swift](leanring-buddy/DashboardTasteMarkdownExporter.swift) | ~141 | Export a persona's taste to markdown for the dashboard. |
 | [ClaudeAPI.swift](leanring-buddy/ClaudeAPI.swift) | ~309 | Vision + SSE-streaming Claude client. TLS warmup. JPEG/PNG MIME detection. Multi-image, conversation-history, custom system-prompt support. |
-| [OpenAIAPI.swift](leanring-buddy/OpenAIAPI.swift) | ~142 | OpenAI GPT vision client (alternative provider). |
+| [OpenAIAPI.swift](leanring-buddy/OpenAIAPI.swift) | ~225 | Worker-proxied OpenAI GPT vision client with SSE streaming, TLS warmup, multi-image, conversation-history, and custom system-prompt support. |
 | [ElevenLabsTTSClient.swift](leanring-buddy/ElevenLabsTTSClient.swift) | ~371 | TTS playback via `AVAudioPlayer`. Sentence-chained queue. Per-voice metadata. Publishes `currentPowerLevel` for the edge-glow aurora. |
 | [VoicePreviewCache.swift](leanring-buddy/VoicePreviewCache.swift) | ~128 | On-disk cache of "Hey, it's Sticky!" preview clips for each voice. Background prefetched on first picker open. |
 | [ElementLocationDetector.swift](leanring-buddy/ElementLocationDetector.swift) | ~335 | Detects UI element locations (legacy — most pointing now goes through Claude's `[POINT:...]` tag). |
@@ -283,7 +291,7 @@ replacement PRs remove them.
 | [DashboardChatHistoryStore.swift](leanring-buddy/DashboardChatHistoryStore.swift) | ~175 | Codable on-disk archive of chat sessions. |
 | [DashboardSettingsView.swift](leanring-buddy/DashboardSettingsView.swift) | ~260 | Theme toggle, model picker, voice picker, transcription provider info, etc. |
 | [DashboardSectionHeader.swift](leanring-buddy/DashboardSectionHeader.swift) | ~87 | Shared section header with eyebrow + title + subtitle. |
-| [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~82 | Voice vs chat model picker enum. |
+| [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~80 | Shared Claude/OpenAI provider and model-picker mapping. |
 | [TasteLibraryView.swift](leanring-buddy/TasteLibraryView.swift) | ~654 | Browse / delete saved principles. Used in the Memory tab and the standalone library window. |
 | [TasteLibraryWindowController.swift](leanring-buddy/TasteLibraryWindowController.swift) | ~148 | Standalone library window (opened from the menu bar panel). |
 | [TeachSessionResultCard.swift](leanring-buddy/TeachSessionResultCard.swift) | ~347 | The Save / Discard card shown in the panel after a teach session analyzes. Checkboxes for confident principles + ambiguous-moment hint. |
@@ -327,6 +335,7 @@ cd worker
 npm install
 
 npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 

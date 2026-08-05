@@ -155,7 +155,15 @@ async function loadAccountGraph(
     persona.membershipId !== membership._id ||
     persona.workspaceId !== workspace._id ||
     persona.ownerUserId !== profile._id ||
-    persona.status !== "active"
+    persona.status !== "active" ||
+    !Number.isSafeInteger(persona.currentVersion) ||
+    persona.currentVersion < 0 ||
+    ((persona.setupState === "notStarted" ||
+      persona.setupState === "essentials") &&
+      persona.activatedAt !== undefined) ||
+    ((persona.setupState === "interview" ||
+      persona.setupState === "complete") &&
+      persona.activatedAt === undefined)
   ) {
     return failDataIntegrity("Personal workspace persona is invalid");
   }
@@ -341,7 +349,8 @@ export const provisionCurrent = mutation({
       priorProfileDisplayName !== null &&
       persona.displayName === priorProfileDisplayName &&
       persona.setupState === "notStarted" &&
-      persona.currentVersion === 0
+      persona.currentVersion === 0 &&
+      persona.activatedAt === undefined
     ) {
       await ctx.db.patch("personas", persona._id, {
         displayName: profile.displayName,
