@@ -2,9 +2,9 @@
 //  SessionAnalyzer.swift
 //  leanring-buddy
 //
-//  Sends a teach session (transcript + frame timeline) to Claude and parses
+//  Sends a teach session (transcript + frame timeline) to the selected AI model and parses
 //  the returned JSON into a TeachSessionResult. No raw HTTP — uses the
-//  existing ClaudeAPI client.
+//  existing provider client.
 //
 
 import Foundation
@@ -16,7 +16,7 @@ enum SessionAnalyzerError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noJSONFoundInResponse:
-            return "Claude didn't return parseable JSON for the teach session."
+            return "The AI model didn't return parseable JSON for the teach session."
         case .jsonDecodeFailed(let underlying, _):
             return "Couldn't decode teach session JSON: \(underlying.localizedDescription)"
         }
@@ -26,10 +26,10 @@ enum SessionAnalyzerError: Error, LocalizedError {
 /// Bundles the analyzer output with the frame data it referenced. The review
 /// UI needs the original frames to render thumbnails next to each ambiguous
 /// moment's question, so we hand them back instead of letting them fall out
-/// of scope as soon as the Claude call finishes.
+/// of scope as soon as the model call finishes.
 struct TeachSessionAnalysis {
     let result: TeachSessionResult
-    /// The frames actually sent to Claude, in the order Claude saw them.
+    /// The frames actually sent to the model, in the order it saw them.
     /// `AmbiguousMoment.frameIndex` indexes into this array.
     let selectedFrames: [(data: Data, timestamp: TimeInterval)]
 }
@@ -40,16 +40,16 @@ enum SessionAnalyzer {
     private static let maxFramesPerSession = 10
 
     /// Analyzes a finished teach session. Picks up to 10 evenly-spaced frames,
-    /// sends them to Claude with the taste-extraction system prompt, and parses
+    /// sends them to the selected model with the taste-extraction system prompt, and parses
     /// the streamed reply into a TeachSessionResult. Returns the parsed result
     /// alongside the frame timeline the analyzer actually used, so the review
     /// UI can render thumbnails for each ambiguous moment by frame index.
     ///
-    /// Throws if Claude returns nothing parseable. Caller should log + recover.
+    /// Throws if the model returns nothing parseable. Caller should log + recover.
     static func analyzeTeachSession(
         transcript: String,
         frames: [(data: Data, timestamp: TimeInterval)],
-        claudeAPI: ClaudeAPI
+        api: any StreamingVisionLanguageModelAPI
     ) async throws -> TeachSessionAnalysis {
         let selectedFrames = pickEvenlySpacedFrames(frames, maxCount: maxFramesPerSession)
 
@@ -60,7 +60,7 @@ enum SessionAnalyzer {
 
         let frameTimestamps = selectedFrames.map { $0.timestamp }
 
-        let (responseText, _) = try await claudeAPI.analyzeImageStreaming(
+        let (responseText, _) = try await api.analyzeImageStreaming(
             images: labeledImages,
             systemPrompt: TasteExtractionPrompt.systemPrompt(),
             conversationHistory: [],
@@ -127,7 +127,7 @@ enum SessionAnalyzer {
     // MARK: - JSON extraction
 
     /// Walks the response looking for the first balanced top-level JSON object.
-    /// Claude sometimes wraps its reply in markdown fences or prose — this
+    /// Models sometimes wrap replies in markdown fences or prose — this
     /// finds the actual `{...}` payload regardless. Handles strings and
     /// escapes so braces inside strings don't confuse the depth tracker.
     private static func extractFirstJSONObject(from text: String) -> String? {

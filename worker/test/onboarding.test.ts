@@ -4,15 +4,16 @@ import {
 } from "cloudflare:test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import worker from "../src/index";
+import worker, { type WorkerEnvironment } from "../src/index";
 
 const ticket = "A".repeat(43);
 const authorization = `StickyTicket ${ticket}`;
-const testEnv: Env = {
+const testEnv: WorkerEnvironment = {
   CONVEX_SITE_URL: "https://kindred-ostrich-447.convex.site",
   ELEVENLABS_VOICE_ID: "kPzsL2i3teMYv0FxEYQ6",
   ONBOARDING_ROUTES_ENABLED: "true",
   ANTHROPIC_API_KEY: "anthropic-secret",
+  OPENAI_API_KEY: "openai-secret",
   ASSEMBLYAI_API_KEY: "assembly-secret",
   ELEVENLABS_API_KEY: "eleven-secret",
   WORKER_HMAC_CURRENT_KEY_ID: "development-2026-07",
@@ -34,6 +35,7 @@ function consumedPolicy(
   policy:
     | {
         kind: "onboarding_chat";
+        provider: "anthropic" | "openai";
         model: string;
         systemPrompt: string;
         maximumOutputTokens: number;
@@ -54,7 +56,7 @@ function consumedPolicy(
 ) {
   return Response.json({
     consumptionId: "consumption_1234",
-    policyVersion: 1,
+    policyVersion: 2,
     policy,
   });
 }
@@ -73,12 +75,13 @@ async function runChatWithCompletionAttempts(
       if (url.pathname.endsWith("/consume")) {
         return consumedPolicy({
           kind: "onboarding_chat",
+          provider: "openai",
           model: "trusted-model",
           systemPrompt: "trusted-system",
           maximumOutputTokens: 128,
         });
       }
-      if (url.hostname === "api.anthropic.com") {
+      if (url.hostname === "api.openai.com") {
         providerCallCount += 1;
         return new Response("data: complete\n\n", {
           headers: { "content-type": "text/event-stream" },
@@ -220,6 +223,39 @@ describe("onboarding route authorization and validation", () => {
 });
 
 describe("onboarding provider requests and streaming", () => {
+  test("rejects an unsupported consumed provider before any provider call", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/consume")) {
+          return Response.json({
+            consumptionId: "consumption_1234",
+            policyVersion: 2,
+            policy: {
+              kind: "onboarding_chat",
+              provider: "unsupported",
+              model: "unknown-model",
+              systemPrompt: "trusted-system",
+              maximumOutputTokens: 128,
+            },
+          });
+        }
+        throw new Error(`Unexpected fetch target: ${url.origin}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(
+      chatRequest('{"text":"hello","clientTurnId":"turn-provider"}'),
+      testEnv,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test("uses only trusted chat policy and reports completion after SSE streaming", async () => {
     const requests: Request[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -229,12 +265,13 @@ describe("onboarding provider requests and streaming", () => {
       if (url.pathname.endsWith("/consume")) {
         return consumedPolicy({
           kind: "onboarding_chat",
+          provider: "openai",
           model: "trusted-model",
           systemPrompt: "trusted-system",
           maximumOutputTokens: 321,
         });
       }
-      if (url.hostname === "api.anthropic.com") {
+      if (url.hostname === "api.openai.com") {
         return new Response(
           new ReadableStream({
             start(controller) {
@@ -250,7 +287,7 @@ describe("onboarding provider requests and streaming", () => {
           {
             headers: {
               "content-type": "text/event-stream",
-              "request-id": "anthropic-request-1",
+              "x-request-id": "openai-request-1",
             },
           },
         );
@@ -274,13 +311,13 @@ describe("onboarding provider requests and streaming", () => {
     expect(new URL(requests[0].url).pathname).toBe(
       "/internal/worker/request-tickets/consume",
     );
-    expect(new URL(requests[1].url).hostname).toBe("api.anthropic.com");
+    expect(new URL(requests[1].url).hostname).toBe("api.openai.com");
     expect(new URL(requests[2].url).pathname).toBe(
       "/internal/worker/request-tickets/complete",
     );
 
     const providerRequest = requests.find(
-      (request) => new URL(request.url).hostname === "api.anthropic.com",
+      (request) => new URL(request.url).hostname === "api.openai.com",
     );
     expect(providerRequest).toBeDefined();
     const providerBody = (await providerRequest?.json()) as Record<
@@ -289,13 +326,16 @@ describe("onboarding provider requests and streaming", () => {
     >;
     expect(providerBody).toMatchObject({
       model: "trusted-model",
-      system: "trusted-system",
-      max_tokens: 321,
+      max_completion_tokens: 321,
       stream: true,
       messages: [
         {
+          role: "system",
+          content: "trusted-system",
+        },
+        {
           role: "user",
-          content: [{ type: "text", text: "user text" }],
+          content: "user text",
         },
       ],
     });
@@ -322,11 +362,56 @@ describe("onboarding provider requests and streaming", () => {
       consumptionId: "consumption_1234",
       completion: {
         outcome: "succeeded",
-        providerRequestId: "anthropic-request-1",
+        providerRequestId: "openai-request-1",
         httpStatusClass: 2,
         usage: {},
       },
     });
+  });
+
+  test("retains trusted-policy Anthropic routing as an option", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/consume")) {
+          return consumedPolicy({
+            kind: "onboarding_chat",
+            provider: "anthropic",
+            model: "claude-haiku-4-5-20251001",
+            systemPrompt: "trusted-system",
+            maximumOutputTokens: 128,
+          });
+        }
+        if (url.hostname === "api.anthropic.com") {
+          return new Response("data: complete\n\n", {
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        return Response.json({ ok: true });
+      }),
+    );
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      chatRequest('{"text":"hello","clientTurnId":"turn-anthropic"}'),
+      testEnv,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    const providerRequest = requests.find(
+      (request) => new URL(request.url).hostname === "api.anthropic.com",
+    );
+    expect(providerRequest).toBeDefined();
+    expect(providerRequest?.headers.get("x-api-key")).toBe(
+      "anthropic-secret",
+    );
   });
 
   test("streams trusted-policy TTS audio and reports completion", async () => {
@@ -402,12 +487,13 @@ describe("onboarding provider requests and streaming", () => {
         if (url.pathname.endsWith("/consume")) {
           return consumedPolicy({
             kind: "onboarding_chat",
+            provider: "openai",
             model: "trusted-model",
             systemPrompt: "trusted-system",
             maximumOutputTokens: 128,
           });
         }
-        if (url.hostname === "api.anthropic.com") {
+        if (url.hostname === "api.openai.com") {
           return new Response(
             new ReadableStream({
               pull(controller) {
@@ -570,5 +656,44 @@ describe("legacy deployment behavior", () => {
       createExecutionContext(),
     );
     expect(onboardingResponse.status).toBe(404);
+  });
+
+  test("proxies OpenAI chat without exposing its API key to the client", async () => {
+    const legacyEnv = {
+      ...testEnv,
+      ONBOARDING_ROUTES_ENABLED: "false" as const,
+    };
+    const originalBody =
+      '{"model":"gpt-5.2-2025-12-11","stream":true,"messages":[]}';
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push(new Request(input, init));
+        return new Response("openai-stream", {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://worker.test/openai-chat", {
+        method: "POST",
+        body: originalBody,
+      }),
+      legacyEnv,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("openai-stream");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+    expect(requests[0]?.headers.get("authorization")).toBe(
+      "Bearer openai-secret",
+    );
+    await expect(requests[0]?.text()).resolves.toBe(originalBody);
   });
 });

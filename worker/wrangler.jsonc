@@ -15,6 +15,7 @@
   "secrets": {
     "required": [
       "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
       "ASSEMBLYAI_API_KEY",
       "ELEVENLABS_API_KEY"
     ]
@@ -29,7 +30,7 @@
       },
       "secrets": {
         "required": [
-          "ANTHROPIC_API_KEY",
+          "OPENAI_API_KEY",
           "ASSEMBLYAI_API_KEY",
           "ELEVENLABS_API_KEY",
           "WORKER_HMAC_CURRENT_KEY_ID",

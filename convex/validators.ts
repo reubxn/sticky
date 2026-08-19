@@ -186,8 +186,14 @@ export const workerRequestCompletionValidator = v.object({
   errorCode: v.optional(v.string()),
 });
 
+export const onboardingChatProviderValidator = v.union(
+  v.literal("anthropic"),
+  v.literal("openai"),
+);
+
 export const onboardingChatPolicyValidator = v.object({
   kind: v.literal("onboarding_chat"),
+  provider: onboardingChatProviderValidator,
   model: v.string(),
   systemPrompt: v.string(),
   maximumOutputTokens: v.number(),

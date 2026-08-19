@@ -39,9 +39,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		28F22CC12F56440300A0FC59 /* leanring-buddy */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			explicitFolders = (
-				personas,
-			);
 			path = "leanring-buddy";
 			sourceTree = "<group>";
 		};

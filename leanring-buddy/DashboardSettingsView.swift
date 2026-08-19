@@ -14,11 +14,7 @@
 import SwiftUI
 
 struct DashboardSettingsView: View {
-    /// Selected Claude model — same UserDefaults key as
-    /// `CompanionManager.selectedModel`. Reads on appear, writes on
-    /// change.
-    @State private var selectedClaudeModel: String = UserDefaults.standard
-        .string(forKey: "selectedClaudeModel") ?? "claude-haiku-4-5-20251001"
+    @ObservedObject var companionManager: CompanionManager
 
     /// Sticky cursor toggle — same key as
     /// `CompanionManager.isClickyCursorEnabled`.
@@ -173,10 +169,9 @@ struct DashboardSettingsView: View {
     }
 
     private func modelPickerRow(modelKind: ModelPickerKind) -> some View {
-        let isSelected = (modelKind.claudeModelId == selectedClaudeModel)
+        let isSelected = (modelKind.modelId == companionManager.selectedModel)
         return Button(action: {
-            selectedClaudeModel = modelKind.claudeModelId
-            UserDefaults.standard.set(modelKind.claudeModelId, forKey: "selectedClaudeModel")
+            companionManager.setSelectedModel(modelKind.modelId)
         }) {
             HStack(spacing: ElevenLabsBrand.Spacing.sm) {
                 Text(modelKind.glyphCharacter)

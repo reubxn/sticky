@@ -8,7 +8,10 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { DataModel, Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { emptyRequestBodyDigest } from "./workerRequestPolicy";
+import {
+  emptyRequestBodyDigest,
+  isAllowedOnboardingChatProviderModel,
+} from "./workerRequestPolicy";
 
 const modules = import.meta.glob("./**/*.ts");
 type TestBackend = TestConvexForDataModelAndIdentity<DataModel>;
@@ -411,6 +414,30 @@ async function corruptTicketAudit(
 }
 
 describe("onboarding Worker request tickets", () => {
+  test("allows only approved onboarding provider and model pairs", () => {
+    expect(
+      isAllowedOnboardingChatProviderModel(
+        "openai",
+        "gpt-5.2-2025-12-11",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedOnboardingChatProviderModel(
+        "anthropic",
+        "claude-haiku-4-5-20251001",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedOnboardingChatProviderModel(
+        "openai",
+        "claude-haiku-4-5-20251001",
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedOnboardingChatProviderModel("unknown", "gpt-5.2-2025-12-11"),
+    ).toBe(false);
+  });
+
   test("requires authentication and persona ownership regardless of workspace role", async () => {
     const { ids, testBackend } = await seedTicketWorkspace();
     const binding = await bodyBinding('{"text":"hello"}');
@@ -443,7 +470,7 @@ describe("onboarding Worker request tickets", () => {
         .action(api.requestTickets.issueOnboarding, args),
     ).resolves.toMatchObject({
       scope: "onboarding_chat",
-      policyVersion: 1,
+      policyVersion: 2,
     });
   });
 
@@ -810,10 +837,11 @@ describe("onboarding Worker request tickets", () => {
       throw new Error("Expected one successful consumption");
     }
     expect(successes[0].value).toMatchObject({
-      policyVersion: 1,
+      policyVersion: 2,
       policy: {
         kind: "onboarding_chat",
-        model: "claude-haiku-4-5-20251001",
+        provider: "openai",
+        model: "gpt-5.2-2025-12-11",
         maximumOutputTokens: 512,
       },
     });

@@ -3,12 +3,12 @@
 //  leanring-buddy
 //
 //  Backing state for the pop-out chat window. Holds the message list,
-//  manages an in-flight streaming response from Claude, and captures a
-//  fresh screenshot for every user message so Claude always has visual
+//  manages an in-flight streaming response from the selected model, and captures a
+//  fresh screenshot for every user message so it always has visual
 //  context for what the user is asking about.
 //
-//  Owns its own ClaudeAPI instance so the chat works independently of
-//  the voice flow's ClaudeAPI — we don't want a chat send to clobber a
+//  Owns its own provider clients so chat works independently of
+//  the voice flow — a chat send must not clobber a
 //  mid-flight voice response or vice versa.
 //
 
@@ -18,7 +18,7 @@ import Foundation
 import SwiftUI
 
 /// One entry in the chat transcript. Either typed by the user or
-/// streamed back from Claude. Identifiable so SwiftUI can diff the list
+/// streamed back from the selected model. Identifiable so SwiftUI can diff the list
 /// efficiently as new messages arrive and the assistant message updates
 /// chunk-by-chunk during streaming.
 struct ChatMessage: Identifiable, Equatable {
@@ -71,7 +71,7 @@ final class ChatViewModel: ObservableObject {
     /// Same Worker proxy URL the voice flow uses. Hardcoded here rather
     /// than reaching into CompanionManager so the chat can be created
     /// before/independently of the voice manager.
-    private static let workerChatProxyURL = "https://clicky-proxy.reubanramsden.workers.dev/chat"
+    private static let workerBaseURL = "https://clicky-proxy.reubanramsden.workers.dev"
 
     /// Base text rules for the chat surface. Deliberately generic — the
     /// chat is for asking questions about whatever is on screen, with
@@ -110,15 +110,33 @@ final class ChatViewModel: ObservableObject {
     @Published var draftMessage: String = ""
 
     private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: Self.workerChatProxyURL, model: selectedModelClaudeId)
+        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModelId)
     }()
 
-    /// Mirrors the voice flow's model preference so picking Sonnet/Opus
+    private lazy var openAIAPI: OpenAIAPI = {
+        return OpenAIAPI(
+            proxyURL: "\(Self.workerBaseURL)/openai-chat",
+            model: selectedModelId
+        )
+    }()
+
+    /// Mirrors the voice flow's model preference so changing providers or models
     /// in the menu bar panel applies to chat too. Reads the same
     /// UserDefaults key the voice path writes to. Updated by
     /// `refreshSelectedModelFromUserDefaults()` which the chat window
     /// calls each time it becomes visible.
-    @Published private(set) var selectedModelClaudeId: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published private(set) var selectedModelId: String = UserDefaults.standard.string(
+        forKey: ModelPickerKind.preferenceKey
+    ) ?? ModelPickerKind.defaultModelId
+
+    private var selectedStreamingVisionAPI: any StreamingVisionLanguageModelAPI {
+        switch ModelPickerKind.fromModelId(selectedModelId).provider {
+        case .anthropic:
+            return claudeAPI
+        case .openAI:
+            return openAIAPI
+        }
+    }
 
     /// In-flight send task. Cancelled if the user sends a new message
     /// before the previous response finishes streaming.
@@ -152,25 +170,29 @@ final class ChatViewModel: ObservableObject {
     /// the menu bar panel takes effect on the next chat send without
     /// needing a Combine wire-up between the two windows.
     func refreshSelectedModelFromUserDefaults() {
-        let latestSelectedModel = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
-        if latestSelectedModel != selectedModelClaudeId {
-            selectedModelClaudeId = latestSelectedModel
+        let latestSelectedModel = UserDefaults.standard.string(
+            forKey: ModelPickerKind.preferenceKey
+        ) ?? ModelPickerKind.defaultModelId
+        if latestSelectedModel != selectedModelId {
+            selectedModelId = latestSelectedModel
             claudeAPI.model = latestSelectedModel
+            openAIAPI.model = latestSelectedModel
         }
     }
 
-    /// Updates the selected Claude model from the inline picker in the
+    /// Updates the selected model from the inline picker in the
     /// chat composer. Persists to the same UserDefaults key the menu bar
     /// panel + voice flow read from so all three surfaces stay in sync.
-    func setSelectedModel(claudeModelId: String) {
-        guard claudeModelId != selectedModelClaudeId else { return }
-        selectedModelClaudeId = claudeModelId
-        claudeAPI.model = claudeModelId
-        UserDefaults.standard.set(claudeModelId, forKey: "selectedClaudeModel")
+    func setSelectedModel(modelId: String) {
+        guard modelId != selectedModelId else { return }
+        selectedModelId = modelId
+        claudeAPI.model = modelId
+        openAIAPI.model = modelId
+        UserDefaults.standard.set(modelId, forKey: ModelPickerKind.preferenceKey)
         // CompanionManager owns the canonical published copy of
         // selectedModel for the menu bar UI; mirror the change into it
         // when available so the footer picker reflects this picker.
-        companionManagerForPersona?.setSelectedModel(claudeModelId)
+        companionManagerForPersona?.setSelectedModel(modelId)
     }
 
     /// Clears the entire transcript. Used by the "New chat" button.
@@ -241,7 +263,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Sends the current `draftMessage`. Captures a screenshot, appends
     /// a user message + a placeholder assistant message to the list,
-    /// then streams Claude's reply into the placeholder.
+    /// then streams the selected model's reply into the placeholder.
     func sendDraftMessage() {
         guard AuthenticationManager.shared.canAccessProductionFeatures else {
             lastErrorMessage = "Workspace setup must finish before chat is available."
@@ -274,14 +296,14 @@ final class ChatViewModel: ObservableObject {
         lastErrorMessage = nil
         isResponding = true
 
-        // Build the conversation history Claude needs *before* the new
+        // Build the conversation history the model needs *before* the new
         // user/assistant pair we just appended — so prior turns are
         // included as context but the current question isn't duplicated.
         let priorMessages = messages.dropLast(2)
         let conversationHistory = Self.buildConversationHistory(from: Array(priorMessages))
 
         // Build the persona-aware system prompt now (on the main actor)
-        // so the Claude call site doesn't have to hop back to the main
+        // so the provider call site doesn't have to hop back to the main
         // actor to read CompanionManager state. Captured once per send;
         // mid-stream persona changes don't affect the in-flight reply.
         let composedSystemPrompt = composeSystemPromptForActivePersona()
@@ -298,7 +320,7 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// The end-to-end chat send: capture screenshots → call Claude with
+    /// The end-to-end chat send: capture screenshots → call the selected model with
     /// streaming → write streamed text into the placeholder assistant
     /// message → mark complete (or show an error and remove the
     /// placeholder).
@@ -332,18 +354,19 @@ final class ChatViewModel: ObservableObject {
                 screenshotJPEG: screenshotForInlineDisplay
             )
 
-            // Same labeling pattern as the voice flow so Claude has the
+            // Same labeling pattern as the voice flow so the model has the
             // pixel dimensions of each screenshot — useful if it ever
             // needs to point at something, and harmless otherwise.
-            let labeledImagesForClaude = screenCaptures.map { capture in
+            let labeledImages = screenCaptures.map { capture in
                 let dimensionInfoSuffix = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
                 return (data: capture.imageData, label: capture.label + dimensionInfoSuffix)
             }
 
             try Task.checkCancellation()
 
-            let (_, _) = try await claudeAPI.analyzeImageStreaming(
-                images: labeledImagesForClaude,
+            let selectedAPI = selectedStreamingVisionAPI
+            let (_, _) = try await selectedAPI.analyzeImageStreaming(
+                images: labeledImages,
                 systemPrompt: composedSystemPrompt,
                 conversationHistory: conversationHistory,
                 userPrompt: userText,
@@ -570,7 +593,7 @@ final class ChatViewModel: ObservableObject {
     private func userFacingErrorMessage(for error: Error) -> String {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
-            return "Couldn't reach Claude — check your internet connection and try again."
+            return "Couldn't reach the selected AI provider — check your internet connection and try again."
         }
         if nsError.domain == "ClaudeAPI" {
             // ClaudeAPI puts the upstream status code into `code`. 401/403
@@ -581,11 +604,17 @@ final class ChatViewModel: ObservableObject {
             }
             return "Claude couldn't answer that one. Try again?"
         }
+        if nsError.domain == "OpenAIAPI" {
+            if nsError.code == 401 || nsError.code == 403 {
+                return "The OpenAI proxy refused this request. The team may need to redeploy the worker."
+            }
+            return "ChatGPT couldn't answer that one. Try again?"
+        }
         return "Something went wrong. Try again?"
     }
 
     /// Converts the visible message list into the (userPlaceholder,
-    /// assistantResponse) tuple format ClaudeAPI expects. Skips any
+    /// assistantResponse) tuple format the provider clients expect. Skips any
     /// assistant message that's still streaming or empty (defensive — we
     /// only call this on the *prior* turns, but the guard is cheap).
     /// Pairs are formed by walking the list and matching each user

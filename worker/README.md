@@ -34,6 +34,7 @@ Use Node.js 22 or newer and an environment-specific ignored
 
 ```text
 ANTHROPIC_API_KEY
+OPENAI_API_KEY
 ASSEMBLYAI_API_KEY
 ELEVENLABS_API_KEY
 WORKER_HMAC_CURRENT_KEY_ID
@@ -62,9 +63,10 @@ All development and test commands explicitly select
 1. Generate a fresh HMAC key with at least 32 random bytes and a unique key ID.
 2. Set `WORKER_HMAC_CURRENT_KEY_ID` and `WORKER_HMAC_CURRENT_KEY` on the
    intended Convex development deployment.
-3. Set the same pair, plus the three provider API keys, on the
+3. Set the same pair, plus the OpenAI, AssemblyAI, and ElevenLabs API keys, on the
    `sticky-onboarding-dev` Worker environment using interactive
-   `wrangler secret put --env sticky-onboarding-dev`.
+   `wrangler secret put --env sticky-onboarding-dev`. The Anthropic key is
+   optional and only needed when enabling an Anthropic onboarding policy.
 4. Confirm `CONVEX_SITE_URL` in `wrangler.jsonc` points to the intended
    development deployment.
 5. Run the validation commands above.

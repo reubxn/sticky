@@ -39,7 +39,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the model response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -89,6 +89,10 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
+    private lazy var openAIAPI: OpenAIAPI = {
+        return OpenAIAPI(proxyURL: "\(Self.workerBaseURL)/openai-chat", model: selectedModel)
+    }()
+
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient()
     }()
@@ -105,8 +109,8 @@ final class CompanionManager: ObservableObject {
     /// whatever the prefetch managed to write to disk.
     private var voicePrefetchTask: Task<Void, Never>?
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the selected model remembers prior exchanges within a session.
+    /// Each entry is the user's transcript and the model's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// Public mirror of "is there at least one completed exchange in the
@@ -188,17 +192,26 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    /// Haiku is the default — its TTFT is roughly 2-3x faster than Sonnet,
-    /// which dominates the response-pipeline latency budget for voice
-    /// answers. Users can switch to Sonnet/Opus from the picker for higher-
-    /// quality replies at the cost of perceived speed.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-haiku-4-5-20251001"
+    /// The AI model used for voice responses. Persisted to UserDefaults.
+    /// ChatGPT is the default. Claude models remain available from the picker.
+    @Published var selectedModel: String = UserDefaults.standard.string(
+        forKey: ModelPickerKind.preferenceKey
+    ) ?? ModelPickerKind.defaultModelId
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        UserDefaults.standard.set(model, forKey: ModelPickerKind.preferenceKey)
         claudeAPI.model = model
+        openAIAPI.model = model
+    }
+
+    private var selectedStreamingVisionAPI: any StreamingVisionLanguageModelAPI {
+        switch ModelPickerKind.fromModelId(selectedModel).provider {
+        case .anthropic:
+            return claudeAPI
+        case .openAI:
+            return openAIAPI
+        }
     }
 
     /// The ElevenLabs voice ID used for spoken responses. nil means
@@ -865,7 +878,7 @@ final class CompanionManager: ObservableObject {
     /// Human-readable status for what the analyzer is doing *right now* during
     /// the `.analyzing` phase of a teach session. Drives the granular pill
     /// text in CompanionPanelView so the user sees "Picking the best frames…"
-    /// → "Asking Claude what stood out…" → "Pulling out principles…" instead
+    /// → "Looking for what stood out…" → "Pulling out principles…" instead
     /// of a single static loading message. Nil whenever teachSessionState is
     /// not `.analyzing`.
     @Published private(set) var teachAnalyzingStatus: String?
@@ -1259,7 +1272,7 @@ final class CompanionManager: ObservableObject {
         let capturedFrames = teachSessionFrames
         teachSessionFrames.removeAll()
 
-        let analyzerClaudeAPI = claudeAPI
+        let analyzerAPI = selectedStreamingVisionAPI
         let frameCount = capturedFrames.count
 
         // Kick off the staged status message right before the analyzer call.
@@ -1278,7 +1291,7 @@ final class CompanionManager: ObservableObject {
                 let analysis = try await SessionAnalyzer.analyzeTeachSession(
                     transcript: trimmedTranscript,
                     frames: capturedFrames,
-                    claudeAPI: analyzerClaudeAPI
+                    api: analyzerAPI
                 )
                 guard self.isLifecycleActive(generation) else { return }
                 guard self.teachSessionState == .analyzing else { return }
@@ -1943,7 +1956,7 @@ final class CompanionManager: ObservableObject {
                         guard self.isLifecycleActive(generation) else { return }
                         self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        self.sendTranscriptToClaudeWithScreenshot(
+                        self.sendTranscriptToSelectedModelWithScreenshot(
                             transcript: finalTranscript,
                             generation: generation
                         )
@@ -2289,12 +2302,12 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
+    /// Captures a screenshot, sends it with the transcript to the selected model,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
+    /// The response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(
+    private func sendTranscriptToSelectedModelWithScreenshot(
         transcript: String,
         generation: UInt64
     ) {
@@ -2412,7 +2425,8 @@ final class CompanionManager: ObservableObject {
                 )
                 streamingResponseState.beginNewChain()
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                let selectedAPI = selectedStreamingVisionAPI
+                let (fullResponseText, _) = try await selectedAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: composedSystemPrompt,
                     conversationHistory: historyForAPI,
@@ -2458,7 +2472,7 @@ final class CompanionManager: ObservableObject {
                 let responseTextWithoutBubbleAndUsedTags = bubbleParseResult.cleanText
                 let bubbleCaption = bubbleParseResult.bubbleCaption
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the [POINT:...] tag from the model's response
                 let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutBubbleAndUsedTags)
                 // Strip any *inline* [POINT:...][BUBBLE:...] pairs that
                 // appeared mid-reply — those were already consumed by the
@@ -3355,7 +3369,7 @@ final class CompanionManager: ObservableObject {
         case stopNotes = "stop_notes"
     }
 
-    /// Result of parsing an [ACTION:name] tag from Claude's response.
+    /// Result of parsing an [ACTION:name] tag from the model's response.
     /// Stripped from the spoken text — never reaches TTS — and triggers
     /// an app-level side effect (currently: start / stop a teach session).
     struct ActionParseResult {
@@ -3365,7 +3379,7 @@ final class CompanionManager: ObservableObject {
         let requestedAction: CompanionVoiceAction?
     }
 
-    /// Parses an [ACTION:name] tag from the end of Claude's response. Run
+    /// Parses an [ACTION:name] tag from the end of the model's response. Run
     /// this BEFORE the [USED:...] / [BUBBLE:...] / [POINT:...] strippers so
     /// each of those tags is sitting at end-of-string for its own
     /// end-anchored regex by the time it runs.
@@ -3390,7 +3404,7 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Bubble Tag Parsing
 
-    /// Result of parsing a [BUBBLE:caption] tag from Claude's response.
+    /// Result of parsing a [BUBBLE:caption] tag from the model's response.
     /// Stripped from the spoken text — never reaches TTS — and surfaces
     /// in the cursor speech bubble at the pointed element.
     struct BubbleParseResult {
@@ -3401,7 +3415,7 @@ final class CompanionManager: ObservableObject {
         let bubbleCaption: String?
     }
 
-    /// Parses a [BUBBLE:caption] tag from the end of Claude's response.
+    /// Parses a [BUBBLE:caption] tag from the end of the model's response.
     /// Run this BEFORE parsePointingCoordinates so the [POINT:...] tag is
     /// then sitting at end-of-string for its own end-anchored regex.
     static func parseBubbleTag(from responseText: String) -> BubbleParseResult {
@@ -3427,7 +3441,7 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// Result of parsing a [POINT:...] tag from the model's response.
     struct PointingParseResult {
         /// The response text with the [POINT:...] tag removed — this is what gets spoken.
         let spokenText: String
@@ -3439,7 +3453,7 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of the model's response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]

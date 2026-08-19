@@ -1052,7 +1052,7 @@ private final class MockOnboardingTicketIssuer: OnboardingTicketIssuing {
             token: token,
             scope: responseScope,
             expiresAt: expiresAt,
-            policyVersion: 1
+            policyVersion: 2
         )
     }
 }

@@ -11,7 +11,9 @@ const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
 };
 
-type OnboardingEnvironment = Omit<Env, "ONBOARDING_ROUTES_ENABLED">;
+type OnboardingEnvironment = Omit<Env, "ONBOARDING_ROUTES_ENABLED"> & {
+  ANTHROPIC_API_KEY?: string;
+};
 
 type OnboardingScope =
   | "onboarding_chat"
@@ -21,6 +23,7 @@ type OnboardingScope =
 type TrustedPolicy =
   | {
       kind: "onboarding_chat";
+      provider: "anthropic" | "openai";
       model: string;
       systemPrompt: string;
       maximumOutputTokens: number;
@@ -195,16 +198,19 @@ function parseTrustedPolicy(value: unknown): TrustedPolicy | null {
     value.kind === "onboarding_chat" &&
     hasExactKeys(value, [
       "kind",
+      "provider",
       "model",
       "systemPrompt",
       "maximumOutputTokens",
     ]) &&
+    (value.provider === "anthropic" || value.provider === "openai") &&
     isBoundedString(value.model, 1, 128) &&
     isBoundedString(value.systemPrompt, 1, 8_192) &&
     isSafeIntegerInRange(value.maximumOutputTokens, 1, 4_096)
   ) {
     return {
       kind: value.kind,
+      provider: value.provider,
       model: value.model,
       systemPrompt: value.systemPrompt,
       maximumOutputTokens: value.maximumOutputTokens,
@@ -511,6 +517,66 @@ function completeProviderFailure(options: {
   return jsonError(502, "provider_unavailable");
 }
 
+async function fetchOnboardingChatProvider(options: {
+  policy: Extract<TrustedPolicy, { kind: "onboarding_chat" }>;
+  text: string;
+  env: OnboardingEnvironment;
+  signal: AbortSignal;
+}): Promise<Response> {
+  switch (options.policy.provider) {
+    case "anthropic": {
+      if (!options.env.ANTHROPIC_API_KEY) {
+        return new Response(null, { status: 503 });
+      }
+      return await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": options.env.ANTHROPIC_API_KEY,
+        },
+        body: JSON.stringify({
+          model: options.policy.model,
+          system: options.policy.systemPrompt,
+          max_tokens: options.policy.maximumOutputTokens,
+          stream: true,
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: options.text }],
+            },
+          ],
+        }),
+        signal: options.signal,
+      });
+    }
+    case "openai":
+      return await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.env.OPENAI_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: options.policy.model,
+          messages: [
+            {
+              role: "system",
+              content: options.policy.systemPrompt,
+            },
+            {
+              role: "user",
+              content: options.text,
+            },
+          ],
+          max_completion_tokens: options.policy.maximumOutputTokens,
+          stream: true,
+        }),
+        signal: options.signal,
+      });
+  }
+}
+
 export async function handleOnboardingChat(
   request: Request,
   env: OnboardingEnvironment,
@@ -545,25 +611,10 @@ export async function handleOnboardingChat(
   const abortController = new AbortController();
   let response: Response;
   try {
-    response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY,
-      },
-      body: JSON.stringify({
-        model: consumed.policy.model,
-        system: consumed.policy.systemPrompt,
-        max_tokens: consumed.policy.maximumOutputTokens,
-        stream: true,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: chat.text }],
-          },
-        ],
-      }),
+    response = await fetchOnboardingChatProvider({
+      policy: consumed.policy,
+      text: chat.text,
+      env,
       signal: abortController.signal,
     });
   } catch {

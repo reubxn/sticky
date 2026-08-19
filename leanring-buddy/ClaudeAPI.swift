@@ -5,8 +5,20 @@
 
 import Foundation
 
+protocol StreamingVisionLanguageModelAPI: AnyObject {
+    var model: String { get set }
+
+    func analyzeImageStreaming(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval)
+}
+
 /// Claude API helper with streaming for progressive text display.
-class ClaudeAPI {
+class ClaudeAPI: StreamingVisionLanguageModelAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 

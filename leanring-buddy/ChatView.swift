@@ -318,12 +318,12 @@ struct ChatView: View {
 
     /// Inline model picker rendered as `Balanced ▾`-style text. Reuses
     /// `ModelPickerKind` so the menu stays in sync with the menu bar
-    /// panel and dashboard settings — the `selectedClaudeModel`
+    /// panel and dashboard settings — the selected model
     /// UserDefaults value is the source of truth. Popover surface
     /// matches the brand persona/theme dropdowns elsewhere in the app
     /// (paper card, hairline, paper-recessed hover wash).
     private var inlineModelPicker: some View {
-        let currentModelKind = ModelPickerKind.fromClaudeModelId(chatViewModel.selectedModelClaudeId)
+        let currentModelKind = ModelPickerKind.fromModelId(chatViewModel.selectedModelId)
 
         return Button(action: { isModelPickerPresented.toggle() }) {
             HStack(spacing: 4) {
@@ -341,7 +341,7 @@ struct ChatView: View {
         .buttonStyle(.plain)
         .fixedSize()
         .pointerCursor()
-        .help("Change which Claude model answers")
+        .help("Change which AI model answers")
         .popover(isPresented: $isModelPickerPresented, arrowEdge: .top) {
             modelPickerPopoverContent
         }
@@ -352,14 +352,14 @@ struct ChatView: View {
     /// gets a trailing checkmark. Mirrors `ThemePickerPopoverRow` in
     /// CompanionPanelView so the two pickers feel like the same control.
     private var modelPickerPopoverContent: some View {
-        let currentModelKind = ModelPickerKind.fromClaudeModelId(chatViewModel.selectedModelClaudeId)
+        let currentModelKind = ModelPickerKind.fromModelId(chatViewModel.selectedModelId)
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(ModelPickerKind.allCases, id: \.self) { modelKind in
                 ModelPickerPopoverRow(
                     modelKind: modelKind,
                     isSelected: currentModelKind == modelKind,
                     onSelect: {
-                        chatViewModel.setSelectedModel(claudeModelId: modelKind.claudeModelId)
+                        chatViewModel.setSelectedModel(modelId: modelKind.modelId)
                         isModelPickerPresented = false
                     }
                 )

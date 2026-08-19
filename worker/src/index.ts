@@ -9,6 +9,7 @@ export type WorkerEnvironment = Omit<
   "ONBOARDING_ROUTES_ENABLED"
 > & {
   ONBOARDING_ROUTES_ENABLED: "true" | "false";
+  ANTHROPIC_API_KEY?: string;
 };
 
 export default {
@@ -39,6 +40,10 @@ export default {
 
       if (url.pathname === "/chat") {
         return await handleChat(request, env);
+      }
+
+      if (url.pathname === "/openai-chat") {
+        return await handleOpenAIChat(request, env);
       }
 
       if (url.pathname === "/tts") {
@@ -72,12 +77,50 @@ async function handleChat(
   env: WorkerEnvironment,
 ): Promise<Response> {
   const body = await request.text();
+  if (!env.ANTHROPIC_API_KEY) {
+    return new Response(
+      JSON.stringify({ error: "provider_unavailable" }),
+      { status: 503, headers: { "content-type": "application/json" } },
+    );
+  }
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    return new Response(errorBody, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") || "text/event-stream",
+      "cache-control": "no-cache",
+    },
+  });
+}
+
+async function handleOpenAIChat(
+  request: Request,
+  env: WorkerEnvironment,
+): Promise<Response> {
+  const body = await request.text();
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
       "content-type": "application/json",
     },
     body,

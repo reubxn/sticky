@@ -38,6 +38,31 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
+    @Test func openAIModelSelectionRoutesToOpenAI() {
+        let modelKind = ModelPickerKind.fromModelId("gpt-5.2-2025-12-11")
+
+        #expect(modelKind == .chatGPT)
+        #expect(modelKind.provider == .openAI)
+    }
+
+    @Test func chatGPTIsTheDefaultForMissingOrUnknownPreferences() {
+        #expect(ModelPickerKind.defaultModelId == "gpt-5.2-2025-12-11")
+        #expect(ModelPickerKind.fromModelId("unknown-model") == .chatGPT)
+        #expect(ModelPickerKind.preferenceKey == "selectedAIModel")
+    }
+
+    @Test func existingClaudeModelSelectionsRemainAvailable() {
+        let claudeModelIds = [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+        ]
+
+        for modelId in claudeModelIds {
+            #expect(ModelPickerKind.fromModelId(modelId).provider == .anthropic)
+        }
+    }
+
     @Test func personalAccountProvisioningResponseDecodesConvexSnapshot() throws {
         let fixture = """
         {

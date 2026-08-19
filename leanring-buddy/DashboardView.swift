@@ -91,7 +91,23 @@ struct DashboardView: View {
         case .profile:
             DashboardProfileView(companionManager: companionManager)
         case .settings:
-            DashboardSettingsView()
+            if let companionManager {
+                DashboardSettingsView(companionManager: companionManager)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkTertiary)
+                    Text("Settings unavailable")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(ElevenLabsBrand.Colors.ink)
+                    Text("Open Sticky from the menu bar first.")
+                        .font(.system(size: 12))
+                        .foregroundColor(ElevenLabsBrand.Colors.inkSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ElevenLabsBrand.Colors.paper)
+            }
         }
     }
 }
@@ -181,11 +197,34 @@ private struct DashboardAccountConnectedView: View {
 }
 
 struct DashboardSignInView: View {
+    private static let clerkTheme = ClerkTheme(
+        colors: .init(
+            primary: ElevenLabsBrand.Colors.ink,
+            background: ElevenLabsBrand.Colors.paper,
+            input: ElevenLabsBrand.Colors.card,
+            danger: DS.Colors.destructive,
+            success: DS.Colors.success,
+            warning: DS.Colors.warning,
+            foreground: ElevenLabsBrand.Colors.ink,
+            mutedForeground: ElevenLabsBrand.Colors.inkSecondary,
+            primaryForeground: ElevenLabsBrand.Colors.paper,
+            inputForeground: ElevenLabsBrand.Colors.ink,
+            neutral: ElevenLabsBrand.Colors.inkTertiary,
+            ring: ElevenLabsBrand.Colors.ink,
+            muted: ElevenLabsBrand.Colors.paperRecessed,
+            secondaryButtonBackground: ElevenLabsBrand.Colors.card,
+            secondaryButtonForeground: ElevenLabsBrand.Colors.ink,
+            shadow: .clear,
+            border: ElevenLabsBrand.Colors.ink
+        ),
+        design: .init(borderRadius: ElevenLabsBrand.Radius.card)
+    )
+
     var body: some View {
         AuthView(isDismissible: false)
-            .frame(maxWidth: 460)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.vertical, ElevenLabsBrand.Spacing.xl)
+            .environment(\.clerkTheme, Self.clerkTheme)
+            .background(ElevenLabsBrand.Colors.paper)
     }
 }
 

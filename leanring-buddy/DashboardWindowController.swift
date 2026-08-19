@@ -17,6 +17,7 @@
 
 import AppKit
 import ClerkKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -28,6 +29,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     static let shared = DashboardWindowController()
 
     private var dashboardWindow: NSWindow?
+    private var authenticationStateSubscription: AnyCancellable?
 
     /// Weak reference to the shared CompanionManager. Threaded in by
     /// `MenuBarPanelManager` the first time the dashboard is opened so
@@ -39,6 +41,16 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     private weak var companionManager: CompanionManager?
 
     private let initialWindowSize = NSSize(width: 920, height: 640)
+
+    override init() {
+        super.init()
+        authenticationStateSubscription = AuthenticationManager.shared.$authenticationState
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] authenticationState in
+                self?.updateWindowLevel(for: authenticationState)
+            }
+    }
 
     /// Inject the shared CompanionManager. Safe to call multiple times —
     /// last write wins.
@@ -67,8 +79,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
                 if let initialSection {
                     DashboardNavigationState.shared.selectedSection = initialSection
                 }
-                dashboardWindow.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
+                bringWindowToFront(dashboardWindow)
             }
             return
         }
@@ -82,8 +93,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         }
 
         guard let dashboardWindow else { return }
-        dashboardWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        bringWindowToFront(dashboardWindow)
     }
 
     func showDashboardWindow(initialSection: DashboardSection? = nil) {
@@ -97,8 +107,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         }
 
         guard let dashboardWindow else { return }
-        dashboardWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        bringWindowToFront(dashboardWindow)
     }
 
     /// Convenience: open the dashboard pinned to a specific persona
@@ -162,6 +171,29 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         }
 
         return window
+    }
+
+    private func bringWindowToFront(_ window: NSWindow) {
+        updateWindowLevel(for: AuthenticationManager.shared.authenticationState)
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKey()
+    }
+
+    private func updateWindowLevel(
+        for authenticationState: ApplicationAuthenticationState
+    ) {
+        switch authenticationState {
+        case .authenticated:
+            dashboardWindow?.level = .normal
+        case .configurationMissing,
+             .loading,
+             .signedOut,
+             .signingOut,
+             .signOutFailure,
+             .failure:
+            dashboardWindow?.level = .floating
+        }
     }
 
     /// Same centering logic as `ChatWindowController` — places the
