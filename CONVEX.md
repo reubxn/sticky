@@ -181,6 +181,52 @@ This work is intentionally split into three slices:
 PR 4C adds a dedicated native client but no onboarding UI. Production readiness
 remains locked.
 
+## Structured persona onboarding
+
+PR 5A keeps persona configuration in structured Convex records rather than Soul
+or `TASTE.md` blobs. Each persona has at most one owner-private onboarding
+session and 128 immutable text turns. Explicit owner answers may atomically
+create active append-only record revisions and immutable version metadata;
+work context plus one communication preference sets the persona's immutable
+`activatedAt` and moves setup from `essentials` to usable `interview`.
+
+Record-changing requests persist canonical SHA-256 fingerprints over the exact
+operation, normalized changes, expected version, session, and source turn.
+Start/resume, pause, and completion use bounded immutable operation receipts.
+A reused client mutation ID succeeds only when its fingerprint matches the
+original request exactly; stale, cross-operation, different-turn, and
+same-count/different-content replays fail without writes.
+An already-active `startOrResume` stores one exact fingerprinted nonterminal
+receipt, so its mutation ID cannot later be reused for another operation and an
+exact retry returns the original result. Nonterminal receipt creation stops one
+row below the hard session limit, permanently reserving the final slot for
+terminal completion; new unique no-op requests are rejected at that cap. Thus
+completion remains possible from either active or paused state after
+nonterminal capacity is exhausted, and exact completion retries reuse the
+immutable terminal receipt.
+
+Skipping the deeper interview pauses the same resumable session. Only explicit
+completion moves setup to terminal `complete`, after which onboarding ticket
+issuance and consumption remain closed. Activated personas reject any edit that
+would remove their final work-context or communication-preference record.
+
+Private records, evidence, versions, and turns are owner-only. Teammates can read
+only the current explicitly approved boundary-summary text and approval time
+after active same-workspace membership and persona usability are revalidated.
+Any active boundary-record change invalidates that publication atomically.
+
+At onboarding chat ticket consumption, Convex builds a deterministic system
+prompt from only the ticket persona's current records and latest 12 turns.
+Every setup path uses the same bounded validator for session lifecycle,
+counters, contiguous turn sequence, child tenancy, current-key uniqueness,
+version/source/turn provenance, and minimum readiness. Owner-authored values are
+UTF-8-byte-truncated, base64 encoded, and labelled with original and included
+byte lengths so literal delimiter text cannot escape the untrusted block.
+Private boundary-summary drafts are excluded, lower-priority records and oldest
+turns are removed deterministically, and the final prompt is bounded to both
+8,192 characters and 8,192 UTF-8 bytes. TTS and transcription policy are
+unchanged.
+
 `requestTickets:issueOnboarding` is the only public ticket function in PR 4A.
 It authenticates through Convex, accepts only a persona ID, one of the three
 onboarding scopes, the lowercase SHA-256 digest of the exact future Worker

@@ -9,11 +9,14 @@ import {
   workerRequestTicketCompletionResultValidator,
   workerRequestTicketConsumeResultValidator,
 } from "./validators";
+import { buildOnboardingSystemPrompt } from "./personaOnboardingContext";
+import { validatePersonaSetupGraph } from "./personaFoundation";
 import {
   assertBodyPolicy,
   assertDigest,
   consumedTicketMinimumRetentionMs,
   failWorkerRequest,
+  onboardingChatStaticSystemPolicy,
   sanitizedAuditRetentionMs,
   scopePolicies,
   trustedPolicyEnvelope,
@@ -48,13 +51,6 @@ async function requireIssuingGraph(
   ) {
     return failWorkerRequest("RESOURCE_UNAVAILABLE", "Resource unavailable");
   }
-  if (persona.setupState === "complete") {
-    return failWorkerRequest(
-      "SETUP_COMPLETE",
-      "Onboarding request scopes require incomplete setup",
-    );
-  }
-
   const membership = await ctx.db.get(
     "workspaceMembers",
     persona.membershipId,
@@ -73,6 +69,17 @@ async function requireIssuingGraph(
     workspace.lifecycleStatus !== "active"
   ) {
     return failWorkerRequest("RESOURCE_UNAVAILABLE", "Resource unavailable");
+  }
+  try {
+    await validatePersonaSetupGraph(ctx, persona);
+  } catch {
+    return failWorkerRequest("RESOURCE_UNAVAILABLE", "Resource unavailable");
+  }
+  if (persona.setupState === "complete") {
+    return failWorkerRequest(
+      "SETUP_COMPLETE",
+      "Onboarding request scopes require incomplete setup",
+    );
   }
 
   return { profile, workspace, membership, persona };
@@ -108,6 +115,11 @@ async function requireCurrentTicketGraph(
     return failWorkerRequest("TICKET_INVALID", "Ticket is invalid");
   }
   if (persona.setupState === "complete") {
+    return failWorkerRequest("TICKET_INVALID", "Ticket is invalid");
+  }
+  try {
+    await validatePersonaSetupGraph(ctx, persona);
+  } catch {
     return failWorkerRequest("TICKET_INVALID", "Ticket is invalid");
   }
   return { persona };
@@ -316,6 +328,14 @@ export const consume = internalMutation({
     }
 
     const graph = await requireCurrentTicketGraph(ctx, ticket);
+    const onboardingChatSystemPrompt =
+      ticket.scope === "onboarding_chat"
+        ? await buildOnboardingSystemPrompt(
+            ctx,
+            graph.persona,
+            onboardingChatStaticSystemPolicy,
+          )
+        : undefined;
     const audits = await ctx.db
       .query("workerRequestAudits")
       .withIndex("by_ticketId", (indexQuery) =>
@@ -350,7 +370,11 @@ export const consume = internalMutation({
     return {
       consumptionId,
       policyVersion: workerRequestPolicyVersion,
-      policy: trustedPolicyEnvelope(ticket, graph.persona),
+      policy: trustedPolicyEnvelope(
+        ticket,
+        graph.persona,
+        onboardingChatSystemPrompt,
+      ),
     };
   },
 });

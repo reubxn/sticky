@@ -80,6 +80,40 @@ decisions and may be revised through an architecture PR.
 10. AI-generated interpretations must remain traceable to the owner's
     onboarding answers and must never be treated as evidence from another
     member.
+11. Completion is terminal. Once the owner finishes onboarding, onboarding
+    tickets and interview flows remain closed. Future changes use manual persona
+    editing or the normal owner-controlled learning flow.
+
+### Narrated cursor tour
+
+The onboarding conversation includes a short narrated product tour:
+
+1. Sticky appears beside the cursor and introduces itself.
+2. While narration plays, the cursor flies to the menu-bar icon and explains
+   that Sticky lives there.
+3. Sticky opens the panel, points to the account/workspace area and explains
+   where setup and status live.
+4. Sticky points to the push-to-talk affordance and explains `control + option`.
+5. Sticky points to the persona control and explains that workspace members can
+   use one another's personas but only owners can edit their own.
+6. The tour returns the cursor to the user and transitions directly into the
+   adaptive work conversation.
+
+Tour requirements:
+
+- Narration and cursor movement are synchronized at spoken-segment boundaries.
+- Sticky-owned UI targets use AppKit global coordinates from actual window and
+  status-item geometry because Sticky windows are excluded from screenshots.
+- Desktop targets may continue using screenshot-pixel waypoints.
+- Tour targets are symbolic and resolved locally; the model never invents
+  coordinates for Sticky's own UI.
+- Every flight, narration task, and pending callback is bound to the current
+  authenticated user, workspace, persona, and onboarding generation.
+- Account switch, sign-out, window removal, or onboarding completion cancels
+  the tour immediately and returns control safely.
+- The production tour reuses cursor-flight, bubble, and TTS segment-start
+  primitives. It must not revive the legacy Mux video, demo music, canned
+  showcase behavior, or TASTE.md onboarding.
 
 ### Workspace context
 
@@ -639,14 +673,29 @@ Production readiness stays locked throughout these slices.
 ### PR 5 — Voice-first conversational persona onboarding
 
 - One adaptive voice-first conversation with text fallback.
+- Narrated cursor tour synchronized with TTS, using symbolic AppKit-global
+  anchors for Sticky-owned UI.
 - Automatic structured communication, judgment, expertise, and boundary
   records from the owner's explicit answers.
 - Minimum activation threshold: work context plus one communication preference.
 - Optional deeper interview, informational summary, and owner-approved teammate
   boundary summary.
+- Terminal completion; later changes use manual editing or controlled learning.
 - Owner-only edit, immutable provenance, and version APIs.
 - Production data readiness remains locked until the remaining cloud data paths
   exist.
+
+PR 5A is the backend-only foundation: one bounded owner-private onboarding
+session per persona, immutable turns, append-only structured record revisions
+and versions, fingerprint-bound idempotency, immutable session-operation
+receipts, atomic minimum-readiness activation, resumable skipped-for-now
+interviews, terminal completion, and an independently approved boundary-summary
+projection. A shared bounded validator checks setup lifecycle and all child
+tenancy/provenance before use. Onboarding chat ticket consumption receives
+deterministic byte-bounded context with base64-encoded untrusted values from
+only the ticket persona's current records and latest turns. It does not add
+provider calls, UI, passive-learning suggestions, team-workspace features, Soul
+text, or `TASTE.md` runtime data.
 
 ### PR 6 — Team workspaces and invitations
 

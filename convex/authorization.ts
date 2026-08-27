@@ -3,6 +3,10 @@ import { ConvexError } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import {
+  validateBoundarySummaryDocument,
+  validatePersonaSetupGraph,
+} from "./personaFoundation";
 
 type AuthorizationCtx = Pick<QueryCtx | MutationCtx, "auth" | "db">;
 type WorkspaceRole = Doc<"workspaceMembers">["role"];
@@ -174,7 +178,12 @@ export async function requireUsablePersona(
   const identity = await requireIdentity(ctx);
   const profile = await requireCanonicalUser(ctx, identity);
   const persona = await ctx.db.get("personas", personaId);
-  if (persona === null || persona.status !== "active") {
+  if (
+    persona === null ||
+    persona.status !== "active" ||
+    !["interview", "complete"].includes(persona.setupState) ||
+    persona.activatedAt === undefined
+  ) {
     return denyResourceUnavailable();
   }
 
@@ -206,5 +215,53 @@ export async function requireUsablePersona(
     return denyResourceUnavailable();
   }
 
+  try {
+    await validatePersonaSetupGraph(ctx, persona);
+  } catch {
+    return denyResourceUnavailable();
+  }
+
   return { askingMembership, ownerMembership, persona };
+}
+
+export async function requireReadableBoundarySummary(
+  ctx: AuthorizationCtx,
+  personaId: Id<"personas">,
+): Promise<{
+  askingMembership: Doc<"workspaceMembers">;
+  persona: Doc<"personas">;
+  summary: Doc<"personaBoundarySummaries"> | null;
+}> {
+  const usable = await requireUsablePersona(ctx, personaId);
+  const summaries = await ctx.db
+    .query("personaBoundarySummaries")
+    .withIndex("by_personaId_and_state", (indexQuery) =>
+      indexQuery.eq("personaId", personaId).eq("state", "approved"),
+    )
+    .take(2);
+  if (summaries.length > 1) {
+    return denyResourceUnavailable();
+  }
+  const summary = summaries[0] ?? null;
+  if (
+    summary !== null &&
+    (summary.membershipId !== usable.ownerMembership._id ||
+      summary.workspaceId !== usable.persona.workspaceId ||
+      summary.ownerUserId !== usable.persona.ownerUserId ||
+      summary.approvedAt === undefined)
+  ) {
+    return denyResourceUnavailable();
+  }
+  if (summary !== null) {
+    try {
+      validateBoundarySummaryDocument(summary, usable.persona);
+    } catch {
+      return denyResourceUnavailable();
+    }
+  }
+  return {
+    askingMembership: usable.askingMembership,
+    persona: usable.persona,
+    summary,
+  };
 }

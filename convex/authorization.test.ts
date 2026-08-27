@@ -111,9 +111,66 @@ async function seedWorkspace() {
       displayName: "Owner",
       setupState: "complete",
       currentVersion: 1,
+      activatedAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+    await ctx.db.insert("personaOnboardingSessions", {
+      personaId: ownerPersonaId,
+      membershipId: ownerMembershipId,
+      workspaceId,
+      ownerUserId: ownerProfileId,
+      status: "completed",
+      revision: 1,
+      turnCount: 0,
+      nextSequence: 0,
+      startedAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: timestamp,
+    });
+    const ownerVersionId = await ctx.db.insert("personaVersions", {
+      personaId: ownerPersonaId,
+      membershipId: ownerMembershipId,
+      workspaceId,
+      ownerUserId: ownerProfileId,
+      versionNumber: 1,
+      previousVersionNumber: 0,
+      clientMutationId: "authorization-seed",
+      requestFingerprint: "a".repeat(64),
+      source: { kind: "manual_owner_edit" },
+      changeCount: 2,
+      createdAt: timestamp,
+    });
+    for (const [recordKey, content] of [
+      [
+        "work",
+        { kind: "work_context" as const, statement: "Builds software" },
+      ],
+      [
+        "communication",
+        {
+          kind: "communication_preference" as const,
+          statement: "Prefers concise answers",
+        },
+      ],
+    ] as const) {
+      await ctx.db.insert("personaRecords", {
+        personaId: ownerPersonaId,
+        membershipId: ownerMembershipId,
+        workspaceId,
+        ownerUserId: ownerProfileId,
+        recordKey,
+        versionId: ownerVersionId,
+        versionNumber: 1,
+        kind: content.kind,
+        state: "active",
+        isCurrent: true,
+        content,
+        source: { kind: "manual_owner_edit" },
+        confidence: 1,
+        createdAt: timestamp,
+      });
+    }
     const unrelatedWorkspaceId = await ctx.db.insert("workspaces", {
       kind: "team",
       name: "Other workspace",
@@ -138,6 +195,7 @@ async function seedWorkspace() {
       displayName: "Unrelated",
       setupState: "complete",
       currentVersion: 1,
+      activatedAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -327,6 +385,7 @@ describe("Convex bootstrap", () => {
         displayName: "Mismatched workspace",
         setupState: "complete",
         currentVersion: 1,
+        activatedAt: timestamp,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -338,6 +397,7 @@ describe("Convex bootstrap", () => {
         displayName: "Mismatched owner",
         setupState: "complete",
         currentVersion: 1,
+        activatedAt: timestamp,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
