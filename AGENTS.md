@@ -18,8 +18,8 @@ Hold `ctrl + option`, speak, release. On release:
 1. [BuddyDictationManager](leanring-buddy/BuddyDictationManager.swift) finalizes the transcript (AssemblyAI streaming).
 2. [CompanionScreenCaptureUtility](leanring-buddy/CompanionScreenCaptureUtility.swift) returns a JPEG of every screen. Capture is actually started on key-*down* so it overlaps with the user speaking — see `preflightScreenCaptureTask` in [CompanionManager.swift](leanring-buddy/CompanionManager.swift).
 3. The active persona's `TASTE.md` (soul + principles) is composed into the system prompt by `composeVoiceSystemPromptWithTaste()`.
-4. The selected provider client ([ClaudeAPI](leanring-buddy/ClaudeAPI.swift) or [OpenAIAPI](leanring-buddy/OpenAIAPI.swift)) streams the reply via SSE.
-5. Sentences are dispatched to [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift) as they finalize so playback starts before the model is done generating.
+4. [ClaudeAPI](leanring-buddy/ClaudeAPI.swift) streams the reply via SSE.
+5. Sentences are dispatched to [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift) as they finalize so playback starts before Claude is done generating.
 6. If the reply contains `[POINT:x,y:label[:screenN]]`, the blue cursor in [OverlayWindow](leanring-buddy/OverlayWindow.swift) flies along a bezier arc to that pixel on the right monitor. Replies can contain **multiple inline `[POINT:...][BUBBLE:...]` pairs** for multi-step pointing — each waypoint fires as the speech segment immediately preceding it begins playing through ElevenLabs, so the cursor stays locked to the spoken sentence. Inline pairs are extracted by the streaming parser in `StreamingResponseState`, attached to their preceding speech segment, and flown via the per-segment `onSegmentStart` hook on [ElevenLabsTTSClient](leanring-buddy/ElevenLabsTTSClient.swift). Single trailing-tag pointing still works the same way as before for the common one-step case.
 7. If the reply ends with `[USED:P1,T2]`, those short labels are resolved back to `TastePrinciple` objects and rendered in `AppliedPrinciplesChip` so the user can see which principles informed the answer.
 8. If the reply ends with `[ACTION:start_notes]` or `[ACTION:stop_notes]`, Sticky waits for the spoken acknowledgement to finish playing (polls `ElevenLabsTTSClient.isPlaybackChainActive`, hard-capped at 4s) and then calls `startTeachSession()` / `stopTeachSession()`. Lets the user verbally start a notes session ("start taking notes for me") instead of clicking the panel button. Parsed by `parseActionTag(from:)` and fired via `scheduleVoiceActionAfterAcknowledgement(_:)` in [CompanionManager.swift](leanring-buddy/CompanionManager.swift).
@@ -64,7 +64,7 @@ A persona switch wipes the rolling voice conversation history (`conversationHist
 - **App type**: Menu bar-only (`LSUIElement=true`), no dock icon. Two real windows can open as auxiliary surfaces: the floating chat ([ChatWindowController](leanring-buddy/ChatWindowController.swift)) and the dashboard ([DashboardWindowController](leanring-buddy/DashboardWindowController.swift)).
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for the borderless menu bar `NSPanel` and the always-on-top transparent cursor overlay.
 - **Pattern**: MVVM with `@StateObject` / `@Published`. `CompanionManager` is the central state machine.
-- **AI chat**: Claude (Haiku 4.5 default for voice — TTFT-bound, Sonnet/Opus optional) or OpenAI GPT-5.2 via provider-specific Cloudflare Worker proxy routes with SSE streaming.
+- **AI chat**: Claude (Haiku 4.5 default for voice — TTFT-bound, Sonnet/Opus optional) via Cloudflare Worker proxy with SSE streaming.
 - **Speech-to-text**: AssemblyAI streaming v3 over websocket, with OpenAI and Apple Speech as fallbacks. Provider chosen by `VoiceTranscriptionProvider` in Info.plist.
 - **Text-to-speech**: ElevenLabs `eleven_flash_v2_5` via the Worker. Sentence-streamed playback so audio starts before generation finishes.
 - **Screen capture**: ScreenCaptureKit, multi-monitor, JPEG.
@@ -90,11 +90,10 @@ The app never calls external APIs directly. All requests go through a Worker tha
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /openai-chat` | `api.openai.com/v1/chat/completions` | OpenAI vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`. Worker var: `ELEVENLABS_VOICE_ID`. Base URL is hardcoded in [CompanionManager.swift](leanring-buddy/CompanionManager.swift) (`workerBaseURL`).
 
 The default `clicky-proxy` deployment remains legacy-only. The separate
 `sticky-onboarding-dev` environment closes those routes and exposes only
@@ -222,11 +221,11 @@ replacement PRs remove them.
 | [convex/workerServiceBridge.test.ts](convex/workerServiceBridge.test.ts) | ~315 | Shared-vector compatibility, canonicalization, current/previous key rotation, timestamp, tamper, malformed DTO, route closure, and plaintext-ticket rejection tests. |
 | [convex/authorization.ts](convex/authorization.ts) | ~270 | Deny-by-default identity, membership, role, validated persona usability, and readable boundary projection authorization helpers. |
 | [convex/personaFoundation.ts](convex/personaFoundation.ts) | ~810 | Canonical request fingerprints, receipt limits, shared child/setup graph validation, immutable version/record writes, minimum preservation, and publication invalidation. |
-| [convex/personaOnboarding.ts](convex/personaOnboarding.ts) | ~880 | Owner-only setup/session/turn APIs, terminal-capacity operation receipts, exact interpretation replay, pause/resume, pagination, and completion. |
+| [convex/personaOnboarding.ts](convex/personaOnboarding.ts) | ~895 | Owner-only setup/session/turn APIs, terminal-capacity operation receipts, exact interpretation replay, pause/resume, pagination, and completion. |
 | [convex/personaRecords.ts](convex/personaRecords.ts) | ~100 | Owner-only manual structured-record changes and immutable version pagination. |
 | [convex/personaBoundarySummaries.ts](convex/personaBoundarySummaries.ts) | ~380 | Fingerprinted owner-controlled boundary publication lifecycle, normalized direct-ID denial, and minimal teammate projection. |
 | [convex/personaOnboardingContext.ts](convex/personaOnboardingContext.ts) | ~150 | Deterministic byte-aware 8 KiB onboarding context with base64-encoded untrusted records and turns. |
-| [convex/personaOnboarding.test.ts](convex/personaOnboarding.test.ts) | ~1200 | Persona readiness, private interpretation pagination, exact no-op/cross-operation replay, receipt exhaustion/reservation, provenance corruption, existence-oracle, concurrency, rollback, lifecycle, privacy, and publication tests. |
+| [convex/personaOnboarding.test.ts](convex/personaOnboarding.test.ts) | ~1520 | Persona readiness, private interpretation pagination, exact no-op/cross-operation replay, receipt exhaustion/reservation, provenance corruption, existence-oracle, concurrency, rollback, lifecycle, privacy, publication, record/turn caps, and boundary replace/unpublish tests. |
 | [convex/auth.config.ts](convex/auth.config.ts) | ~15 | Clerk JWT provider configuration using the deployment's issuer domain and `convex` audience. |
 | [convex/identity.ts](convex/identity.ts) | ~30 | Minimal protected query returning verified Clerk identity claims. |
 | [convex/identity.test.ts](convex/identity.test.ts) | ~55 | Convex-test coverage for authenticated identity claims and unauthenticated denial. |
@@ -265,7 +264,7 @@ replacement PRs remove them.
 | [TasteProfileExporter.swift](leanring-buddy/TasteProfileExporter.swift) | ~225 | Export/import for sharing taste profiles between teammates. |
 | [DashboardTasteMarkdownExporter.swift](leanring-buddy/DashboardTasteMarkdownExporter.swift) | ~141 | Export a persona's taste to markdown for the dashboard. |
 | [ClaudeAPI.swift](leanring-buddy/ClaudeAPI.swift) | ~309 | Vision + SSE-streaming Claude client. TLS warmup. JPEG/PNG MIME detection. Multi-image, conversation-history, custom system-prompt support. |
-| [OpenAIAPI.swift](leanring-buddy/OpenAIAPI.swift) | ~225 | Worker-proxied OpenAI GPT vision client with SSE streaming, TLS warmup, multi-image, conversation-history, and custom system-prompt support. |
+| [OpenAIAPI.swift](leanring-buddy/OpenAIAPI.swift) | ~142 | OpenAI GPT vision client (alternative provider). |
 | [ElevenLabsTTSClient.swift](leanring-buddy/ElevenLabsTTSClient.swift) | ~371 | TTS playback via `AVAudioPlayer`. Sentence-chained queue. Per-voice metadata. Publishes `currentPowerLevel` for the edge-glow aurora. |
 | [VoicePreviewCache.swift](leanring-buddy/VoicePreviewCache.swift) | ~128 | On-disk cache of "Hey, it's Sticky!" preview clips for each voice. Background prefetched on first picker open. |
 | [ElementLocationDetector.swift](leanring-buddy/ElementLocationDetector.swift) | ~335 | Detects UI element locations (legacy — most pointing now goes through Claude's `[POINT:...]` tag). |
@@ -291,7 +290,7 @@ replacement PRs remove them.
 | [DashboardChatHistoryStore.swift](leanring-buddy/DashboardChatHistoryStore.swift) | ~175 | Codable on-disk archive of chat sessions. |
 | [DashboardSettingsView.swift](leanring-buddy/DashboardSettingsView.swift) | ~260 | Theme toggle, model picker, voice picker, transcription provider info, etc. |
 | [DashboardSectionHeader.swift](leanring-buddy/DashboardSectionHeader.swift) | ~87 | Shared section header with eyebrow + title + subtitle. |
-| [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~80 | Shared Claude/OpenAI provider and model-picker mapping. |
+| [DashboardModelPickerKind.swift](leanring-buddy/DashboardModelPickerKind.swift) | ~82 | Voice vs chat model picker enum. |
 | [TasteLibraryView.swift](leanring-buddy/TasteLibraryView.swift) | ~654 | Browse / delete saved principles. Used in the Memory tab and the standalone library window. |
 | [TasteLibraryWindowController.swift](leanring-buddy/TasteLibraryWindowController.swift) | ~148 | Standalone library window (opened from the menu bar panel). |
 | [TeachSessionResultCard.swift](leanring-buddy/TeachSessionResultCard.swift) | ~347 | The Save / Discard card shown in the panel after a teach session analyzes. Checkboxes for confident principles + ambiguous-moment hint. |
@@ -335,7 +334,6 @@ cd worker
 npm install
 
 npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 

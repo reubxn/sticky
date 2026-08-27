@@ -666,10 +666,30 @@ export const applyOwnerTurnInterpretation = mutation({
       ) {
         return failPersona("IDEMPOTENCY_CONFLICT", "Turn is already interpreted");
       }
+      let versionNumber = graph.persona.currentVersion;
+      if (sourceTurn.interpretedVersionId !== undefined) {
+        const interpretedVersion = await ctx.db.get(
+          "personaVersions",
+          sourceTurn.interpretedVersionId,
+        );
+        if (
+          interpretedVersion === null ||
+          interpretedVersion.personaId !== graph.persona._id ||
+          interpretedVersion.membershipId !== graph.membership._id ||
+          interpretedVersion.workspaceId !== graph.persona.workspaceId ||
+          interpretedVersion.ownerUserId !== graph.profile._id
+        ) {
+          return failPersona(
+            "DATA_INTEGRITY",
+            "Interpreted version is unavailable",
+          );
+        }
+        versionNumber = interpretedVersion.versionNumber;
+      }
       return {
         didCreateVersion: sourceTurn.interpretedVersionId !== undefined,
         versionId: sourceTurn.interpretedVersionId ?? null,
-        versionNumber: graph.persona.currentVersion,
+        versionNumber,
         sessionRevision: session.revision,
         setupState: graph.persona.setupState,
         activatedAt: graph.persona.activatedAt ?? null,

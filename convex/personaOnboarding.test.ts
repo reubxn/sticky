@@ -8,7 +8,9 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { DataModel, Id } from "./_generated/dataModel";
 import {
+  maximumCurrentPersonaRecords,
   maximumNonterminalSessionOperationReceipts,
+  maximumOnboardingTurns,
   maximumSessionOperationReceipts,
 } from "./personaFoundation";
 import schema from "./schema";
@@ -199,6 +201,70 @@ async function fillSessionReceipts(
       });
     }
   });
+}
+
+async function fillOnboardingTurnsToLimit(
+  testBackend: TestBackend,
+  personaId: Id<"personas">,
+  sessionId: Id<"personaOnboardingSessions">,
+) {
+  await testBackend.run(async (ctx) => {
+    const persona = await ctx.db.get("personas", personaId);
+    const session = await ctx.db.get("personaOnboardingSessions", sessionId);
+    if (persona === null || session === null) {
+      throw new Error("Missing turn fixture graph");
+    }
+    for (
+      let sequence = session.turnCount;
+      sequence < maximumOnboardingTurns;
+      sequence += 1
+    ) {
+      await ctx.db.insert("personaOnboardingTurns", {
+        sessionId,
+        personaId,
+        membershipId: persona.membershipId,
+        workspaceId: persona.workspaceId,
+        ownerUserId: persona.ownerUserId,
+        turnId: `capacity-turn-${sequence}`,
+        clientMutationId: `capacity-turn-${sequence}`,
+        sequence,
+        speaker: "sticky",
+        kind: "question",
+        text: `Queued question ${sequence}`,
+        createdAt: Date.now() + sequence,
+      });
+    }
+    await ctx.db.patch("personaOnboardingSessions", sessionId, {
+      turnCount: maximumOnboardingTurns,
+      nextSequence: maximumOnboardingTurns,
+      updatedAt: Date.now(),
+    });
+  });
+}
+
+async function addWorkspaceTeammate(
+  testBackend: TestBackend,
+  workspaceId: Id<"workspaces">,
+) {
+  await testBackend.run(async (ctx) => {
+    const timestamp = Date.now();
+    const profileId = await ctx.db.insert("profiles", {
+      tokenIdentifier: teammateIdentity.tokenIdentifier,
+      displayName: "Teammate",
+      accountSettings: {},
+      lifecycleStatus: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await ctx.db.insert("workspaceMembers", {
+      workspaceId,
+      userId: profileId,
+      role: "admin",
+      status: "active",
+      joinedAt: timestamp,
+    });
+  });
+  return testBackend.withIdentity(teammateIdentity);
 }
 
 describe("persona onboarding foundation", () => {
@@ -799,6 +865,81 @@ describe("persona onboarding foundation", () => {
     expect(afterConflict.turn?.interpretationStatus).toBe("pending");
   });
 
+  test("replays interpreted versions from the stored version, not the current persona", async () => {
+    const fixture = await activatePersona();
+    const interpretationArgs = {
+      sessionId: fixture.sessionId,
+      expectedSessionRevision: fixture.state.sessionRevision,
+      turnId: "expertise-answer",
+      clientMutationId: "append-expertise",
+      inputMode: "text" as const,
+      text: "I also review infrastructure.",
+    };
+    const turn = await fixture.ownerBackend.mutation(
+      api.personaOnboarding.appendOwnerTurn,
+      interpretationArgs,
+    );
+    const interpreted = await fixture.ownerBackend.mutation(
+      api.personaOnboarding.applyOwnerTurnInterpretation,
+      {
+        sessionId: fixture.sessionId,
+        sourceTurnId: turn._id,
+        expectedSessionRevision: fixture.state.sessionRevision + 1,
+        expectedPersonaVersion: fixture.state.versionNumber,
+        clientMutationId: "interpret-expertise",
+        changes: [
+          {
+            operation: "create",
+            content: { kind: "expertise", statement: "Reviews infrastructure" },
+            evidenceExcerpt: "review infrastructure",
+            confidence: 1,
+          },
+        ],
+      },
+    );
+    expect(interpreted).toMatchObject({
+      didCreateVersion: true,
+      versionNumber: fixture.state.versionNumber + 1,
+    });
+    const laterVersion = await fixture.ownerBackend.mutation(
+      api.personaRecords.applyOwnedChanges,
+      {
+        personaId: fixture.personaId,
+        expectedPersonaVersion: interpreted.versionNumber,
+        clientMutationId: "later-manual-edit",
+        changes: [
+          {
+            operation: "create",
+            content: { kind: "expertise", statement: "Later manual expertise" },
+            confidence: 1,
+          },
+        ],
+      },
+    );
+    expect(laterVersion.versionNumber).toBe(interpreted.versionNumber + 1);
+    const replayed = await fixture.ownerBackend.mutation(
+      api.personaOnboarding.applyOwnerTurnInterpretation,
+      {
+        sessionId: fixture.sessionId,
+        sourceTurnId: turn._id,
+        expectedSessionRevision: 999,
+        expectedPersonaVersion: fixture.state.versionNumber,
+        clientMutationId: "interpret-expertise",
+        changes: [
+          {
+            operation: "create",
+            content: { kind: "expertise", statement: "Reviews infrastructure" },
+            evidenceExcerpt: "review infrastructure",
+            confidence: 1,
+          },
+        ],
+      },
+    );
+    expect(replayed).toEqual(interpreted);
+    expect(replayed.versionId).toBe(interpreted.versionId);
+    expect(replayed.versionNumber).not.toBe(laterVersion.versionNumber);
+  });
+
   test("uses immutable session receipts across delayed and cross-operation retries", async () => {
     const fixture = await activatePersona();
     const paused = await fixture.ownerBackend.mutation(
@@ -1188,6 +1329,195 @@ describe("persona onboarding foundation", () => {
         { summaryId: draft.summaryId },
       ),
       "RESOURCE_UNAVAILABLE",
+    );
+  });
+
+  test("replaces then unpublishes approved boundary summaries", async () => {
+    const fixture = await activatePersona();
+    const teammate = await addWorkspaceTeammate(
+      fixture.testBackend,
+      fixture.workspaceId,
+    );
+    const boundaryVersion = await fixture.ownerBackend.mutation(
+      api.personaRecords.applyOwnedChanges,
+      {
+        personaId: fixture.personaId,
+        expectedPersonaVersion: fixture.state.versionNumber,
+        clientMutationId: "lifecycle-boundary",
+        changes: [
+          {
+            operation: "create",
+            content: {
+              kind: "boundary",
+              mode: "ask_first",
+              statement: "Ask before sharing estimates",
+            },
+            confidence: 1,
+          },
+        ],
+      },
+    );
+    const firstDraft = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.saveOwnedDraft,
+      {
+        personaId: fixture.personaId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        clientMutationId: "lifecycle-first-draft",
+        summaryText: "Ask before sharing delivery estimates.",
+      },
+    );
+    const firstApproved = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.approveOwnedDraft,
+      {
+        summaryId: firstDraft.summaryId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        expectedApprovedSummaryId: null,
+        clientMutationId: "lifecycle-first-approve",
+      },
+    );
+    const replacementDraft = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.saveOwnedDraft,
+      {
+        personaId: fixture.personaId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        clientMutationId: "lifecycle-replacement-draft",
+        summaryText: "Never share private customer names.",
+      },
+    );
+    const replaced = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.replaceOwned,
+      {
+        summaryId: replacementDraft.summaryId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        expectedApprovedSummaryId: firstApproved.summaryId,
+        clientMutationId: "lifecycle-replace",
+      },
+    );
+    expect(replaced).toMatchObject({
+      summaryId: replacementDraft.summaryId,
+      state: "approved",
+      summaryText: "Never share private customer names.",
+    });
+    const replacedRetry = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.replaceOwned,
+      {
+        summaryId: replacementDraft.summaryId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        expectedApprovedSummaryId: firstApproved.summaryId,
+        clientMutationId: "lifecycle-replace",
+      },
+    );
+    expect(replacedRetry).toEqual(replaced);
+    await expectPersonaError(
+      fixture.ownerBackend.mutation(api.personaBoundarySummaries.replaceOwned, {
+        summaryId: replacementDraft.summaryId,
+        expectedPersonaVersion: boundaryVersion.versionNumber,
+        expectedApprovedSummaryId: null,
+        clientMutationId: "lifecycle-replace",
+      }),
+      "IDEMPOTENCY_CONFLICT",
+    );
+    await expect(
+      teammate.query(api.personaBoundarySummaries.getReadable, {
+        personaId: fixture.personaId,
+      }),
+    ).resolves.toMatchObject({
+      summaryText: "Never share private customer names.",
+    });
+
+    const unpublished = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.unpublishOwned,
+      {
+        personaId: fixture.personaId,
+        expectedApprovedSummaryId: replaced.summaryId,
+        clientMutationId: "lifecycle-unpublish",
+      },
+    );
+    expect(unpublished).toEqual({ didUnpublish: true });
+    const unpublishedRetry = await fixture.ownerBackend.mutation(
+      api.personaBoundarySummaries.unpublishOwned,
+      {
+        personaId: fixture.personaId,
+        expectedApprovedSummaryId: replaced.summaryId,
+        clientMutationId: "lifecycle-unpublish",
+      },
+    );
+    expect(unpublishedRetry).toEqual({ didUnpublish: false });
+    await expect(
+      teammate.query(api.personaBoundarySummaries.getReadable, {
+        personaId: fixture.personaId,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("rejects current-record and onboarding-turn caps", async () => {
+    const fixture = await activatePersona();
+    const owned = await fixture.ownerBackend.query(
+      api.personaOnboarding.getOwnedState,
+      { personaId: fixture.personaId },
+    );
+    let personaVersion = owned.currentVersion;
+    let createdRecords = owned.currentRecords.length;
+    while (createdRecords < maximumCurrentPersonaRecords) {
+      const batchSize = Math.min(
+        16,
+        maximumCurrentPersonaRecords - createdRecords,
+      );
+      const filled = await fixture.ownerBackend.mutation(
+        api.personaRecords.applyOwnedChanges,
+        {
+          personaId: fixture.personaId,
+          expectedPersonaVersion: personaVersion,
+          clientMutationId: `fill-records-${createdRecords}`,
+          changes: Array.from({ length: batchSize }, (_, index) => ({
+            operation: "create" as const,
+            content: {
+              kind: "expertise" as const,
+              statement: `Expertise ${createdRecords + index}`,
+            },
+            confidence: 1,
+          })),
+        },
+      );
+      personaVersion = filled.versionNumber;
+      createdRecords += batchSize;
+    }
+    const atCap = await fixture.ownerBackend.query(
+      api.personaOnboarding.getOwnedState,
+      { personaId: fixture.personaId },
+    );
+    expect(atCap.currentRecords).toHaveLength(maximumCurrentPersonaRecords);
+    await expectPersonaError(
+      fixture.ownerBackend.mutation(api.personaRecords.applyOwnedChanges, {
+        personaId: fixture.personaId,
+        expectedPersonaVersion: personaVersion,
+        clientMutationId: "over-record-cap",
+        changes: [
+          {
+            operation: "create",
+            content: { kind: "expertise", statement: "One past the cap" },
+            confidence: 1,
+          },
+        ],
+      }),
+      "INVALID_REQUEST",
+    );
+
+    await fillOnboardingTurnsToLimit(
+      fixture.testBackend,
+      fixture.personaId,
+      fixture.sessionId,
+    );
+    await expectPersonaError(
+      fixture.ownerBackend.mutation(api.personaOnboarding.appendOwnerTurn, {
+        sessionId: fixture.sessionId,
+        expectedSessionRevision: fixture.state.sessionRevision,
+        turnId: "over-turn-cap",
+        clientMutationId: "over-turn-cap",
+        inputMode: "text",
+        text: "This should not be stored.",
+      }),
+      "INVALID_REQUEST",
     );
   });
 });
